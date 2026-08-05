@@ -3,7 +3,33 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/assistant_nav_graph"
-    app:startDestination="@id/landingFragment">
+    app:startDestination="@id/twentyOneLandingFragment">
+
+    <!-- fork: úvod bez linphone.org účtů -->
+    <fragment
+        android:id="@+id/twentyOneLandingFragment"
+        android:name="org.linphone.twentyone.assistant.TwentyOneLandingFragment"
+        android:label="TwentyOneLandingFragment"
+        tools:layout="@layout/twentyone_landing_fragment" >
+
+        <action
+            android:id="@+id/action_twentyOneLanding_to_qrCodeScanner"
+            app:destination="@id/qrCodeScannerFragment"
+            app:enterAnim="@anim/slide_in_right"
+            app:exitAnim="@anim/slide_out_left"
+            app:popEnterAnim="@anim/slide_in_left"
+            app:popExitAnim="@anim/slide_out_right"
+            app:launchSingleTop="true" />
+
+        <action
+            android:id="@+id/action_twentyOneLanding_to_thirdPartySipAccountLogin"
+            app:destination="@id/thirdPartySipAccountLoginFragment"
+            app:enterAnim="@anim/slide_in_right"
+            app:exitAnim="@anim/slide_out_left"
+            app:popEnterAnim="@anim/slide_in_left"
+            app:popExitAnim="@anim/slide_out_right"
+            app:launchSingleTop="true" />
+    </fragment>
 
     <fragment
         android:id="@+id/registerFragment"

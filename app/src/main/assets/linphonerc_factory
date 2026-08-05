@@ -53,4 +53,8 @@ lime_update_threshold=86400
 [alerts]
 alerts_enabled=1
 
+[ui]
+# fork: linphone.org registrace není v nabídce
+assistant_hide_create_account=1
+
 ## End of factory rc

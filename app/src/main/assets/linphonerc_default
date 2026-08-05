@@ -34,8 +34,8 @@ host=
 port=443
 
 [misc]
-log_collection_upload_server_url=https://files.linphone.org/http-file-transfer-server/hft.php
-file_transfer_server_url=https://files.linphone.org/http-file-transfer-server/hft.php
+log_collection_upload_server_url=
+file_transfer_server_url=
 version_check_url_root=https://download.linphone.org/releases
 max_calls=10
 history_max_size=100
@@ -52,9 +52,9 @@ return_empty_friends=1
 imdn_to_everybody_threshold=1
 
 [ui]
-contacts_filter=sip.linphone.org
+contacts_filter=
 
 [account_creator]
-url=https://subscribe.linphone.org/api/
+url=
 
 ## End of default rc

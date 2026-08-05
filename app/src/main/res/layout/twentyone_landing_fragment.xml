@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- fork: úvodní obrazovka bez linphone.org účtů — jen QR provisioning
+     a ruční SIP účet. Bez dataBindingu (findViewById), ať nevzniká vazba
+     na upstream viewmodely. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="32dp"
+    android:background="?attr/color_main2_000">
+
+    <ImageView
+        android:layout_width="96dp"
+        android:layout_height="96dp"
+        android:importantForAccessibility="no"
+        android:src="@drawable/welcome_linphone_logo" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="@string/twentyone_landing_title"
+        android:textSize="26sp"
+        android:textStyle="bold"
+        android:textColor="?attr/color_main2_800" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
+        android:text="@string/twentyone_landing_subtitle"
+        android:textSize="15sp"
+        android:textColor="?attr/color_main2_600" />
+
+    <Button
+        android:id="@+id/twentyone_scan_qr"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="40dp"
+        android:text="@string/twentyone_landing_scan_qr" />
+
+    <Button
+        android:id="@+id/twentyone_manual"
+        style="?android:attr/borderlessButtonStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/twentyone_landing_manual"
+        android:textColor="?attr/color_main1_500" />
+
+</LinearLayout>
