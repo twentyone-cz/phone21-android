@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE resources [
-<!ENTITY appName "Linphone">
+<!ENTITY appName "jednadvacet phone">
 ]>
 <resources>
     <string name="device_id">Eszköz ID</string>
@@ -47,7 +47,7 @@
     </plurals>
     <string name="notification_keep_app_alive_message">Érintse meg a megnyitáshoz</string>
     <string name="welcome_page_title">Üdvözöljük</string>
-    <string name="welcome_page_subtitle">a Linphone-nál</string>
+    <string name="welcome_page_subtitle">a &appName;-nál</string>
     <string name="welcome_page_1_message">Egy <b>biztonságos</b>, <b>nyílt-forráskódú</b> és <b>francia</b> kommunikációs appnál.</string>
     <string name="welcome_page_2_title">Biztonságos</string>
     <string name="welcome_page_3_title">Nyílt forráskódú</string>
@@ -96,8 +96,8 @@
     <string name="drawer_menu_account_connection_status_failed">Hiba</string>
     <string name="drawer_menu_no_account_configured_yet">Nincs még fiók konfigurálva</string>
     <string name="help_title">Segítség</string>
-    <string name="help_about_title">A Linphone-ról</string>
-    <string name="help_about_privacy_policy_subtitle">Milyen adatokat gyűjt és használ a Linphone</string>
+    <string name="help_about_title">A &appName;-ról</string>
+    <string name="help_about_privacy_policy_subtitle">Milyen adatokat gyűjt és használ a &appName;</string>
     <string name="help_about_version_title">Verzió</string>
     <string name="help_about_advanced_title">Haladó</string>
     <string name="settings_title">Beállítások</string>
@@ -127,10 +127,10 @@
     <string name="bottom_navigation_contacts_label">Névjegyek</string>
     <string name="help_troubleshooting_show_config_file">Mutassa a konfigurációt</string>
     <string name="notification_channel_call_name">&appName; aktív hívások értesítése</string>
-    <string name="assistant_permissions_subtitle">A Linphone teljes élvezetéhez biztosítsa a következő engedélyeket:</string>
+    <string name="assistant_permissions_subtitle">A &appName; teljes élvezetéhez biztosítsa a következő engedélyeket:</string>
     <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> Hogy a hívott fél hallja önt, és hangüzenetek felvételéhez.</string>
     <string name="drawer_menu_account_connection_status_connected">Csatlakoztatva</string>
-    <string name="help_about_user_guide_title">Linphone használati útmutató</string>
+    <string name="help_about_user_guide_title">&appName; használati útmutató</string>
     <plurals name="selection_count_label">
         <item quantity="one">%s kiválasztva</item>
         <item quantity="other">%s kiválasztva</item>

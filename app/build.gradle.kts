@@ -14,7 +14,7 @@ plugins {
     alias(libs.plugins.navigation)
 }
 
-val packageName = "org.linphone"
+val packageName = "cz.twentyone.phone"  // fork: jen applicationId; namespace zůstává org.linphone
 val useDifferentPackageNameForDebugBuild = false
 
 val sdkPath = providers.gradleProperty("LinphoneSdkBuildDir").get()
@@ -127,15 +127,19 @@ android {
             }
     }
 
+    // fork: keystore.properties je gitignorovaný (obsahuje hesla) — když
+    // chybí (čistý clone, debug build), release podpis se prostě přeskočí
     val keystorePropertiesFile = rootProject.file("keystore.properties")
     val keystoreProperties = Properties()
-    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    }
 
     signingConfigs {
         create("release") {
-            val keyStorePath = keystoreProperties["storeFile"] as String
-            val keyStore = project.file(keyStorePath)
-            if (keyStore.exists()) {
+            val keyStorePath = keystoreProperties["storeFile"] as String? ?: ""
+            val keyStore = if (keyStorePath.isNotEmpty()) project.file(keyStorePath) else null
+            if (keyStore != null && keyStore.exists()) {
                 storeFile = keyStore
                 storePassword = keystoreProperties["storePassword"] as String
                 keyAlias = keystoreProperties["keyAlias"] as String

@@ -12,3 +12,7 @@ app/release/
 .idea/
 app/bc-android.keystore
 .kotlin/
+
+# fork: podpisová hesla — generuje se lokálně (scripts/release.sh), nikdy do repa
+keystore.properties
+local.properties

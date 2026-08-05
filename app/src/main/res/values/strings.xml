@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 
 <!DOCTYPE resources [
-    <!ENTITY appName "Linphone">
+    <!ENTITY appName "jednadvacet phone">
 ]>
 
 <resources>
@@ -11,7 +11,7 @@
     <string name="vertical_separator" translatable="false">|</string>
 
     <string name="assistant_web_platform_link" translatable="false">subscribe.linphone.org</string>
-    <string name="assistant_linphone_contact_us_link" translatable="false">linphone.org/contact</string>
+    <string name="assistant_linphone_contact_us_link" translatable="false">phone.twentyone.cz</string>
 
     <string name="notification_channel_call_id" translatable="false">linphone_6.0_notification_call_id</string>
     <string name="notification_channel_incoming_call_id" translatable="false">linphone_6.0_notification_incoming_call_id</string>
@@ -29,18 +29,18 @@
 
     <string name="help_about_open_source_licenses_title" translatable="false">GNU General Public License v3.0</string>
     <string name="help_about_open_source_licenses_subtitle" translatable="false">© Belledonne Communications 2010-2025</string>
-    <string name="help_advanced_send_debug_logs_email_address" translatable="false">linphone-android@belledonne-communications.com</string>
+    <string name="help_advanced_send_debug_logs_email_address" translatable="false"></string>
 
-    <string name="website_contact_url" translatable="false">https://linphone.org/contact</string>
-    <string name="website_download_url" translatable="false">https://linphone.org/linphone-softphone</string>
-    <string name="website_user_guide_url" translatable="false">https://linphone.org/en/docs/</string>
-    <string name="website_privacy_policy_url" translatable="false">https://linphone.org/en/privacy-policy</string>
-    <string name="website_terms_and_conditions_url" translatable="false">https://linphone.org/en/terms-of-use</string>
+    <string name="website_contact_url" translatable="false">https://phone.twentyone.cz</string>
+    <string name="website_download_url" translatable="false">https://phone.twentyone.cz</string>
+    <string name="website_user_guide_url" translatable="false">https://phone.twentyone.cz/instalace</string>
+    <string name="website_privacy_policy_url" translatable="false">https://phone.twentyone.cz</string>
+    <string name="website_terms_and_conditions_url" translatable="false">https://phone.twentyone.cz</string>
     <string name="web_platform_register_email_url" translatable="false">https://subscribe.linphone.org/register/email</string>
     <string name="web_platform_forgotten_password_url" translatable="false">https://subscribe.linphone.org</string>
-    <string name="website_translate_weblate_url" translatable="false">https://weblate.linphone.org/</string>
+    <string name="website_translate_weblate_url" translatable="false">https://github.com/twentyone-cz/jednadvacet-phone-android</string>
     <string name="website_open_source_licences_usage_url" translatable="false">https://wiki.linphone.org/xwiki/wiki/public/view/Linphone/Third%20party%20components%20/#Hlinphone-android</string>
-    <string name="conversation_end_to_end_encrypted_bottom_sheet_link" translatable="false"><u>https://linphone.org/en/features/#security</u></string>
+    <string name="conversation_end_to_end_encrypted_bottom_sheet_link" translatable="false"><u>https://phone.twentyone.cz</u></string>
 
     <string name="conversation_one_to_one_hidden_subject" translatable="false">Dummy subject</string>
 
@@ -157,6 +157,10 @@
     <string name="assistant_dialog_phone_number_validation_not_available_register_button_label">Register with an email</string>
     <string name="assistant_account_login">Login</string>
     <string name="assistant_scan_qr_code">Scan QR code</string>
+    <string name="twentyone_landing_title" translatable="false">&appName;</string>
+    <string name="twentyone_landing_subtitle">Připoj se ke své krabičce naskenováním QR kódu z jejího ovládání (záložka Telefon).</string>
+    <string name="twentyone_landing_scan_qr">Naskenovat QR kód</string>
+    <string name="twentyone_landing_manual">Zadat SIP účet ručně</string>
     <string name="assistant_qr_code_invalid_toast">Invalid QR code!</string>
     <string name="assistant_login_third_party_sip_account">Use a third party SIP account</string>
     <string name="assistant_login_third_party_sip_account_title">Third party SIP account</string>

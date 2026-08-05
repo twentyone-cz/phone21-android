@@ -10,8 +10,8 @@
     <color name="background_color_dark_mode">#191919</color>
     <color name="background_color_alt_dark_mode">#303030</color>
 
-    <color name="orange_main_100">#FFEACB</color>
-    <color name="orange_main_500">#FF5E00</color>
+    <color name="orange_main_100">#FDE8C9</color>
+    <color name="orange_main_500">#F7931A</color>
 
     <color name="gray_main2_100">#EEF6F8</color>
     <color name="gray_main2_200">#DFECF2</color>
