@@ -106,8 +106,9 @@ android {
         applicationId = packageName
         minSdk = 28
         targetSdk = 37
-        versionCode = 602010 // 6.02.010
-        versionName = "6.2.10"
+        // fork: versionCode = upstream*10 + naše iterace (602004 → 6020041, …)
+        versionCode = 6020041
+        versionName = "6.2.4-21p.1"
 
         manifestPlaceholders["appAuthRedirectScheme"] = packageName
 
@@ -122,7 +123,7 @@ android {
         variant.outputs
             .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
             .forEach { output ->
-                output.outputFileName = "linphone-android-${variant.buildType.name}-$gitVersion.apk"
+                output.outputFileName = "jednadvacet-phone-${variant.buildType.name}-$gitVersion.apk"
             }
     }
 
@@ -310,7 +311,8 @@ configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
         )
     )
 }
-project.tasks.preBuild.dependsOn("ktlintFormat")
+// fork: ktlintFormat přepisoval zdrojáky při každém buildu — vypnuto
+// project.tasks.preBuild.dependsOn("ktlintFormat")
 
 if (crashlyticsAvailable) {
     afterEvaluate {
