@@ -56,7 +56,7 @@ class AssistantActivity : GenericActivity() {
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             val navController = binding.assistantNavContainer.findNavController()
-            if (navController.currentDestination?.id != R.id.landingFragment) {
+            if (navController.currentDestination?.id != R.id.twentyOneLandingFragment) {
                 navController.popBackStack()
             }
         }

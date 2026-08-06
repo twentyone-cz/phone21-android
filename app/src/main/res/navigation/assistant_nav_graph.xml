@@ -115,7 +115,7 @@
 
         <action
             android:id="@+id/action_permissionsFragment_to_landingFragment"
-            app:destination="@id/landingFragment"
+            app:destination="@id/twentyOneLandingFragment"
             app:enterAnim="@anim/slide_in_right"
             app:exitAnim="@anim/slide_out_left"
             app:popEnterAnim="@anim/slide_in_left"
