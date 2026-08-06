@@ -30,7 +30,9 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/navigation/assistant_nav_graph.xml` | startDestination | onboarding |
 | `app/src/main/assets/linphonerc_factory` | [ui]/[app] klíče | onboarding |
 | `app/src/main/AndroidManifest.xml` | SMS role, ConnectionService, VpnService | telecom/sms/vpn |
-| `app/src/main/java/org/linphone/core/CoreContext.kt` | 1 řádka: registrace SystemProvidersSyncManager | sync |
+| `app/src/main/res/navigation/main_nav_graph.xml` | cíl obrazovky tunelu | vpn |
+| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager | sync/vpn |
+| `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (viz docs/tunnel-aar.md) | vpn |
 
 Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
 bez konfliktů.

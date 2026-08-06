@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- fork: karta stavu zabudovaného tunelu. Bez dataBindingu (findViewById),
+     ať nevzniká vazba na upstream viewmodely. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/color_main2_000">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/twentyone_tunnel_title"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="?attr/color_main2_800" />
+
+        <TextView
+            android:id="@+id/tunnel_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textSize="16sp"
+            android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:id="@+id/tunnel_route"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="14sp"
+            android:textColor="?attr/color_main2_600" />
+
+        <TextView
+            android:id="@+id/tunnel_address"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="14sp"
+            android:textColor="?attr/color_main2_600" />
+
+        <TextView
+            android:id="@+id/tunnel_scope_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textSize="14sp"
+            android:textColor="?attr/color_main2_600" />
+
+        <Switch
+            android:id="@+id/tunnel_scope_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/twentyone_tunnel_scope_full"
+            android:textColor="?attr/color_main2_700" />
+
+        <Button
+            android:id="@+id/tunnel_toggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/twentyone_tunnel_connect" />
+
+    </LinearLayout>
+
+</ScrollView>

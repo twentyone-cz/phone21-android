@@ -156,6 +156,12 @@ class SettingsFragment : GenericMainFragment() {
             }
         }
 
+        binding.twentyoneTunnelSettings.setOnClickListener {
+            if (findNavController().currentDestination?.id == R.id.settingsFragment) {
+                findNavController().navigate(R.id.action_settingsFragment_to_twentyOneTunnelFragment)
+            }
+        }
+
         binding.setAdvancedSettingsClickListener {
             if (findNavController().currentDestination?.id == R.id.settingsFragment) {
                 val action = SettingsFragmentDirections.actionSettingsFragmentToSettingsAdvancedFragment()

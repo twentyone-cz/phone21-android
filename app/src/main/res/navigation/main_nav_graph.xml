@@ -153,7 +153,21 @@
             app:exitAnim="@anim/slide_out_left"
             app:popEnterAnim="@anim/slide_in_left"
             app:popExitAnim="@anim/slide_out_right" />
+        <action
+            android:id="@+id/action_settingsFragment_to_twentyOneTunnelFragment"
+            app:destination="@id/twentyOneTunnelFragment"
+            app:launchSingleTop="true"
+            app:enterAnim="@anim/slide_in_right"
+            app:exitAnim="@anim/slide_out_left"
+            app:popEnterAnim="@anim/slide_in_left"
+            app:popExitAnim="@anim/slide_out_right" />
     </fragment>
+
+    <fragment
+        android:id="@+id/twentyOneTunnelFragment"
+        android:name="org.linphone.twentyone.vpn.TwentyOneTunnelFragment"
+        android:label="TwentyOneTunnelFragment"
+        tools:layout="@layout/twentyone_tunnel_fragment" />
 
     <action
         android:id="@+id/action_global_settingsFragment"

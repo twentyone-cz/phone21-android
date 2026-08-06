@@ -113,8 +113,10 @@ android {
         manifestPlaceholders["appAuthRedirectScheme"] = packageName
 
         ndk {
+            // fork: jen arm64 — libtailscale.aar se staví pro arm64-v8a,
+            // v APK s armeabi-v7a by na 32bitovém zařízení chyběl libgojni.so
             //noinspection ChromeOsAbiSupport
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -272,6 +274,10 @@ dependencies {
     implementation(libs.openid.appauth)
 
     implementation(libs.linphone)
+
+    // https://github.com/tailscale/tailscale-android/blob/main/LICENSE BSD-3-Clause
+    // Sestaveno mimo tento repozitář, postup v docs/tunnel-aar.md
+    implementation(files("libs/libtailscale.aar"))
 }
 
 configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {

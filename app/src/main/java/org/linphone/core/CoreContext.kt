@@ -53,6 +53,7 @@ import org.linphone.contacts.ContactsManager
 import org.linphone.core.tools.Log
 import org.linphone.notifications.NotificationsManager
 import org.linphone.telecom.TelecomManager
+import org.linphone.twentyone.vpn.TunnelReadinessManager
 import org.linphone.utils.ActivityMonitor
 import org.linphone.utils.AppUtils
 import org.linphone.utils.AudioUtils
@@ -78,6 +79,8 @@ class CoreContext
     val notificationsManager = NotificationsManager(context)
 
     val telecomManager = TelecomManager(context)
+
+    val tunnelReadinessManager = TunnelReadinessManager()
 
     @get:AnyThread
     val sdkVersion: String by lazy {
@@ -789,6 +792,7 @@ class CoreContext
 
         contactsManager.onCoreStarted(core)
         telecomManager.onCoreStarted(core)
+        tunnelReadinessManager.onCoreStarted(core)
         notificationsManager.onCoreStarted(core, oldVersion < 600000) // Re-create channels when migrating from a non 6.0 version
         Log.i("$TAG Started contacts, telecom & notifications managers")
 
@@ -818,6 +822,7 @@ class CoreContext
         contactsManager.onCoreStopped(core)
         telecomManager.onCoreStopped(core)
         notificationsManager.onCoreStopped(core)
+        tunnelReadinessManager.onCoreStopped()
     }
 
     @WorkerThread
