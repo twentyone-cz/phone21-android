@@ -194,4 +194,13 @@
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:windowBackground">@color/transparent_color</item>
     </style>
+
+    <!-- fork: neviditelná aktivita pro systémový souhlas s VPN -->
+    <style name="TwentyOneTranslucent" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

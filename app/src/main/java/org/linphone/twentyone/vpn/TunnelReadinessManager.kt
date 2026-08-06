@@ -1,9 +1,11 @@
 package org.linphone.twentyone.vpn
 
+import android.content.Intent
 import androidx.annotation.WorkerThread
 import androidx.lifecycle.Observer
 import org.linphone.LinphoneApplication.Companion.coreContext
 import org.linphone.core.Account
+import org.linphone.core.ConfiguringState
 import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.tools.Log
@@ -20,6 +22,23 @@ class TunnelReadinessManager {
         @WorkerThread
         override fun onAccountAdded(core: Core, account: Account) {
             applyState(ready)
+        }
+
+        @WorkerThread
+        override fun onConfiguringStatus(
+            core: Core,
+            status: ConfiguringState?,
+            message: String?
+        ) {
+            if (status != ConfiguringState.Successful) return
+            val (url, key) = TsProvisioning.takeNetworkKey(core)
+            if (key.isEmpty()) return
+            val intent = Intent(coreContext.context, TsConsentActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(TsConsentActivity.EXTRA_URL, url)
+                putExtra(TsConsentActivity.EXTRA_KEY, key)
+            }
+            coreContext.context.startActivity(intent)
         }
     }
 

@@ -33,6 +33,8 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/navigation/main_nav_graph.xml` | cíl obrazovky tunelu | vpn |
 | `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager | sync/vpn |
 | `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (viz docs/tunnel-aar.md) | vpn |
+| `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
+| `app/src/main/java/org/linphone/LinphoneApplication.kt` | 1 řádka: jazyk aplikace = čeština | brand |
 
 Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
 bez konfliktů.
