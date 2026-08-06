@@ -21,7 +21,9 @@ keyPassword=$KEYSTORE_PASSWORD
 keyAlias=$KEY_ALIAS
 storeFile=$KEYSTORE_DIR/jednadvacet.jks
 EOF
-trap 'git -C "$REPO" checkout -q keystore.properties' EXIT
+# keystore.properties je gitignorovaný, takže ho nelze „vrátit" gitem —
+# po buildu musí zmizet, jinak zůstanou hesla ležet v pracovním adresáři
+trap 'rm -f "$REPO/keystore.properties"' EXIT
 
 ( cd "$REPO" && ./gradlew --no-daemon assembleRelease )
 
