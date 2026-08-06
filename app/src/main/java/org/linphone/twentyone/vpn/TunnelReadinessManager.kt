@@ -31,6 +31,10 @@ class TunnelReadinessManager {
         evaluate()
     }
 
+    private val endpointObserver = Observer<Boolean> {
+        evaluate()
+    }
+
     @WorkerThread
     fun onCoreStarted(core: Core) {
         this.core = core
@@ -39,6 +43,7 @@ class TunnelReadinessManager {
             TsManager.ensureStarted(coreContext.context)
             TsManager.state.observeForever(stateObserver)
             TsManager.loggedIn.observeForever(loginObserver)
+            TsManager.endpointVerified.observeForever(endpointObserver)
         }
         applyState(false)
     }
@@ -49,6 +54,7 @@ class TunnelReadinessManager {
         coreContext.postOnMainThread {
             TsManager.state.removeObserver(stateObserver)
             TsManager.loggedIn.removeObserver(loginObserver)
+            TsManager.endpointVerified.removeObserver(endpointObserver)
         }
         this.core = null
     }
@@ -56,7 +62,8 @@ class TunnelReadinessManager {
     private fun evaluate() {
         val state = TsManager.state.value
         val loggedIn = TsManager.loggedIn.value == true
-        val available = loggedIn && (state == TsManager.State.RUNNING)
+        val verified = TsManager.endpointVerified.value == true
+        val available = loggedIn && verified && (state == TsManager.State.RUNNING)
         if (available == ready) return
         ready = available
         Log.i("$TAG Network readiness is now [$available]")

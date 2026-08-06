@@ -18,6 +18,8 @@ import android.net.NetworkRequest
 import androidx.lifecycle.MutableLiveData
 import java.io.ByteArrayInputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 import org.linphone.core.tools.Log
 
@@ -30,6 +32,7 @@ object TsManager {
     private const val NOTIFY_MASK_INITIAL_STATUS = 16384L
 
     private const val SCOPE_SWITCH_STABLE_CYCLES = 3
+    private const val STATUS_POLL_SECONDS = 30L
 
     enum class State(val value: Int) {
         NO_STATE(0),
@@ -52,6 +55,7 @@ object TsManager {
     private var notificationManager: libtailscale.NotificationManager? = null
     private var preferences: TsPreferences? = null
     private val worker = Executors.newSingleThreadExecutor()
+    private val poller: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
 
     private var directCycles = 0
     private var relayCycles = 0
@@ -63,6 +67,13 @@ object TsManager {
     val loggedIn = MutableLiveData(false)
     val directConnection = MutableLiveData(false)
     val tailnetAddress = MutableLiveData<String?>(null)
+    val endpointVerified = MutableLiveData(false)
+
+    @Volatile
+    private var endpointMatches = false
+
+    @Volatile
+    private var domainMatches: Boolean? = null
 
     val prefs: TsPreferences
         get() = preferences ?: TsPreferences(appContext).also { preferences = it }
@@ -83,6 +94,12 @@ object TsManager {
 
         monitorNetworkChanges()
         watchNotifications()
+
+        poller.scheduleWithFixedDelay({
+            if (state.value == State.RUNNING) {
+                refreshStatus()
+            }
+        }, STATUS_POLL_SECONDS, STATUS_POLL_SECONDS, TimeUnit.SECONDS)
     }
 
     fun isStarted(): Boolean = app != null
@@ -93,8 +110,10 @@ object TsManager {
      */
     fun login(controlUrl: String, authKey: String?) {
         worker.execute {
-            val url = controlUrl.ifEmpty { prefs.controlUrl }
-            prefs.controlUrl = url
+            val url = prefs.controlUrl
+            if (controlUrl.isNotEmpty() && !sameEndpoint(controlUrl, url)) {
+                Log.w("$TAG Ignoring requested endpoint [$controlUrl]")
+            }
             Log.i("$TAG Logging in against [$url], pre-auth key ${if (authKey.isNullOrEmpty()) "absent" else "present"}")
 
             val updatePrefs = JSONObject()
@@ -211,6 +230,8 @@ object TsManager {
         if (notify.has("Prefs")) {
             val prefsObject = notify.getJSONObject("Prefs")
             loggedIn.postValue(!prefsObject.optBoolean("LoggedOut", true))
+            endpointMatches = sameEndpoint(prefsObject.optString("ControlURL", ""), prefs.controlUrl)
+            publishVerification()
         }
         if (notify.has("InitialStatus")) {
             onStatus(notify.getJSONObject("InitialStatus"))
@@ -223,8 +244,36 @@ object TsManager {
             if (ips != null && ips.length() > 0) {
                 tailnetAddress.postValue(ips.getString(0))
             }
+            val suffix = status.optJSONObject("CurrentTailnet")?.optString("MagicDNSSuffix", "")
+            domainMatches = domainVerdict(self.optString("DNSName", ""), suffix.orEmpty())
+            publishVerification()
         }
         updateConnectionQuality(status)
+    }
+
+    private fun sameEndpoint(a: String, b: String): Boolean {
+        return a.trim().trimEnd('/').equals(b.trim().trimEnd('/'), ignoreCase = true)
+    }
+
+    private fun domainVerdict(dnsName: String, magicDnsSuffix: String): Boolean? {
+        val domain = prefs.networkDomain
+        val name = dnsName.trim().trimEnd('.')
+        if (name.isNotEmpty()) {
+            return name.endsWith(".$domain", ignoreCase = true)
+        }
+        val suffix = magicDnsSuffix.trim().trim('.')
+        if (suffix.isNotEmpty()) {
+            return suffix.equals(domain, ignoreCase = true)
+        }
+        return null
+    }
+
+    private fun publishVerification() {
+        val verified = endpointMatches && domainMatches != false
+        if (endpointVerified.value != verified) {
+            Log.i("$TAG Endpoint verification is now [$verified]")
+            endpointVerified.postValue(verified)
+        }
     }
 
     /**

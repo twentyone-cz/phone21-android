@@ -5,15 +5,13 @@
 package org.linphone.twentyone.vpn
 
 import android.content.Context
+import org.linphone.BuildConfig
 
 class TsPreferences(context: Context) {
     companion object {
         private const val PREFS_FILE = "twentyone_tunnel_settings"
-        private const val KEY_CONTROL_URL = "control_url"
         private const val KEY_TUNNEL_SCOPE = "tunnel_scope"
         private const val KEY_EXIT_NODE_ID = "exit_node_id"
-
-        const val DEFAULT_CONTROL_URL = "https://cockscale.twentyone.cz"
     }
 
     enum class TunnelScope {
@@ -23,9 +21,11 @@ class TsPreferences(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
 
-    var controlUrl: String
-        get() = prefs.getString(KEY_CONTROL_URL, DEFAULT_CONTROL_URL).orEmpty()
-        set(value) = prefs.edit().putString(KEY_CONTROL_URL, value).apply()
+    val controlUrl: String
+        get() = BuildConfig.NETWORK_COORDINATOR
+
+    val networkDomain: String
+        get() = BuildConfig.NETWORK_DOMAIN
 
     var tunnelScope: TunnelScope
         get() = when (prefs.getString(KEY_TUNNEL_SCOPE, TunnelScope.APP_ONLY.name)) {

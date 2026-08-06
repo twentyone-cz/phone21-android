@@ -112,6 +112,9 @@ android {
 
         manifestPlaceholders["appAuthRedirectScheme"] = packageName
 
+        buildConfigField("String", "NETWORK_COORDINATOR", "\"https://cockscale.twentyone.cz\"")
+        buildConfigField("String", "NETWORK_DOMAIN", "\"cs.internal\"")
+
         ndk {
             // fork: jen arm64 — libtailscale.aar se staví pro arm64-v8a,
             // v APK s armeabi-v7a by na 32bitovém zařízení chyběl libgojni.so
