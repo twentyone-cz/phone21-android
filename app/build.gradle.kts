@@ -14,7 +14,7 @@ plugins {
     alias(libs.plugins.navigation)
 }
 
-val packageName = "cz.twentyone.phone"  // fork: jen applicationId; namespace zůstává org.linphone
+val packageName = "cz.twentyone.phone21"  // fork: jen applicationId; namespace zůstává org.linphone
 val useDifferentPackageNameForDebugBuild = false
 
 val sdkPath = providers.gradleProperty("LinphoneSdkBuildDir").get()
@@ -128,7 +128,7 @@ android {
         variant.outputs
             .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
             .forEach { output ->
-                output.outputFileName = "jednadvacet-phone-${variant.buildType.name}-$gitVersion.apk"
+                output.outputFileName = "phone21-${variant.buildType.name}-$gitVersion.apk"
             }
     }
 

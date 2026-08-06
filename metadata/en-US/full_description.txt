@@ -1,9 +1,10 @@
-Companion phone app for the jednadvacet phone GSM↔SIP gateway. It connects to
-your own gateway box over a private encrypted network and lets you make and
-receive calls and SMS from your SIM card anywhere.
+Phone21 is the phone app for your own Phone21 miniserver. It connects to the
+miniserver over a private encrypted network and lets you call and text from
+your own number anywhere, as if you were at home.
 
-Setup is a single QR scan from the gateway's control panel — no accounts.
+Setup is a single QR scan from the miniserver's control panel — no accounts to
+create.
 
-This is a fork of Linphone (GPLv3) by Belledonne Communications, rebranded and
-adapted for the jednadvacet ecosystem. Source:
-https://github.com/twentyone-cz/jednadvacet-phone-android
+Phone21 is a fork of Linphone (GPLv3) by Belledonne Communications, rebranded
+and adapted for Phone21. Source:
+https://github.com/twentyone-cz/phone21-android

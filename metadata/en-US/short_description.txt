@@ -1,1 +1,1 @@
-Phone app for the jednadvacet GSM gateway — calls and SMS over SIP
+Calls and messages from your own number, through your own miniserver

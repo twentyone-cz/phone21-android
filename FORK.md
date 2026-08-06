@@ -1,4 +1,4 @@
-# Fork linphone-android → jednadvacet phone
+# Fork linphone-android → Phone21
 
 Fork drží **overlay princip**: maximum nového kódu v nových souborech pod
 `app/src/main/java/org/linphone/twentyone/`, minimum dotyků upstream

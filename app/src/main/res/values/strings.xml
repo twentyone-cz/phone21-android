@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 
 <!DOCTYPE resources [
-    <!ENTITY appName "jednadvacet phone">
+    <!ENTITY appName "Phone21">
 ]>
 
 <resources>
@@ -38,7 +38,7 @@
     <string name="website_terms_and_conditions_url" translatable="false">https://phone.twentyone.cz</string>
     <string name="web_platform_register_email_url" translatable="false">https://subscribe.linphone.org/register/email</string>
     <string name="web_platform_forgotten_password_url" translatable="false">https://subscribe.linphone.org</string>
-    <string name="website_translate_weblate_url" translatable="false">https://github.com/twentyone-cz/jednadvacet-phone-android</string>
+    <string name="website_translate_weblate_url" translatable="false">https://github.com/twentyone-cz/phone21-android</string>
     <string name="website_open_source_licences_usage_url" translatable="false">https://wiki.linphone.org/xwiki/wiki/public/view/Linphone/Third%20party%20components%20/#Hlinphone-android</string>
     <string name="conversation_end_to_end_encrypted_bottom_sheet_link" translatable="false"><u>https://phone.twentyone.cz</u></string>
 
@@ -158,9 +158,9 @@
     <string name="assistant_account_login">Login</string>
     <string name="assistant_scan_qr_code">Scan QR code</string>
     <string name="twentyone_landing_title" translatable="false">&appName;</string>
-    <string name="twentyone_landing_subtitle">Připoj se ke své krabičce naskenováním QR kódu z jejího ovládání (záložka Telefon).</string>
+    <string name="twentyone_landing_subtitle">Připoj se ke svému miniserveru naskenováním QR kódu z jeho ovládání (záložka Telefon).</string>
     <string name="twentyone_landing_scan_qr">Naskenovat QR kód</string>
-    <string name="twentyone_landing_manual">Zadat SIP účet ručně</string>
+    <string name="twentyone_landing_manual">Zadat údaje ručně</string>
     <string name="twentyone_tunnel_notification_channel">Připojení k privátní síti</string>
     <string name="twentyone_tunnel_notification_title">&appName;</string>
     <string name="twentyone_tunnel_notification_message">Připojeno k privátní síti</string>
@@ -169,11 +169,11 @@
     <string name="twentyone_tunnel_state_connecting">Připojuje se…</string>
     <string name="twentyone_tunnel_state_needs_login">Není přihlášeno</string>
     <string name="twentyone_tunnel_state_stopped">Odpojeno</string>
-    <string name="twentyone_tunnel_route_direct">Přímé spojení s krabičkou</string>
+    <string name="twentyone_tunnel_route_direct">Přímé spojení s miniserverem</string>
     <string name="twentyone_tunnel_route_relay">Spojení přes přenosový uzel</string>
     <string name="twentyone_tunnel_scope_app">Jen telefonování</string>
-    <string name="twentyone_tunnel_scope_full">Celý telefon přes krabičku</string>
-    <string name="twentyone_tunnel_scope_full_paused">Celý telefon přes krabičku (dočasně jen telefonování)</string>
+    <string name="twentyone_tunnel_scope_full">Celý telefon přes miniserver</string>
+    <string name="twentyone_tunnel_scope_full_paused">Celý telefon přes miniserver (dočasně jen telefonování)</string>
     <string name="twentyone_tunnel_connect">Připojit</string>
     <string name="twentyone_tunnel_disconnect">Odpojit</string>
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>

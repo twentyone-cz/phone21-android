@@ -25,11 +25,11 @@ trap 'git -C "$REPO" checkout -q keystore.properties' EXIT
 
 ( cd "$REPO" && ./gradlew --no-daemon assembleRelease )
 
-APK=$(ls "$REPO"/app/build/outputs/apk/release/jednadvacet-phone-release-*.apk | head -1)
+APK=$(ls "$REPO"/app/build/outputs/apk/release/phone21-release-*.apk | head -1)
 echo "APK: $APK"
 
 if [[ "${NO_PUBLISH:-0}" != "1" ]]; then
-  gh release create "$TAG" --repo twentyone-cz/jednadvacet-phone-android \
-    --title "jednadvacet phone $TAG" --generate-notes \
-    "$APK#jednadvacet-phone-$TAG.apk"
+  gh release create "$TAG" --repo twentyone-cz/phone21-android \
+    --title "Phone21 $TAG" --generate-notes \
+    "$APK#phone21-$TAG.apk"
 fi

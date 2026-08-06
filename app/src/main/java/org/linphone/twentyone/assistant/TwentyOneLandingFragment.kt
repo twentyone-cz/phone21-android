@@ -1,7 +1,7 @@
 /*
  * fork: úvodní obrazovka asistenta bez linphone.org účtů.
  * Nabízí jen QR provisioning (doporučená cesta — QR generuje brána)
- * a ruční SIP účet. Původní LandingFragment zůstává v projektu, ale
+ * a ruční zadání údajů. Původní LandingFragment zůstává v projektu, ale
  * z navigace na něj nevede cesta.
  */
 package org.linphone.twentyone.assistant
