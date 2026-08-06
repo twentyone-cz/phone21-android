@@ -68,11 +68,11 @@
     <string name="notification_keep_app_alive_message">Kliknite pre otvorenie</string>
     <string name="welcome_page_title">Vitajte</string>
     <string name="welcome_page_subtitle">v &appName;</string>
-    <string name="welcome_page_1_message"><b> Bezpečná </b>, <b> otvorená </b> a <b> francúzska </b> komunikačná aplikácia.</string>
-    <string name="welcome_page_2_title">Zabezpečená</string>
-    <string name="welcome_page_2_message">Vaša komunikácia je bezpečná vďaka nášmu <b> koncovému šifrovaniu</b>.</string>
-    <string name="welcome_page_3_title">Otvorená</string>
-    <string name="welcome_page_3_message"><b> Bezplatná </b> a otvorená aplikácia od roku <b>2001</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">SIP adresa skopírovaná do schránky</string>
     <string name="new_account_configured_toast">Nový účet bol nastavený</string>
     <string name="file_successfully_exported_to_media_store_toast">Súbor bol exportovaný do systémovej galérie</string>

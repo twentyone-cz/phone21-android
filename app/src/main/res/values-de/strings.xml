@@ -66,11 +66,11 @@
     <string name="notification_keep_app_alive_message">Zum Öffnen klicken</string>
     <string name="welcome_page_title">Willkommen</string>
     <string name="welcome_page_subtitle">in &appName;</string>
-    <string name="welcome_page_1_message">Eine <b>sichere</b>, <b>Open Source</b> und <b>französische</b> Kommunikations-App.</string>
-    <string name="welcome_page_2_title">Gesichert</string>
-    <string name="welcome_page_2_message">Dank unserer <b>Ende-zu-Ende-Verschlüsselung</b> ist Ihre Verbindung sicher.</string>
-    <string name="welcome_page_3_title">Open source</string>
-    <string name="welcome_page_3_message">Eine <b>kostenlose</b> Open-Source-Anwendung seit <b>2001</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">SIP-Adresse in die Zwischenablage kopiert</string>
     <string name="new_account_configured_toast">Neues Konto konfiguriert</string>
     <string name="file_successfully_exported_to_media_store_toast">Die Datei wurde in die native Galerie exportiert</string>

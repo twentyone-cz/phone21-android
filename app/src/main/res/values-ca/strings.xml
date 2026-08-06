@@ -8,9 +8,9 @@
     </plurals>
     <string name="notification_in_call_foreground_service_error_message">Prem a la notificació per arregar-ho</string>
     <string name="welcome_page_title">Benvingut</string>
-    <string name="welcome_page_2_title">Assegurada</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
     <string name="notification_in_call_foreground_service_error_title">No t\'escolten!</string>
-    <string name="welcome_page_1_message">Un aplicatiu de comunicació <b>segur</b>, <b>de codi obert</b> i <b>en francès</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
     <string name="conversation_delete_locally_label">Esborra-ho per a mi</string>
     <string name="conversation_message_content_deleted_by_us_label"><i>Has esborrat aquest missatge</i></string>
     <string name="conversation_participants_list_header">Participants</string>

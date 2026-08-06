@@ -54,8 +54,8 @@
     <string name="notification_reply_to_message">ຕອບກັບ</string>
     <string name="notification_missed_call_title">ສາຍທີ່ບໍ່ໄດ້ຮັບ</string>
     <string name="welcome_page_title">ຍິນດີຕ້ອນຮັບ</string>
-    <string name="welcome_page_2_title">ປອດໄພ</string>
-    <string name="welcome_page_3_title">ໂອເພນຊອດ</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
     <string name="sip_address_copied_to_clipboard_toast">ຄັດລອກທີ່ຢູ່ SIP ໃສ່ຄລິບບອດແລ້ວ</string>
     <string name="remote_provisioning_config_applied_toast">ນຳໃຊ້ການຕັ້ງຄ່າສຳເລັດແລ້ວ</string>
     <string name="assistant_dialog_general_terms_and_privacy_policy_title">ຂໍ້ກຳນົດທົ່ວໄປ ແລະ ນະໂຍບາຍຄວາມເປັນສ່ວນຕົວ</string>

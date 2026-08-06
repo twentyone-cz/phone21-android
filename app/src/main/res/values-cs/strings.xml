@@ -30,7 +30,7 @@
     <string name="call_error_user_not_found_toast">Uživatel nebyl nalezen</string>
     <string name="conference_failed_to_add_participant_invalid_address_toast">Neplatná SIP adresa, nelze přidat do konference</string>
     <string name="dialog_install">Instalovat</string>
-    <string name="welcome_page_2_message">Vaše komunikace je bezpečná díky našemu <b>koncovému šifrování</b>.</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <string name="remote_provisioning_config_failed_toast">Došlo k chybě při pokusu o stažení a použití vzdálené konfigurace</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Některé funkce jako skupinové zprávy nebo videokonference vyžadují účet &appName;\n\nTyto funkce jsou skryté, pokud se zaregistrujete pomocí SIP účtu třetí strany.\n\nPro aktivaci v komerčním projektu nás prosím kontaktujte.</string>
     <string name="assistant_permissions_subtitle">Pro plné využívání &appName; potřebujeme, abyste nám udělili následující oprávnění:</string>
@@ -184,10 +184,10 @@
     <string name="notification_keep_app_alive_message">Klepněte pro otevření</string>
     <string name="welcome_page_title">Vítejte</string>
     <string name="welcome_page_subtitle">v &appName;</string>
-    <string name="welcome_page_1_message"><b>Bezpečná</b>, <b> otevřená</b> a<b> Francouzská</b> komunikační aplikace.</string>
-    <string name="welcome_page_2_title">Zabezpečená</string>
-    <string name="welcome_page_3_title">Otevřená</string>
-    <string name="welcome_page_3_message"><b>Bezplatná</b> a otevřená aplikace od roku <b>2001</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">SIP adresa zkopírována do schránky</string>
     <string name="new_account_configured_toast">Nový účet byl nastaven</string>
     <string name="file_successfully_exported_to_media_store_toast">Soubor byl exportován do systémové galerie</string>

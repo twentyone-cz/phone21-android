@@ -48,10 +48,10 @@
     <string name="notification_keep_app_alive_message">Érintse meg a megnyitáshoz</string>
     <string name="welcome_page_title">Üdvözöljük</string>
     <string name="welcome_page_subtitle">a &appName;-nál</string>
-    <string name="welcome_page_1_message">Egy <b>biztonságos</b>, <b>nyílt-forráskódú</b> és <b>francia</b> kommunikációs appnál.</string>
-    <string name="welcome_page_2_title">Biztonságos</string>
-    <string name="welcome_page_3_title">Nyílt forráskódú</string>
-    <string name="welcome_page_3_message">Egy <b>ingyenes</b> és nyílt forráskódú alkalmazás <b>2001</b> óta.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="notification_push_received_message">Új üzenetek fogadása</string>
     <string name="notification_chat_message_reaction_received">%1$s Reagált rá: %2$s</string>
     <string name="new_account_configured_toast">Az új fiók konfigurálva</string>
@@ -116,7 +116,7 @@
         <item quantity="one">%s fájl letöltve</item>
         <item quantity="other">%s fájl letöltve</item>
     </plurals>
-    <string name="welcome_page_2_message">A kommunikációja biztonságban van, köszönhetően a <b>végpontok közötti titkosításunknak</b>.</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <string name="media_playback_low_volume_warning_toast">A hangerő alacsony, lehet, nem hall semmit!</string>
     <string name="remote_provisioning_config_failed_toast">Hiba történt a távoli konfiguráció letöltése és alkalmazása közben</string>
     <string name="assistant_login_third_party_sip_account">Harmadik féltől származó SIP fiók használata</string>

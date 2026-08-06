@@ -64,11 +64,11 @@
     <string name="notification_keep_app_alive_message">Kliknij, aby otworzyć</string>
     <string name="welcome_page_title">Witamy</string>
     <string name="welcome_page_subtitle">w &appName;</string>
-    <string name="welcome_page_1_message"><b>Bezpieczna</b> , <b>otwartoźródłowa</b> i <b>francuska</b> aplikacja komunikacyjna.</string>
-    <string name="welcome_page_2_title">Zabezpieczone</string>
-    <string name="welcome_page_2_message">Twoja komunikacja jest bezpieczna dzięki naszemu <b>szyfrowaniu typu end-to-end</b>.</string>
-    <string name="welcome_page_3_title">Open source</string>
-    <string name="welcome_page_3_message"><b>Bezpłatna</b> aplikacja o otwartym kodzie źródłowym od <b>2001</b> roku.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">Adres SIP został skopiowany do schowka</string>
     <string name="new_account_configured_toast">Nowe konto zostało skonfigurowane</string>
     <string name="file_successfully_exported_to_media_store_toast">Plik został wyeksportowany do galerii natywnej</string>

@@ -102,10 +102,10 @@
     <string name="notification_keep_app_alive_message">点击打开</string>
     <string name="welcome_page_title">欢迎</string>
     <string name="welcome_page_subtitle">在&appName;</string>
-    <string name="welcome_page_2_title">安全</string>
-    <string name="welcome_page_2_message">通讯是 <b>端对端 </b>安全的。</string>
-    <string name="welcome_page_3_title">开源</string>
-    <string name="welcome_page_3_message">一款 <b>自由</b>、开源应用，自 <b>2001</b>。</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">SIP地址已复制到剪贴板</string>
     <string name="new_account_configured_toast">新账户已配置</string>
     <string name="file_successfully_exported_to_media_store_toast">文件已经导出到本地相册</string>
@@ -773,7 +773,7 @@
     <string name="settings_advanced_enable_auto_answer_incoming_calls_after_delay_title">自动应答呼叫前的延迟</string>
     <string name="history_dialog_delete_call_logs_title">您真的要删除与该人的历史记录吗？</string>
     <string name="assistant_dialog_general_terms_and_privacy_policy_title">通用条款和隐私政策</string>
-    <string name="welcome_page_1_message">一款 <b>安全</b>、<b>开源</b> 、<b>法国</b> 通讯应用app。</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
     <string name="drawer_menu_manage_account">管理个人资料</string>
     <string name="settings_advanced_use_smff_format_for_call_recordings_subtitle">将使用专有文件格式</string>
     <string name="help_version_up_to_date_toast_message">版本是最新的</string>

@@ -50,8 +50,8 @@
     <string name="welcome_page_title">Welkom</string>
     <string name="notification_file_transfer_title">&amp;appNaam;</string>
     <string name="welcome_page_subtitle">in &appName;</string>
-    <string name="welcome_page_2_title">Beveiligd</string>
-    <string name="welcome_page_2_message">Dankzij onze <b>end-to-end-encryptie</b> is uw communicatie veilig.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <string name="sip_address_copied_to_clipboard_toast">SIP-adres gekopieerd naar klembord</string>
     <string name="new_account_configured_toast">Nieuw account geconfigureerd</string>
     <string name="export_file_to_media_store_error_toast">Fout bij het exporteren van een bestand naar de galerij</string>
@@ -249,9 +249,9 @@
     <string name="settings_security_enable_vfs_dialog_confirmation_message">Zodra dit is geactiveerd, moet je de app opnieuw starten.\nDaarna wordt alle applicatiedata versleuteld en is deze alleen nog toegankelijk via de applicatie.\n\nWees voorzichtig: dit kan niet ongedaan worden gemaakt!</string>
     <string name="settings_calls_change_ringtone_title">Beltoon wijzigen</string>
     <string name="settings_conversations_mark_as_read_when_dismissing_notif_title">Gesprek als gelezen markeren bij het sluiten van berichtmelding</string>
-    <string name="welcome_page_1_message">Een <b>beveiligde</b>, <b>open source</b> en <b>Franstalige</b> communicatie-app.</string>
-    <string name="welcome_page_3_title">Open-source</string>
-    <string name="welcome_page_3_message">Een <b>gratis</b> en open source applicatie sinds <b>2001</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="file_successfully_exported_to_media_store_toast">Bestand is geëxporteerd naar de galerij</string>
     <string name="remote_provisioning_config_applied_toast">Configuratie succesvol toegepast</string>
     <string name="assistant_recover_phone_number_account_label">Een telefoonnummer</string>

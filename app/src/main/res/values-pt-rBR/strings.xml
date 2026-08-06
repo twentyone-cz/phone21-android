@@ -47,7 +47,7 @@
     <string name="help_troubleshooting_debug_logs_upload_error_toast_message">Falha ao enviar logs de depuração</string>
     <string name="settings_calls_adaptive_rate_control_title">Controle adaptativo de taxa</string>
     <string name="settings_conversations_mark_as_read_when_dismissing_notif_title">Marcar conversa como lida ao dispensar notificação de mensagem</string>
-    <string name="welcome_page_2_message">Suas comunicações estão seguras graças à nossa <b>criptografia de ponta a ponta</b> .</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <string name="help_about_user_guide_subtitle">Aprenda a dominar todos os recursos do aplicativo, passo a passo.</string>
     <string name="help_troubleshooting_subtitle">Transmita seus logs de diagnóstico para facilitar a resolução de bugs.</string>
     <string name="settings_calls_vibrate_while_ringing_title">Vibrar enquanto a chamada recebida está tocando</string>
@@ -127,9 +127,9 @@
     <string name="notification_keep_app_alive_message">Clique para abrir</string>
     <string name="welcome_page_title">Bem vindo</string>
     <string name="welcome_page_subtitle">ao &appName;</string>
-    <string name="welcome_page_2_title">Seguro</string>
-    <string name="welcome_page_3_title">Código aberto</string>
-    <string name="welcome_page_3_message">Um aplicativo <b>gratuito</b> e de código aberto desde <b>2001</b> .</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">Endereço SIP copiado para a área de transferência</string>
     <string name="new_account_configured_toast">Nova conta configurada</string>
     <string name="file_successfully_exported_to_media_store_toast">O arquivo foi exportado para a galeria nativa</string>
@@ -325,7 +325,7 @@
     <string name="settings_advanced_audio_codecs_stereo_subtitle">estéreo</string>
     <string name="settings_advanced_video_codecs_title">Codecs de vídeo</string>
     <string name="notification_file_transfer_title">&appName;</string>
-    <string name="welcome_page_1_message">Um aplicativo de comunicação <b>francês</b>, <b>seguro</b> e de <b>código aberto</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
     <string name="conversation_menu_go_to_info">Informações da conversa</string>
     <string name="conversation_menu_media_files">Mídia</string>
     <string name="settings_contacts_presence_subscribe_title">Acompanhar o status de presença</string>

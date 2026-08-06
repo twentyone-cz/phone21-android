@@ -17,9 +17,9 @@
     <string name="today">Сьогодні</string>
     <string name="yesterday">Вчора</string>
     <string name="welcome_page_subtitle">в &appName;</string>
-    <string name="welcome_page_2_title">Захищений</string>
-    <string name="welcome_page_2_message">Ваше спілкування убезпечене завдяки нашому <b>наскрізному шифруванню</b>.</string>
-    <string name="welcome_page_3_title">Відкритий код</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
     <string name="new_account_configured_toast">Новий обліковий запис налаштовано</string>
     <string name="file_successfully_exported_to_documents_toast">Файл завантажено до документів</string>
     <string name="export_file_to_documents_error_toast">Помилка під час спроби завантаження файлу до документів</string>
@@ -30,7 +30,7 @@
     <string name="assistant_dialog_privacy_policy_label">політика конфіденційності</string>
     <string name="file_successfully_exported_to_media_store_toast">Файл завантажено до галереї</string>
     <string name="welcome_page_title">Ласкаво просимо</string>
-    <string name="welcome_page_3_message"><b>Безкоштовний</b> застосунок з відкритим кодом з <b>2001 року</b>.</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="sip_address_copied_to_clipboard_toast">SIP-адресу скопійовано в буфер обміну</string>
     <string name="export_file_to_media_store_error_toast">Помилка під час спроби завантажити файл до галереї</string>
     <plurals name="days">
@@ -87,7 +87,7 @@
         <item quantity="other">%s файлів завантажується</item>
     </plurals>
     <string name="notification_keep_app_alive_message">Натисніть, щоб відкрити</string>
-    <string name="welcome_page_1_message"><b>Захищений</b>, <b>з відкритим вихідним кодом</b> та <b>французький</b> застосунок для спілкування.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
     <string name="media_playback_low_volume_warning_toast">Гучність занадто низька, можливо, ви нічого не чуєте!</string>
     <string name="remote_provisioning_config_failed_toast">Помилка під час спроби завантажити та застосувати віддалену конфігурацію</string>
     <string name="assistant_dialog_general_terms_and_privacy_policy_message">Продовжуючи, Ви приймаєте наші %1$s та %2$s.</string>

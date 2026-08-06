@@ -80,11 +80,11 @@
     <!-- First screens user see when app is installed and started -->
     <string name="welcome_page_title">Bienvenue</string>
     <string name="welcome_page_subtitle">sur &appName;</string>
-    <string name="welcome_page_1_message">Une application de communication <b>sécurisée</b>, <b>open source</b> et <b>française</b>.</string>
-    <string name="welcome_page_2_title">Sécurisé</string>
-    <string name="welcome_page_2_message">Vos communications sont en sécurité grâce au <b>chiffrement de bout en bout</b>.</string>
-    <string name="welcome_page_3_title">Open source</string>
-    <string name="welcome_page_3_message">Une application open source et un <b>service gratuit</b> depuis <b>2001</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <!-- Generic toasts -->
     <string name="phone_number_copied_to_clipboard_toast">Numéro de téléphone copié</string>
     <string name="sip_address_copied_to_clipboard_toast">Adresse copiée</string>

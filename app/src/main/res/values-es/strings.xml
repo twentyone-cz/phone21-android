@@ -58,9 +58,9 @@
     <string name="notification_keep_app_alive_message">Clic para abrir</string>
     <string name="welcome_page_title">Bienvenido</string>
     <string name="welcome_page_subtitle">en &appName;</string>
-    <string name="welcome_page_1_message">Una aplicación de comunicación <b>segura</b>, <b>de código abierto</b> y <b>en francés</b>.</string>
-    <string name="welcome_page_2_title">Segura</string>
-    <string name="welcome_page_3_title">código abierto</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
     <string name="sip_address_copied_to_clipboard_toast">Dirección SIP copiada al portapapeles</string>
     <string name="new_account_configured_toast">Nueva cuenta configurada</string>
     <string name="file_successfully_exported_to_media_store_toast">El archivo se ha exportado a la galería nativa</string>
@@ -85,7 +85,7 @@
     <string name="assistant_no_account_yet">¿Aún no tienes cuenta?</string>
     <string name="assistant_account_register">Registrar</string>
     <string name="assistant_account_creation_sms_confirmation_title">Confirma tu número de teléfono</string>
-    <string name="welcome_page_3_message">Una aplicación <b>gratuita</b> y de código abierto desde <b>2001</b>.</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="export_file_to_documents_error_toast">Error tratando de exportar archivo a documentos</string>
     <string name="media_player_generic_error_toast">Error al intentar crear un reproductor multimedia</string>
     <string name="assistant_dialog_confirm_phone_number_message">¿Estás seguro que tu número de teléfono es %s?</string>
@@ -96,7 +96,7 @@
         <item quantity="many">%s archivos en proceso de carga</item>
         <item quantity="other">%s archivo en proceso de carga</item>
     </plurals>
-    <string name="welcome_page_2_message">Tus comunicaciones están seguras gracias a nuestra <b>encriptación de extremo a extremo</b>.</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <plurals name="notification_file_transfer_download">
         <item quantity="one">%s Archivo en descarga</item>
         <item quantity="many">%s Archivos en descarga</item>
