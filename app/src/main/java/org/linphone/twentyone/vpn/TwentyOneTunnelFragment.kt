@@ -12,8 +12,8 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.Switch
 import android.widget.TextView
+import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import org.linphone.R
@@ -28,7 +28,10 @@ class TwentyOneTunnelFragment : Fragment() {
     private lateinit var routeView: TextView
     private lateinit var addressView: TextView
     private lateinit var scopeLabel: TextView
-    private lateinit var scopeSwitch: Switch
+    // POZOR: v AppCompat/Material aktivitě se <Switch> v layoutu nafoukne jako
+    // SwitchCompat, což NENÍ potomek android.widget.Switch — findViewById<Switch>
+    // proto padalo na ClassCastException hned při otevření obrazovky
+    private lateinit var scopeSwitch: SwitchCompat
     private lateinit var toggleButton: Button
 
     private val vpnPermission = registerForActivityResult(

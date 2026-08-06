@@ -28,7 +28,7 @@
     <string name="dialog_deny">Recusar</string>
     <string name="notification_channel_call_name">&appName; notificações de chamadas ativas</string>
     <string name="notification_channel_service_desc">Este serviço será executado o tempo todo para manter o aplicativo ativo e permitir que você receba chamadas e mensagens sem notificações push.</string>
-    <string name="assistant_permissions_access_camera_title"><b>Acessar a câmera:</b> Para capturar vídeo durante chamadas de vídeo e conferências.</string>
+    <string name="assistant_permissions_access_camera_title"><b>Fotoaparát:</b> na načtení QR kódu, kterým se aplikace nastaví. Video se nikam neposílá.</string>
     <string name="help_title">Ajuda</string>
     <string name="help_about_title">Sobre o &appName;</string>
     <string name="settings_contacts_ldap_search_filter_title">Filtro</string>
@@ -58,8 +58,8 @@
     <string name="assistant_qr_code_invalid_toast">QR code inválido!</string>
     <string name="assistant_create_account_using_email_on_our_web_platform">Crie uma conta com seu e-mail em:</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Alguns recursos exigem uma conta &appName;, como mensagens em grupo, videoconferências…\n\nEsses recursos ficam ocultos quando você se registra com uma conta SIP de terceiros.\n\nPara habilitá-los em um projeto comercial, entre em contato conosco.</string>
-    <string name="assistant_permissions_skip_permissions">Fazer isso mais tarde</string>
-    <string name="assistant_permissions_read_contacts_title"><b>Ler contatos:</b> Para exibir seus contatos e encontrar quem está usando o &appName;.</string>
+    <string name="assistant_permissions_skip_permissions">Až později</string>
+    <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>
     <string name="assistant_recover_phone_number_account_unavailable_no_push_warning">As notificações push não parecem estar disponíveis no seu dispositivo, mas são obrigatórias para recuperar uma conta de número de telefone no aplicativo móvel.</string>
     <string name="help_about_privacy_policy_subtitle">Quais informações o &appName; coleta e usa</string>
     <string name="help_error_checking_version_toast_message">Ocorreu um erro ao verificar por atualizações</string>
@@ -165,11 +165,11 @@
     <string name="assistant_account_register_unexpected_error">Ocorreu um erro inesperado, por favor, tente novamente mais tarde</string>
     <string name="assistant_account_login_forbidden_error">Nome de usuário ou senha incorretos</string>
     <string name="assistant_account_login_error">Falha ao fazer login: o código de erro é %s</string>
-    <string name="assistant_permissions_title">Conceder permissões</string>
+    <string name="assistant_permissions_title">Povolení</string>
     <string name="assistant_permissions_grant_all_of_them">OK</string>
-    <string name="assistant_permissions_subtitle">Para aproveitar ao máximo o &appName; precisamos que você nos conceda as seguintes permissões:</string>
-    <string name="assistant_permissions_post_notifications_title"><b>Publicar notificações:</b> Para ser informado quando você receber uma mensagem ou uma chamada.</string>
-    <string name="assistant_permissions_record_audio_title"><b>Gravar áudio:</b> Para que seu correspondente possa ouvi-lo e para gravar mensagens de voz.</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
+    <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>
+    <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
     <string name="assistant_forgotten_password_title">Senha esquecida</string>
     <string name="assistant_forgotten_password_subtitle">Escolha como recuperar sua conta.</string>
     <string name="assistant_forgotten_password_message">Você criou sua conta usando:</string>

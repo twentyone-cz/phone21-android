@@ -52,13 +52,14 @@
             android:textSize="14sp"
             android:textColor="?attr/color_main2_600" />
 
-        <Switch
+        <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/tunnel_scope_switch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/twentyone_tunnel_scope_full"
             android:textColor="?attr/color_main2_700" />
+
 
         <Button
             android:id="@+id/tunnel_toggle"

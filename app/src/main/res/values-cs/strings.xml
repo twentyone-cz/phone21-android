@@ -33,8 +33,8 @@
     <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <string name="remote_provisioning_config_failed_toast">Došlo k chybě při pokusu o stažení a použití vzdálené konfigurace</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Některé funkce jako skupinové zprávy nebo videokonference vyžadují účet &appName;\n\nTyto funkce jsou skryté, pokud se zaregistrujete pomocí SIP účtu třetí strany.\n\nPro aktivaci v komerčním projektu nás prosím kontaktujte.</string>
-    <string name="assistant_permissions_subtitle">Pro plné využívání &appName; potřebujeme, abyste nám udělili následující oprávnění:</string>
-    <string name="assistant_permissions_record_audio_title"><b>Nahrávání zvuku:</b> Aby Vás váš protějšek slyšel a pro nahrávání hlasových zpráv.</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
+    <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
     <string name="help_about_version_title">Verze</string>
     <string name="help_about_check_for_update">Kontrola aktualizací</string>
     <string name="help_troubleshooting_share_logs">Sdílet logy</string>
@@ -62,7 +62,7 @@
     <string name="assistant_recover_phone_number_account_unavailable_no_push_warning">Push notifikace se na vašem zařízení nezdají být dostupné, ale jsou nezbytné pro obnovení účtu s telefonním číslem v mobilní aplikaci.</string>
     <string name="export_file_to_media_store_error_toast">Chyba při exportování souboru do systémové galerie</string>
     <string name="media_player_generic_error_toast">Chyba při pokusu o vytvoření přehrávače médií</string>
-    <string name="assistant_permissions_post_notifications_title"><b>Odesílání notifikací:</b> Abyste byli informováni, když obdržíte zprávu nebo hovor.</string>
+    <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>
     <string name="conversation_failed_to_create_toast">Vytvoření konverzace se nezdařilo!</string>
     <string name="conversation_ephemeral_messages_enabled_toast">Mizející zprávy byly povoleny</string>
     <string name="conversation_no_app_registered_to_handle_content_type_error_toast">Nenalezena žádná aplikace k otevření tohoto typu souboru</string>
@@ -222,11 +222,11 @@
     <string name="assistant_account_register_unexpected_error">Nastala neočekávaná chyba, zkuste to prosím znovu později</string>
     <string name="assistant_account_login_forbidden_error">Nesprávné uživatelské jméno nebo heslo</string>
     <string name="assistant_account_login_error">Přihlášení se nezdařilo: chybový kód je %s</string>
-    <string name="assistant_permissions_title">Udělit oprávnění</string>
+    <string name="assistant_permissions_title">Povolení</string>
     <string name="assistant_permissions_grant_all_of_them">OK</string>
-    <string name="assistant_permissions_skip_permissions">Provést později</string>
-    <string name="assistant_permissions_read_contacts_title"><b>Čtení kontaktů:</b> Pro zobrazení vašich kontaktů a zjištění, kdo používá &appName;.</string>
-    <string name="assistant_permissions_access_camera_title"><b>Přístup ke kameře:</b> Pro zachycení videa během videohovorů a konferencí.</string>
+    <string name="assistant_permissions_skip_permissions">Až později</string>
+    <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>
+    <string name="assistant_permissions_access_camera_title"><b>Fotoaparát:</b> na načtení QR kódu, kterým se aplikace nastaví. Video se nikam neposílá.</string>
     <string name="assistant_forgotten_password_title">Zapomenuté heslo</string>
     <string name="assistant_forgotten_password_subtitle">Zvolte způsob obnovy svého účtu.</string>
     <string name="assistant_forgotten_password_message">Váš účet byl vytvořen pomocí:</string>

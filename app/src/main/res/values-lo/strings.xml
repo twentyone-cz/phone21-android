@@ -76,9 +76,9 @@
     <string name="assistant_account_register_push_notification_not_received_error">ບໍ່ໄດ້ຮັບການແຈ້ງເຕືອນພຸຊພ້ອມລະຫັດຢືນຢັນພາຍໃນ 5 ວິນາທີ, ກະລຸນາລອງໃໝ່ພາຍຫຼັງ</string>
     <string name="assistant_account_register_unexpected_error">ເກີດຂໍ້ຜິດພາດທີ່ບໍ່ຄາດຄິດ, ກະລຸນາລອງໃໝ່ພາຍຫຼັງ</string>
     <string name="assistant_account_login_forbidden_error">ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ</string>
-    <string name="assistant_permissions_title">ອະນຸຍາດສິດການເຂົ້າເຖິງ</string>
+    <string name="assistant_permissions_title">Povolení</string>
     <string name="assistant_permissions_grant_all_of_them">ຕົກລົງ</string>
-    <string name="assistant_permissions_skip_permissions">ໄວ້ເຮັດພາຍຫຼັງ</string>
+    <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="bottom_navigation_contacts_label">ຜູ້ຕິດຕໍ່</string>
     <string name="bottom_navigation_calls_label">ການໂທ</string>
     <string name="bottom_navigation_conversations_label">ການສົນທະນາ</string>

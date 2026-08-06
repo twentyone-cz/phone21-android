@@ -248,12 +248,12 @@
     <string name="assistant_account_register_unexpected_error">Произошла непредвиденная ошибка, попробуйте еще раз позже</string>
     <string name="assistant_account_login_forbidden_error">Неправильное имя пользователя или пароль</string>
     <string name="assistant_account_login_error">Не удалось войти: код ошибки %s</string>
-    <string name="assistant_permissions_title">Предоставить разрешения</string>
+    <string name="assistant_permissions_title">Povolení</string>
     <string name="assistant_permissions_grant_all_of_them">ОК</string>
-    <string name="assistant_permissions_skip_permissions">Сделайте это позже</string>
-    <string name="assistant_permissions_read_contacts_title"><b>Чтение контактов:</b> Чтобы отобразить ваши контакты и узнать, кто использует &appName;.</string>
-    <string name="assistant_permissions_record_audio_title"><b>Запись звука:</b> Чтобы ваш собеседник мог слышать вас и записывать голосовые сообщения.</string>
-    <string name="assistant_permissions_access_camera_title"><b>Доступ к камере.</b> Для записи видео во время видеозвонков и конференций.</string>
+    <string name="assistant_permissions_skip_permissions">Až později</string>
+    <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>
+    <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
+    <string name="assistant_permissions_access_camera_title"><b>Fotoaparát:</b> na načtení QR kódu, kterým se aplikace nastaví. Video se nikam neposílá.</string>
     <string name="assistant_forgotten_password_title">Пароль забыт</string>
     <string name="assistant_forgotten_password_subtitle">Выберите способ восстановления вашей учетной записи.</string>
     <string name="assistant_recover_phone_number_account_label">Номер телефона</string>
@@ -788,7 +788,7 @@
     <string name="content_description_chat_bubble_reply">Это сообщение является ответом на предыдущее сообщение</string>
     <string name="content_description_chat_bubble_toggle_voice_message_play_pause">Воспроизводит/приостанавливает воспроизведение голосового сообщения</string>
     <string name="content_description_chat_unsecured">Эта беседа не защищена</string>
-    <string name="assistant_permissions_post_notifications_title"><b>Отправлять уведомления:</b> Чтобы получать информацию о получении сообщения или звонка.</string>
+    <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>
     <string name="assistant_forgotten_password_message">Вы создали свой аккаунт, используя:</string>
     <string name="help_troubleshooting_debug_logs_upload_error_toast_message">Не удалось загрузить журналы отладки</string>
     <string name="settings_security_enable_vfs_dialog_confirmation_title">Вы действительно хотите всё зашифровать?</string>
@@ -821,7 +821,7 @@
     <string name="full_screen_intent_permission_not_granted">Разрешение на отображение входящего вызова не предоставлено!</string>
     <string name="assistant_forgotten_password"><u>Забыли пароль?</u></string>
     <string name="content_description_not_trusted_contact_icon">Ненадёжный контакт!</string>
-    <string name="assistant_permissions_subtitle">Чтобы в полной мере насладиться &appName; нам нужно, чтобы вы предоставили следующие разрешения:</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
     <string name="help_title">Помощь</string>
     <string name="help_dialog_update_available_message">Доступна новая версия %s. Хотите обновить?</string>
     <string name="help_troubleshooting_app_version_title">Версия приложения</string>

@@ -24,6 +24,8 @@ import android.app.Application
 import android.content.Context
 import android.os.PowerManager
 import androidx.annotation.MainThread
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
@@ -60,6 +62,11 @@ class LinphoneApplication : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         val context = applicationContext
+
+        // fork: produkt je český, ale upstream překlady se řídí jazykem
+        // telefonu — na anglicky nastaveném přístroji pak byla polovina
+        // obrazovek anglicky a naše česky. Držíme jeden jazyk.
+        AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("cs"))
 
         val powerManager = context.getSystemService(POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(

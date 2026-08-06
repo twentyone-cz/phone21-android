@@ -113,9 +113,9 @@
     <string name="assistant_account_register_unexpected_error">Сталася неочікувана помилка, спробуйте ще раз пізніше</string>
     <string name="assistant_account_login_forbidden_error">Невірне ім\'я користувача або пароль</string>
     <string name="assistant_account_login_error">Не вдалося залогінитись: код помилки %s</string>
-    <string name="assistant_permissions_title">Надати дозволи</string>
+    <string name="assistant_permissions_title">Povolení</string>
     <string name="assistant_permissions_grant_all_of_them">ОК</string>
-    <string name="assistant_permissions_skip_permissions">Зробіть це пізніше</string>
+    <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="assistant_forgotten_password_title">Забули пароль?</string>
     <string name="assistant_forgotten_password_subtitle">Оберіть, як відновити свій обліковий запис.</string>
     <string name="assistant_forgotten_password_message">Ви створили свій обліковий запис, використовуючи:</string>
@@ -150,7 +150,7 @@
     <string name="assistant_login_third_party_sip_account">Використати сторонній обліковий запис SIP</string>
     <string name="assistant_no_account_yet">Ще немає облікового запису?</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Для деяких функцій потрібен обліковий запис &appName;, такі як груповий обмін повідомленнями, відеоконференції…\n\nЦі функції приховані, якщо ви реєструєтесь за допомогою стороннього облікового запису SIP.\n\nЩоб увімкнути їх у комерційному проєкті, зв’яжіться з нами.</string>
-    <string name="assistant_permissions_subtitle">Щоб повною мірою користуватися &appName;, вам потрібно надати застосунку наступні дозволи:</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
     <string name="assistant_recover_phone_number_account_unavailable_no_push_warning">Схоже, push-сповіщення недоступні на вашому пристрої, але вони обов’язкові для відновлення облікового запису номера телефону в мобільному застосунку.</string>
     <string name="drawer_menu_account_connection_status_failed">Помилка</string>
     <string name="drawer_menu_no_account_configured_yet">Обліковий запис ще не налаштовано</string>
@@ -239,10 +239,10 @@
     <string name="content_description_play_pause_audio_playback">Починає/призупиняє відтворення аудіо</string>
     <string name="conversation_no_app_registered_to_handle_content_type_dialog_message">Не знайдено жодної програми для відкриття цього типу файлу.\n\nСпробувати відкрити його як звичайний текстовий файл?</string>
     <string name="conversation_no_app_registered_to_handle_content_type_error_toast">Не знайдено програми для відкриття цього типу файлу</string>
-    <string name="assistant_permissions_read_contacts_title"><b>Читати контакти:</b> Для відображення своїх контактів та знайти тих, хто користується &appName;.</string>
-    <string name="assistant_permissions_post_notifications_title"><b>Сповіщення про публікації:</b>Щоб бути в курсі отримання повідомлення або дзвінка.</string>
-    <string name="assistant_permissions_record_audio_title"><b>Запис аудіо:</b> Щоб ваш співрозмовник міг вас чути та записувати голосові повідомлення.</string>
-    <string name="assistant_permissions_access_camera_title"><b>Доступ до камери:</b> Для запису відео під час відеодзвінків та конференцій.</string>
+    <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>
+    <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>
+    <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
+    <string name="assistant_permissions_access_camera_title"><b>Fotoaparát:</b> na načtení QR kódu, kterým se aplikace nastaví. Video se nikam neposílá.</string>
     <string name="generic_address_picker_contacts_list_title">Контакти</string>
     <string name="contact_sms_invite_content">Привіт, приєднуйтесь до мене на &appName;! Ви можете завантажити його безкоштовно за адресою %s</string>
     <string name="generic_address_picker_favorites_list_title">Обрані</string>
