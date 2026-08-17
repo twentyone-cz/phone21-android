@@ -58,14 +58,26 @@ object TwentyOneProvisioning {
     private var lastRoute = "?"
 
     private fun download(url: String): ByteArray {
+        // Nejdřív stejnou cestou jako prohlížeč (bez vázání na síť) — na
+        // reálném telefonu prošla, zatímco socket vázaný na wifi vytimeoutoval.
+        // Vázání zůstává jako záloha pro případ, že výchozí cestu drží tunel.
+        val parsed = URL(url)
+        try {
+            lastRoute = "výchozí síť"
+            return fetch(parsed.openConnection() as HttpURLConnection)
+        } catch (e: Exception) {
+            if (e is IllegalStateException) throw e     // HTTP chyba — síť fungovala
+            Log.w("$TAG Default-network fetch failed [$e], retrying bound to wifi")
+        }
         val (network, route) = nonVpnNetwork(coreContext.context)
         lastRoute = route
         if (network == null) {
             throw java.net.NoRouteToHostException("bez wifi")
         }
-        val parsed = URL(url)
-        val connection = network.openConnection(parsed)
-        (connection as HttpURLConnection)
+        return fetch(network.openConnection(parsed) as HttpURLConnection)
+    }
+
+    private fun fetch(connection: HttpURLConnection): ByteArray {
         connection.connectTimeout = 10_000
         connection.readTimeout = 10_000
         try {
