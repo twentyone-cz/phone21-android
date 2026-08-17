@@ -74,6 +74,7 @@ import org.linphone.utils.AppUtils
 import org.linphone.utils.DialogUtils
 import org.linphone.utils.Event
 import org.linphone.utils.FileUtils
+import org.linphone.twentyone.TwentyOneProvisioning
 import org.linphone.utils.LinphoneUtils
 import androidx.core.content.edit
 import org.linphone.ui.sso.SingleSignOnActivity
@@ -822,13 +823,10 @@ class MainActivity : GenericActivity() {
             return
         }
 
-        coreContext.postOnCoreThread { core ->
-            core.provisioningUri = url
-            Log.w("$TAG Remote provisioning URL set to [$url], restarting Core now")
-            core.stop()
-            Log.i("$TAG Core has been stopped, let's restart it")
-            core.start()
-            Log.i("$TAG Core has been restarted")
+        TwentyOneProvisioning.fetchAndApply(url) { reason ->
+            coreContext.showFormattedRedToastEvent.postValue(
+                Event(Pair(reason, R.drawable.warning_circle))
+            )
         }
     }
 

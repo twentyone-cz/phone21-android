@@ -31,6 +31,7 @@ import org.linphone.ui.GenericViewModel
 import org.linphone.utils.Event
 import org.linphone.R
 import org.linphone.core.GlobalState
+import org.linphone.twentyone.TwentyOneProvisioning
 import org.linphone.utils.LinphoneUtils
 
 class QrCodeViewModel
@@ -83,20 +84,14 @@ class QrCodeViewModel
                     return
                 }
 
-                Log.i(
-                    "$TAG Setting QR code URL [$url], restarting the Core outside of iterate() loop to apply configuration changes"
-                )
+                Log.i("$TAG Downloading provisioning from QR code URL [$url]")
                 core.nativePreviewWindowId = null
                 core.isVideoPreviewEnabled = false
                 core.isQrcodeVideoPreviewEnabled = false
-                core.provisioningUri = url
 
-                coreContext.postOnCoreThread { core ->
-                    Log.i("$TAG Stopping Core")
-                    core.stop()
-                    Log.i("$TAG Core has been stopped, restarting it")
-                    core.start()
-                    Log.i("$TAG Core has been restarted")
+                TwentyOneProvisioning.fetchAndApply(url) { reason ->
+                    showFormattedRedToast(reason, R.drawable.warning_circle)
+                    onErrorEvent.postValue(Event(true))
                 }
             }
         }
