@@ -150,7 +150,7 @@
     <string name="assistant_login_third_party_sip_account">Використати сторонній обліковий запис SIP</string>
     <string name="assistant_no_account_yet">Ще немає облікового запису?</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Для деяких функцій потрібен обліковий запис &appName;, такі як груповий обмін повідомленнями, відеоконференції…\n\nЦі функції приховані, якщо ви реєструєтесь за допомогою стороннього облікового запису SIP.\n\nЩоб увімкнути їх у комерційному проєкті, зв’яжіться з нами.</string>
-    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění. Android se pak zeptá ještě na <b>zařízení v okolí</b> — to je Bluetooth, aby šel hovor přehodit do sluchátek nebo autorádia.</string>
     <string name="assistant_recover_phone_number_account_unavailable_no_push_warning">Схоже, push-сповіщення недоступні на вашому пристрої, але вони обов’язкові для відновлення облікового запису номера телефону в мобільному застосунку.</string>
     <string name="drawer_menu_account_connection_status_failed">Помилка</string>
     <string name="drawer_menu_no_account_configured_yet">Обліковий запис ще не налаштовано</string>

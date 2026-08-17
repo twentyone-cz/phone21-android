@@ -242,7 +242,7 @@
     <string name="assistant_account_creation_sms_confirmation_explanation">We hebben een verificatiecode naar uw telefoonnummer %1$s gestuurd.\n\nVoer de verificatiecode hieronder in:</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Voor sommige functies is een &appName;-account vereist, zoals groepsberichten en videoconferenties.\n\nDeze functies zijn verborgen wanneer u zich registreert met een SIP-account van derden.\n\nNeem contact met ons op om deze functie in een commercieel project toe te voegen.</string>
     <string name="assistant_account_register_unavailable_no_push_warning">Pushmeldingen lijken niet beschikbaar te zijn op uw apparaat, maar ze zijn verplicht voor het aanmaken van een account in de mobiele app.\n\nWe raden u aan om in plaats daarvan een account aan te maken op ons webplatform:</string>
-    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění. Android se pak zeptá ještě na <b>zařízení v okolí</b> — to je Bluetooth, aby šel hovor přehodit do sluchátek nebo autorádia.</string>
     <string name="help_version_up_to_date_toast_message">Uw versie is up-to-date</string>
     <string name="help_error_checking_version_toast_message">Er is een fout opgetreden tijdens het controleren op updates</string>
     <string name="help_troubleshooting_share_logs_dialog_title">Deel link naar foutopsporingslogs via…</string>

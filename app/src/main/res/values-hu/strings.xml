@@ -127,7 +127,7 @@
     <string name="bottom_navigation_contacts_label">Névjegyek</string>
     <string name="help_troubleshooting_show_config_file">Mutassa a konfigurációt</string>
     <string name="notification_channel_call_name">&appName; aktív hívások értesítése</string>
-    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění:</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění. Android se pak zeptá ještě na <b>zařízení v okolí</b> — to je Bluetooth, aby šel hovor přehodit do sluchátek nebo autorádia.</string>
     <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
     <string name="drawer_menu_account_connection_status_connected">Csatlakoztatva</string>
     <string name="help_about_user_guide_title">&appName; használati útmutató</string>
