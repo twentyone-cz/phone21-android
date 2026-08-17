@@ -307,6 +307,14 @@ class CoreContext
                     )
                 )
             } else if (status == ConfiguringState.Failed) {
+                // fork: adresa konfigurace z QR je na jedno použití — po
+                // neúspěchu ji zahodit, jinak ji Core zkouší při každém
+                // startu znovu a chybová hláška se vrací "sama od sebe"
+                val staleUri = core.provisioningUri
+                if (!staleUri.isNullOrEmpty()) {
+                    Log.w("$TAG Clearing stale provisioning URI [$staleUri] after failure")
+                    core.provisioningUri = null
+                }
                 showRedToastEvent.postValue(
                     Event(
                         Pair(
