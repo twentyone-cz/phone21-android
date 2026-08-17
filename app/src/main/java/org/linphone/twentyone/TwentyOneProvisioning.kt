@@ -28,6 +28,11 @@ object TwentyOneProvisioning {
      *  s krátkým lidským popisem — ten se zobrazí v hlášce. */
     fun fetchAndApply(url: String, onError: (String) -> Unit) {
         executor.execute {
+            val target = try {
+                URL(url).let { "%s:%d".format(it.host, if (it.port > 0) it.port else 80) }
+            } catch (_: Exception) {
+                url
+            }
             try {
                 val data = download(url)
                 if (!looksLikeConfig(data)) {
@@ -43,16 +48,23 @@ object TwentyOneProvisioning {
                     core.start()
                 }
             } catch (e: Exception) {
-                Log.e("$TAG Download of [$url] failed: $e")
-                onError(describe(e))
+                Log.e("$TAG Download of [$url] via [$lastRoute] failed: $e")
+                onError(describe(e, target))
             }
         }
     }
 
+    @Volatile
+    private var lastRoute = "?"
+
     private fun download(url: String): ByteArray {
-        val network = nonVpnNetwork(coreContext.context)
+        val (network, route) = nonVpnNetwork(coreContext.context)
+        lastRoute = route
+        if (network == null) {
+            throw java.net.NoRouteToHostException("bez wifi")
+        }
         val parsed = URL(url)
-        val connection = (network?.openConnection(parsed) ?: parsed.openConnection())
+        val connection = network.openConnection(parsed)
         (connection as HttpURLConnection)
         connection.connectTimeout = 10_000
         connection.readTimeout = 10_000
@@ -67,20 +79,32 @@ object TwentyOneProvisioning {
         }
     }
 
-    /** Síť bez VPN — po ruce je wifi, přes kterou telefon vidí miniserver. */
-    private fun nonVpnNetwork(context: Context): Network? {
+    /** Wifi bez VPN — jediná síť, přes kterou telefon vidí miniserver.
+     *  Mobilní data schválně nebereme: na lokální adresu stejně nevedou
+     *  a maskovala by pravou příčinu („timeout" místo „nejsi na wifi"). */
+    private fun nonVpnNetwork(context: Context): Pair<Network?, String> {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE)
             as ConnectivityManager
-        var fallback: Network? = null
+        val seen = mutableListOf<String>()
         @Suppress("DEPRECATION")
         for (network in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return network
-            fallback = network
+            val label = when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobilní data"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "jiná"
+            }
+            seen += label
+            if (label == "vpn") continue
+            if (label == "wifi" || label == "ethernet") {
+                Log.i("$TAG Using [$label] network, available: $seen")
+                return network to label
+            }
         }
-        return fallback
+        Log.w("$TAG No usable wifi network, available: $seen")
+        return null to seen.joinToString(",")
     }
 
     private fun looksLikeConfig(data: ByteArray): Boolean {
@@ -88,16 +112,21 @@ object TwentyOneProvisioning {
         return "<config" in head
     }
 
-    private fun describe(e: Exception): String {
+    private fun describe(e: Exception, target: String): String {
         return when {
-            e is IllegalStateException -> "Server odpověděl ${e.message} — " +
+            e is IllegalStateException -> "Server $target odpověděl ${e.message} — " +
                 "vygeneruj nový QR kód, odkaz platí jen chvíli."
+            e is java.net.NoRouteToHostException && e.message == "bez wifi" ->
+                "Telefon není na wifi (vidím jen: $lastRoute). Připoj ho na " +
+                "stejnou wifi jako miniserver a zkus to znovu."
             e is java.net.ConnectException || e is java.net.NoRouteToHostException ->
-                "Na miniserver se nejde dostat — je telefon na stejné wifi?"
+                "Na $target se přes $lastRoute nejde dostat — je telefon na " +
+                "stejné wifi jako miniserver?"
             e is java.net.SocketTimeoutException ->
-                "Miniserver neodpovídá (vypršel čas). Je telefon na stejné wifi?"
-            e is java.net.UnknownHostException -> "Adresu se nepodařilo najít."
-            else -> "Stažení selhalo: ${e.message ?: e.javaClass.simpleName}"
+                "$target neodpovídá přes $lastRoute (vypršel čas). Sedí adresa " +
+                "s tvojí sítí? Nemá wifi izolaci klientů?"
+            e is java.net.UnknownHostException -> "Adresu $target se nepodařilo najít."
+            else -> "Stažení z $target selhalo: ${e.message ?: e.javaClass.simpleName}"
         }
     }
 }
