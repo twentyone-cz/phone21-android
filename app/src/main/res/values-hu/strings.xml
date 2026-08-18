@@ -79,7 +79,7 @@
     <string name="assistant_account_register_unexpected_error">Váratlan hiba történt, próbálja meg később</string>
     <string name="assistant_account_login_forbidden_error">Hibás felhasználónév vagy jelszó</string>
     <string name="assistant_account_login_error">Nem sikerült a bejelentkezés, hibakód: %s</string>
-    <string name="assistant_permissions_title">Povolení</string>
+    <string name="assistant_permissions_title">Povolení (obrazovka P21-U0)</string>
     <string name="assistant_permissions_grant_all_of_them">OK</string>
     <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>

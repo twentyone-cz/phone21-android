@@ -113,7 +113,7 @@
     <string name="assistant_account_register_unexpected_error">Сталася неочікувана помилка, спробуйте ще раз пізніше</string>
     <string name="assistant_account_login_forbidden_error">Невірне ім\'я користувача або пароль</string>
     <string name="assistant_account_login_error">Не вдалося залогінитись: код помилки %s</string>
-    <string name="assistant_permissions_title">Povolení</string>
+    <string name="assistant_permissions_title">Povolení (obrazovka P21-U0)</string>
     <string name="assistant_permissions_grant_all_of_them">ОК</string>
     <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="assistant_forgotten_password_title">Забули пароль?</string>

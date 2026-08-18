@@ -85,7 +85,7 @@
     <string name="assistant_account_register_unexpected_error">Er is een onverwachte fout opgetreden, probeer het later opnieuw</string>
     <string name="assistant_account_login_forbidden_error">Verkeerde gebruikersnaam of wachtwoord</string>
     <string name="assistant_account_login_error">Inloggen mislukt: foutcode is %s</string>
-    <string name="assistant_permissions_title">Povolení</string>
+    <string name="assistant_permissions_title">Povolení (obrazovka P21-U0)</string>
     <string name="assistant_permissions_grant_all_of_them">OK</string>
     <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>

@@ -248,7 +248,7 @@
     <string name="assistant_account_register_unexpected_error">Произошла непредвиденная ошибка, попробуйте еще раз позже</string>
     <string name="assistant_account_login_forbidden_error">Неправильное имя пользователя или пароль</string>
     <string name="assistant_account_login_error">Не удалось войти: код ошибки %s</string>
-    <string name="assistant_permissions_title">Povolení</string>
+    <string name="assistant_permissions_title">Povolení (obrazovka P21-U0)</string>
     <string name="assistant_permissions_grant_all_of_them">ОК</string>
     <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>

@@ -104,7 +104,12 @@ class MainActivity : GenericActivity() {
         val url = twentyOnePendingProvisioningUrl
         twentyOnePendingProvisioningUrl = null
         Log.i("$TAG ACCESS_LOCAL_NETWORK granted [$granted]")
-        if (url != null) {
+        if (!granted) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E11", "žádost o Místní síť zamítnuta bez dialogu (deep link)")
+            org.linphone.twentyone.TwentyOneDiag.openAppSettings(this)
+        }
+        if (url != null && granted) {
             twentyOneFetchProvisioning(url)
         }
     }

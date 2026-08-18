@@ -165,7 +165,7 @@
     <string name="assistant_account_register_unexpected_error">Ocorreu um erro inesperado, por favor, tente novamente mais tarde</string>
     <string name="assistant_account_login_forbidden_error">Nome de usuário ou senha incorretos</string>
     <string name="assistant_account_login_error">Falha ao fazer login: o código de erro é %s</string>
-    <string name="assistant_permissions_title">Povolení</string>
+    <string name="assistant_permissions_title">Povolení (obrazovka P21-U0)</string>
     <string name="assistant_permissions_grant_all_of_them">OK</string>
     <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění. Android se pak zeptá ještě na <b>zařízení v okolí</b> — to je Bluetooth, aby šel hovor přehodit do sluchátek nebo autorádia.</string>
     <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>

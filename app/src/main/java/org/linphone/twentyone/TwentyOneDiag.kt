@@ -50,4 +50,17 @@ object TwentyOneDiag {
             file().delete()
         }
     }
+
+    /** Oprávnění „Místní síť" nejde na některých systémech vyžádat oknem —
+     *  jediná cesta je ruční přepnutí v nastavení aplikace. */
+    fun openAppSettings(context: android.content.Context) {
+        try {
+            val intent = android.content.Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", context.packageName, null)
+            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (_: Exception) {
+        }
+    }
 }

@@ -48,6 +48,10 @@ class PermissionsFragment : GenericFragment() {
     ) { granted ->
         org.linphone.core.tools.Log.i(
             "[Permissions] ACCESS_LOCAL_NETWORK granted [$granted]")
+        if (!granted) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E11", "žádost o Místní síť zamítnuta bez dialogu (P21-U0)")
+        }
     }
 
     companion object {

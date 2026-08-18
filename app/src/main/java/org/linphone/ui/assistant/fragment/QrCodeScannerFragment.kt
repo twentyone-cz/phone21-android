@@ -52,6 +52,18 @@ class QrCodeScannerFragment : GenericFragment() {
     ) { granted ->
         org.linphone.core.tools.Log.i(
             "[QR Scanner] ACCESS_LOCAL_NETWORK granted [$granted]")
+        if (!granted && isAdded) {
+            // systém žádost odbyl bez okna — jediná cesta je ruční přepnutí
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E11", "žádost o Místní síť zamítnuta bez dialogu")
+            android.widget.Toast.makeText(
+                requireContext(),
+                "[P21-E11] Zapni aplikaci oprávnění \u201eMístní síť\u201c " +
+                    "(otevírám nastavení) a vrať se ke skenování.",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            org.linphone.twentyone.TwentyOneDiag.openAppSettings(requireContext())
+        }
     }
 
     companion object {
