@@ -107,8 +107,8 @@ android {
         minSdk = 28
         targetSdk = 37
         // fork: versionCode = upstream*10 + naše iterace (602004 → 6020041, …)
-        versionCode = 6020058
-        versionName = "6.2.4-21p.18"
+        versionCode = 6020059
+        versionName = "6.2.4-21p.19"
 
         manifestPlaceholders["appAuthRedirectScheme"] = packageName
 

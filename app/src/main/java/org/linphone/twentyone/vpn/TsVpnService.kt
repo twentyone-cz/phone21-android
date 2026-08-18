@@ -70,6 +70,11 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
             )
         } catch (e: Exception) {
             Log.e("$TAG Failed to start foreground service: $e")
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E12",
+                "služba tunelu nenaběhla na popředí: %s %s".format(
+                    e.javaClass.simpleName, e.message ?: "")
+            )
         }
     }
 
