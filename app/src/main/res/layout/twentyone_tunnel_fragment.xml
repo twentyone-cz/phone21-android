@@ -62,6 +62,15 @@
 
 
         <Button
+            android:id="@+id/tunnel_diag"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/twentyone_tunnel_diag_link"
+            android:textColor="?attr/color_main1_500" />
+
+        <Button
             android:id="@+id/tunnel_toggle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

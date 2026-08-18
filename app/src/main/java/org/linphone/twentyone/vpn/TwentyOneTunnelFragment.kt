@@ -16,6 +16,7 @@ import android.widget.TextView
 import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
 import org.linphone.R
 import org.linphone.core.tools.Log
 
@@ -78,6 +79,12 @@ class TwentyOneTunnelFragment : Fragment() {
             if (TsManager.vpnActive.value == true) {
                 TsManager.restartService()
             }
+        }
+
+        view.findViewById<Button>(R.id.tunnel_diag).setOnClickListener {
+            findNavController().navigate(
+                R.id.action_twentyOneTunnelFragment_to_twentyOneDiagFragment
+            )
         }
 
         toggleButton.setOnClickListener {

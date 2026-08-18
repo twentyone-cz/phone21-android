@@ -36,6 +36,8 @@ object TwentyOneProvisioning {
             try {
                 val data = download(url)
                 if (!looksLikeConfig(data)) {
+                    TwentyOneDiag.log("P21-E1", "cíl=%s cesta=%s délka=%d".format(
+                        target, lastRoute, data.size))
                     onError("[P21-E1] Server nevrátil konfiguraci (odkaz už asi vypršel).")
                     return@execute
                 }
@@ -49,6 +51,9 @@ object TwentyOneProvisioning {
                 }
             } catch (e: Exception) {
                 Log.e("$TAG Download of [$url] via [$lastRoute] failed: $e")
+                val code = codeFor(e)
+                TwentyOneDiag.log(code, "cíl=%s cesta=%s výjimka=%s %s".format(
+                    target, lastRoute, e.javaClass.simpleName, e.message ?: ""))
                 onError(describe(e, target))
             }
         }
@@ -122,6 +127,15 @@ object TwentyOneProvisioning {
     private fun looksLikeConfig(data: ByteArray): Boolean {
         val head = data.take(200).toByteArray().toString(Charsets.UTF_8)
         return "<config" in head
+    }
+
+    private fun codeFor(e: Exception): String = when {
+        e is IllegalStateException -> "P21-E2"
+        e is java.net.NoRouteToHostException && e.message == "bez wifi" -> "P21-E3"
+        e is java.net.ConnectException || e is java.net.NoRouteToHostException -> "P21-E4"
+        e is java.net.SocketTimeoutException -> "P21-E5"
+        e is java.net.UnknownHostException -> "P21-E6"
+        else -> "P21-E7"
     }
 
     private fun describe(e: Exception, target: String): String {

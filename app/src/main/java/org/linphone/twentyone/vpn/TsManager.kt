@@ -126,6 +126,8 @@ object TsManager {
 
             if (callLocalApi("POST", "start", options.toString().toByteArray()) == null) {
                 Log.e("$TAG Failed to start tunnel session")
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E8", "start tunelu selhal, endpoint=%s".format(url))
                 return@execute
             }
             if (authKey.isNullOrEmpty()) {
@@ -272,6 +274,11 @@ object TsManager {
         val verified = endpointMatches && domainMatches != false
         if (endpointVerified.value != verified) {
             Log.i("$TAG Endpoint verification is now [$verified]")
+            if (!verified) {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E9", "síť neprošla ověřením (endpoint=%s doména=%s)"
+                        .format(endpointMatches, domainMatches))
+            }
             endpointVerified.postValue(verified)
         }
     }

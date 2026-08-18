@@ -179,6 +179,14 @@
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>
     <string name="twentyone_screen_landing" translatable="false">obrazovka P21-U1</string>
     <string name="twentyone_screen_tunnel" translatable="false">obrazovka P21-S1</string>
+    <string name="twentyone_screen_diag" translatable="false">obrazovka P21-S2</string>
+    <string name="twentyone_diag_title">Diagnostika</string>
+    <string name="twentyone_diag_subtitle">Poslední chyby s kódem a detaily — nejnovější nahoře.</string>
+    <string name="twentyone_diag_copy">Zkopírovat</string>
+    <string name="twentyone_diag_clear">Vymazat</string>
+    <string name="twentyone_diag_copied">Zkopírováno do schránky.</string>
+    <string name="twentyone_diag_empty">Zatím žádné chyby. Dobré znamení.</string>
+    <string name="twentyone_tunnel_diag_link">Diagnostika (deník chyb)</string>
     <string name="assistant_qr_code_invalid_toast">Invalid QR code!</string>
     <string name="assistant_login_third_party_sip_account">Use a third party SIP account</string>
     <string name="assistant_login_third_party_sip_account_title">Third party SIP account</string>
