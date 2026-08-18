@@ -283,6 +283,7 @@ class CoreContext
             message: String?
         ) {
             Log.i("$TAG Configuring state changed [$status], message is [$message]")
+            tunnelReadinessManager.onConfiguring(core, status, message)
             if (status == ConfiguringState.Successful) {
                 val accounts = core.accountList
                 if (core.defaultAccount == null && accounts.isNotEmpty()) {

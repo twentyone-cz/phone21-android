@@ -37,27 +37,34 @@ class TunnelReadinessManager {
             )
         }
 
-        @WorkerThread
-        override fun onConfiguringStatus(
-            core: Core,
-            status: ConfiguringState?,
-            message: String?
-        ) {
-            if (status != ConfiguringState.Successful) return
-            // stažená konfigurace nese heslo účtu — po aplikaci ji smazat
-            java.io.File(coreContext.context.filesDir, "provisioning.xml").delete()
-            coreContext.postOnCoreThread { c ->
-                if (!c.provisioningUri.isNullOrEmpty()) c.provisioningUri = null
-            }
-            val (url, key) = TsProvisioning.takeNetworkKey(core)
-            if (key.isEmpty()) return
-            val intent = Intent(coreContext.context, TsConsentActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(TsConsentActivity.EXTRA_URL, url)
-                putExtra(TsConsentActivity.EXTRA_KEY, key)
-            }
-            coreContext.context.startActivity(intent)
+    }
+
+    // Volá se z posluchače CoreContextu, který existuje už při startu jádra.
+    // Vlastní posluchač tady se registruje až PO startu — jenže konfigurace
+    // se aplikuje BĚHEM startu, takže by událost propadla: soubor s heslem
+    // by zůstal ležet a konfigurace by se aplikovala při každém otevření.
+    @WorkerThread
+    fun onConfiguring(core: Core, status: ConfiguringState?, message: String?) {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-CFG",
+            "konfigurace: %s uri=%s účtů=%d %s".format(
+                status,
+                if (core.provisioningUri.isNullOrEmpty()) "ne" else "ano",
+                core.accountList.size,
+                message ?: "")
+        )
+        if (status != ConfiguringState.Successful) return
+        // stažená konfigurace nese heslo účtu — po aplikaci ji smazat
+        java.io.File(coreContext.context.filesDir, "provisioning.xml").delete()
+        if (!core.provisioningUri.isNullOrEmpty()) core.provisioningUri = null
+        val (url, key) = TsProvisioning.takeNetworkKey(core)
+        if (key.isEmpty()) return
+        val intent = Intent(coreContext.context, TsConsentActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(TsConsentActivity.EXTRA_URL, url)
+            putExtra(TsConsentActivity.EXTRA_KEY, key)
         }
+        coreContext.context.startActivity(intent)
     }
 
     private val stateObserver = Observer<TsManager.State> {
