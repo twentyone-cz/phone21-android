@@ -18,6 +18,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 import org.linphone.LinphoneApplication.Companion.coreContext
+import org.linphone.compatibility.Compatibility
 import org.linphone.core.tools.Log
 
 object TwentyOneProvisioning {
@@ -32,6 +33,15 @@ object TwentyOneProvisioning {
                 URL(url).let { "%s:%d".format(it.host, if (it.port > 0) it.port else 80) }
             } catch (_: Exception) {
                 url
+            }
+            if (!Compatibility.isAccessLocalNetworkPermissionGranted(
+                    coreContext.context)) {
+                TwentyOneDiag.log("P21-E10", "chybí oprávnění Místní síť, cíl=%s"
+                    .format(target))
+                onError("[P21-E10] Chybí oprávnění \u201eMístní síť\u201c — " +
+                    "bez něj Android nepustí aplikaci k miniserveru. Povol ho " +
+                    "v systémovém nastavení aplikace a naskenuj QR znovu.")
+                return@execute
             }
             try {
                 val data = download(url)

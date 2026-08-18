@@ -42,6 +42,14 @@ import kotlin.getValue
 
 @UiThread
 class PermissionsFragment : GenericFragment() {
+
+    private val twentyOneLocalNetPermission = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        org.linphone.core.tools.Log.i(
+            "[Permissions] ACCESS_LOCAL_NETWORK granted [$granted]")
+    }
+
     companion object {
         private const val TAG = "[Permissions Fragment]"
     }
@@ -116,6 +124,18 @@ class PermissionsFragment : GenericFragment() {
             requestPermissionLauncher.launch(
                 Compatibility.getAllRequiredPermissionsArray()
             )
+            // fork: „Místní síť" se v hromadném dialogu na některých
+            // systémech vůbec neukáže — doprosit zvlášť, jinak stažení
+            // konfigurace z miniserveru tiše timeoutuje
+            binding.root.postDelayed({
+                if (isAdded && !Compatibility.isAccessLocalNetworkPermissionGranted(
+                        requireContext())
+                ) {
+                    twentyOneLocalNetPermission.launch(
+                        android.Manifest.permission.ACCESS_LOCAL_NETWORK
+                    )
+                }
+            }, 1000)
         }
 
         if (ContextCompat.checkSelfPermission(

@@ -43,6 +43,17 @@ import org.linphone.ui.sso.SingleSignOnActivity
 
 @UiThread
 class QrCodeScannerFragment : GenericFragment() {
+
+    // fork: QR vede na stažení konfigurace z miniserveru v domácí síti —
+    // bez oprávnění „Místní síť" (Android 17) spojení tiše timeoutuje.
+    // Upstream si o něj říkal jen v ručním zadání účtu, QR cesta nikdy.
+    private val twentyOneLocalNetPermission = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        org.linphone.core.tools.Log.i(
+            "[QR Scanner] ACCESS_LOCAL_NETWORK granted [$granted]")
+    }
+
     companion object {
         private const val TAG = "[Qr Code Scanner Fragment]"
     }
@@ -76,6 +87,11 @@ class QrCodeScannerFragment : GenericFragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        if (!org.linphone.compatibility.Compatibility.isAccessLocalNetworkPermissionGranted(requireContext())) {
+            twentyOneLocalNetPermission.launch(
+                android.Manifest.permission.ACCESS_LOCAL_NETWORK
+            )
+        }
 
         binding.lifecycleOwner = viewLifecycleOwner
         binding.viewModel = viewModel
