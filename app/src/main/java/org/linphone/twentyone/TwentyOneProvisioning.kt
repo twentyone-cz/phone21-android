@@ -36,7 +36,7 @@ object TwentyOneProvisioning {
             try {
                 val data = download(url)
                 if (!looksLikeConfig(data)) {
-                    onError("Server nevrátil konfiguraci (odkaz už asi vypršel).")
+                    onError("[P21-E1] Server nevrátil konfiguraci (odkaz už asi vypršel).")
                     return@execute
                 }
                 val file = File(coreContext.context.filesDir, "provisioning.xml")
@@ -126,19 +126,21 @@ object TwentyOneProvisioning {
 
     private fun describe(e: Exception, target: String): String {
         return when {
-            e is IllegalStateException -> "Server $target odpověděl ${e.message} — " +
-                "vygeneruj nový QR kód, odkaz platí jen chvíli."
+            e is IllegalStateException -> "[P21-E2] Server $target odpověděl " +
+                "${e.message} — vygeneruj nový QR kód, odkaz platí jen chvíli."
             e is java.net.NoRouteToHostException && e.message == "bez wifi" ->
-                "Telefon není na wifi (vidím jen: $lastRoute). Připoj ho na " +
-                "stejnou wifi jako miniserver a zkus to znovu."
+                "[P21-E3] Telefon není na wifi (vidím jen: $lastRoute). Připoj " +
+                "ho na stejnou wifi jako miniserver a zkus to znovu."
             e is java.net.ConnectException || e is java.net.NoRouteToHostException ->
-                "Na $target se přes $lastRoute nejde dostat — je telefon na " +
-                "stejné wifi jako miniserver?"
+                "[P21-E4] Na $target se přes $lastRoute nejde dostat — je " +
+                "telefon na stejné wifi jako miniserver?"
             e is java.net.SocketTimeoutException ->
-                "$target neodpovídá přes $lastRoute (vypršel čas). Sedí adresa " +
-                "s tvojí sítí? Nemá wifi izolaci klientů?"
-            e is java.net.UnknownHostException -> "Adresu $target se nepodařilo najít."
-            else -> "Stažení z $target selhalo: ${e.message ?: e.javaClass.simpleName}"
+                "[P21-E5] $target neodpovídá přes $lastRoute (vypršel čas). " +
+                "Sedí adresa s tvojí sítí? Nemá wifi izolaci klientů?"
+            e is java.net.UnknownHostException ->
+                "[P21-E6] Adresu $target se nepodařilo najít."
+            else -> "[P21-E7] Stažení z $target selhalo: " +
+                "${e.message ?: e.javaClass.simpleName}"
         }
     }
 }

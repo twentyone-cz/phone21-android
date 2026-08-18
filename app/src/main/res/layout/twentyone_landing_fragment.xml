@@ -50,4 +50,14 @@
         android:text="@string/twentyone_landing_manual"
         android:textColor="?attr/color_main1_500" />
 
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:layout_gravity="center_horizontal"
+        android:textSize="11sp"
+        android:textColor="?attr/color_main2_400"
+        android:text="@string/twentyone_screen_landing" />
+
 </LinearLayout>

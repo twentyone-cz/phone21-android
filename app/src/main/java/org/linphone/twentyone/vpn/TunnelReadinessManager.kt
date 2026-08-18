@@ -31,6 +31,11 @@ class TunnelReadinessManager {
             message: String?
         ) {
             if (status != ConfiguringState.Successful) return
+            // stažená konfigurace nese heslo účtu — po aplikaci ji smazat
+            java.io.File(coreContext.context.filesDir, "provisioning.xml").delete()
+            coreContext.postOnCoreThread { c ->
+                if (!c.provisioningUri.isNullOrEmpty()) c.provisioningUri = null
+            }
             val (url, key) = TsProvisioning.takeNetworkKey(core)
             if (key.isEmpty()) return
             val intent = Intent(coreContext.context, TsConsentActivity::class.java).apply {

@@ -177,6 +177,8 @@
     <string name="twentyone_tunnel_connect">Připojit</string>
     <string name="twentyone_tunnel_disconnect">Odpojit</string>
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>
+    <string name="twentyone_screen_landing" translatable="false">obrazovka P21-U1</string>
+    <string name="twentyone_screen_tunnel" translatable="false">obrazovka P21-S1</string>
     <string name="assistant_qr_code_invalid_toast">Invalid QR code!</string>
     <string name="assistant_login_third_party_sip_account">Use a third party SIP account</string>
     <string name="assistant_login_third_party_sip_account_title">Third party SIP account</string>
