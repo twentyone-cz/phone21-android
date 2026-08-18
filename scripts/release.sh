@@ -17,6 +17,11 @@ source "$KEYSTORE_DIR/keystore.env"
 TAG=$(git -C "$REPO" describe --tags --exact-match HEAD 2>/dev/null) \
   || { echo "HEAD není přesně na tagu — nejdřív: git tag <upstream>-21p.<n>" >&2; exit 1; }
 [[ "$TAG" == *-21p.* ]] || { echo "HEAD není na release tagu forku (*-21p.*), je: $TAG" >&2; exit 1; }
+# tag musí být ANOTOVANÝ (git tag -a): upstream gitVersion volá `git
+# describe` bez --tags a lightweight tag nevidí — v aplikaci i ve jménu
+# APK by pak byla předchozí verze s příponou +hash
+[[ "$(git -C "$REPO" cat-file -t "refs/tags/$TAG" 2>/dev/null)" == "tag" ]] \
+  || { echo "tag $TAG není anotovaný — vytvoř ho: git tag -fa $TAG -m 'Phone21 $TAG'" >&2; exit 1; }
 [[ -z "$(git -C "$REPO" status --porcelain)" ]] \
   || { echo "pracovní strom není čistý — necommitnuté změny by se zapekly do release APK" >&2; exit 1; }
 # tag ↔ verze v gradle: versionName se skládá z prefixu a forkIteration
