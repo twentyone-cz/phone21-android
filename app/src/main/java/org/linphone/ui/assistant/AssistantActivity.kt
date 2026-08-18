@@ -56,10 +56,11 @@ class AssistantActivity : GenericActivity() {
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             val navController = binding.assistantNavContainer.findNavController()
-            // na úvodní obrazovce není kam se vracet — tlačítko zpět tam
-            // dřív nedělalo vůbec nic, což vypadalo jako zamrznutí
+            // na úvodní obrazovce není kam se vracet. finish() nestačí:
+            // bez účtu aplikace asistenta okamžitě otevře znovu a zpět se
+            // točí v kruhu — správné je schovat celou aplikaci na pozadí
             if (navController.currentDestination?.id == R.id.twentyOneLandingFragment) {
-                finish()
+                moveTaskToBack(true)
             } else {
                 navController.popBackStack()
             }

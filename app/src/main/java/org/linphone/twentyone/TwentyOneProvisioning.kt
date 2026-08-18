@@ -38,9 +38,10 @@ object TwentyOneProvisioning {
                     coreContext.context)) {
                 TwentyOneDiag.log("P21-E10", "chybí oprávnění Místní síť, cíl=%s"
                     .format(target))
-                onError("[P21-E10] Chybí oprávnění \u201eMístní síť\u201c — " +
-                    "bez něj Android nepustí aplikaci k miniserveru. Povol ho " +
-                    "v systémovém nastavení aplikace a naskenuj QR znovu.")
+                onError("[P21-E10] Chybí oprávnění pro domácí síť — v " +
+                    "nastavení aplikace zapni \u201eMístní síť\u201c, a když " +
+                    "tam není, tak \u201eZařízení v okolí\u201c. Pak naskenuj " +
+                    "QR znovu.")
                 return@execute
             }
             try {
