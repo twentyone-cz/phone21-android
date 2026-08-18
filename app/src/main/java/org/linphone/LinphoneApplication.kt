@@ -68,6 +68,21 @@ class LinphoneApplication : Application(), SingletonImageLoader.Factory {
         // obrazovek anglicky a naše česky. Držíme jeden jazyk.
         AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("cs"))
 
+        // fork: pád aplikace se zapíše do deníku Diagnostiky (P21-S2) —
+        // jinak po něm nezbyde nic, co by šlo nahlásit
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val stack = android.util.Log.getStackTraceString(throwable)
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-CRASH",
+                    "vlákno=%s %s".format(thread.name, stack.take(600))
+                )
+            } catch (_: Throwable) {
+            }
+            previousHandler?.uncaughtException(thread, throwable)
+        }
+
         val powerManager = context.getSystemService(POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,

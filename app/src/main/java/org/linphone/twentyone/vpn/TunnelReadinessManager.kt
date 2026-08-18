@@ -25,6 +25,19 @@ class TunnelReadinessManager {
         }
 
         @WorkerThread
+        override fun onAccountRegistrationStateChanged(
+            core: Core,
+            account: Account,
+            state: org.linphone.core.RegistrationState?,
+            message: String
+        ) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-REG",
+                "registrace u ústředny: %s %s".format(state, message)
+            )
+        }
+
+        @WorkerThread
         override fun onConfiguringStatus(
             core: Core,
             status: ConfiguringState?,
@@ -91,6 +104,14 @@ class TunnelReadinessManager {
         if (available == ready) return
         ready = available
         Log.i("$TAG Network readiness is now [$available]")
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-NET",
+            ("síť %s (stav=%s přihlášení=%s ověření=%s) — registrace u " +
+                "ústředny se %s").format(
+                if (available) "připravena" else "nepřipravena",
+                state, loggedIn, verified,
+                if (available) "zapíná" else "vypíná")
+        )
         coreContext.postOnCoreThread {
             applyState(available)
         }

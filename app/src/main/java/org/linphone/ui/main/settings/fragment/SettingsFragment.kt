@@ -156,6 +156,14 @@ class SettingsFragment : GenericMainFragment() {
             }
         }
 
+        binding.twentyoneDiagSettings.setOnClickListener {
+            if (findNavController().currentDestination?.id == R.id.settingsFragment) {
+                findNavController().navigate(
+                    R.id.action_settingsFragment_to_twentyOneDiagFragment
+                )
+            }
+        }
+
         binding.twentyoneTunnelSettings.setOnClickListener {
             if (findNavController().currentDestination?.id == R.id.settingsFragment) {
                 findNavController().navigate(R.id.action_settingsFragment_to_twentyOneTunnelFragment)
