@@ -106,9 +106,14 @@ android {
         applicationId = packageName
         minSdk = 28
         targetSdk = 37
-        // fork: versionCode = upstream*10 + naše iterace (602004 → 6020041, …)
-        versionCode = 6020059
-        versionName = "6.2.4-21p.19"
+        // fork: versionCode = upstreamCode × 1000 + iterace (max 999).
+        // Původní schéma ×10 přeteklo: 21p.19 = 6020059 leží v pásmu
+        // upstreamu 6.2.5, po rebasi by šel jen downgrade. Skok na ×1000
+        // (2026-08-18) monotonii obnovil; versionCode NIKDY nesnižovat.
+        val upstreamCode = 602004
+        val forkIteration = 20
+        versionCode = upstreamCode * 1000 + forkIteration
+        versionName = "6.2.4-21p.$forkIteration"
 
         manifestPlaceholders["appAuthRedirectScheme"] = packageName
 
@@ -231,6 +236,9 @@ android {
 }
 
 dependencies {
+    // fork: JVM testy čistých funkcí (extrakce stopy z tombstonu, deník)
+    testImplementation("junit:junit:4.13.2")
+
     implementation(libs.androidx.annotations)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraint.layout)

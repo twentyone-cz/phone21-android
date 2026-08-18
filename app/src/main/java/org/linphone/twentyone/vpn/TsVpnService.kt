@@ -31,15 +31,53 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
 
     private val randomId: String = UUID.randomUUID().toString()
     private var closed = false
+    private var guardOk = true
+    private var startFailed = false
 
     override fun id(): String = randomId
 
     override fun onCreate() {
         super.onCreate()
-        TsManager.ensureStarted(applicationContext)
+        // Pojistka proti smyčce pád→vzkříšení→pád: vzkříšení systémem se
+        // počítá; ruční start počítadlo hned v onStartCommand vynuluje.
+        guardOk = TunnelStartGuard.registerSystemStart(applicationContext)
+        if (guardOk) {
+            startBackend()
+        }
+    }
+
+    private fun startBackend() {
+        try {
+            TsManager.ensureStarted(applicationContext)
+        } catch (e: Throwable) {
+            Log.e("$TAG Failed to start tunnel backend: $e")
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E13",
+                "start jádra tunelu selhal: %s %s".format(
+                    e.javaClass.simpleName, e.message ?: "")
+            )
+            startFailed = true
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent != null) {
+            // explicitní pokyn (uživatel/aplikace) — smyčková pojistka se
+            // týká jen vzkříšení systémem
+            TunnelStartGuard.reset(applicationContext)
+            if (!guardOk && !startFailed) {
+                guardOk = true
+                startBackend()
+            }
+        }
+        if ((!guardOk && intent == null) || startFailed) {
+            // povinnost po startForegroundService splnit, ale hned zase
+            // zhasnout — služba se nechá ležet (žádné další křísení)
+            startForegroundNotification()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         return when (intent?.action) {
             ACTION_STOP -> {
                 TsManager.setWantRunning(false)
@@ -47,9 +85,18 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
                 START_NOT_STICKY
             }
             ACTION_RESTART -> {
+                // jen ukončit TUHLE instanci; novou startuje TsManager
+                // s odstupem. Dřívější reset `closed` na téže instanci vedl
+                // k druhému serviceDisconnect nad Go stranou až PO jejím
+                // opětovném zaregistrování — tunel po přestavbě zůstal dole.
                 close()
-                closed = false
+                START_NOT_STICKY
+            }
+            null -> {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "služba vzkříšena systémem po zabití procesu")
                 startForegroundNotification()
+                TsManager.setWantRunning(true)
                 libtailscale.Libtailscale.requestVPN(this)
                 START_STICKY
             }

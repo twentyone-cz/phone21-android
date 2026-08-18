@@ -43,7 +43,11 @@ bez konfliktů.
 
 - Tag forku: `<upstream>-21p.<n>` (např. `6.2.4-21p.1`) — git describe
   mechanismus upstreamu pak generuje versionName sám.
-- `versionCode` = upstream číslo × 10 + iterace (602004 → 6020041).
+- `versionCode` = upstream číslo × 1000 + iterace (602004 → 602004001;
+  iterace max 999). POZOR, schéma ×10 přeteklo u 21p.19 (6020059 leželo
+  v pásmu upstreamu 6.2.5 — po rebasi by šel jen downgrade); od 21p.20
+  (602004020, 2026-08-18) platí ×1000. Pravidlo: nový versionCode musí být
+  VŽDY větší než poslední vydaný — versionCode nejde nikdy snížit.
 
 ## Licence
 

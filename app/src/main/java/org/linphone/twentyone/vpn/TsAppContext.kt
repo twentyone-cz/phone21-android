@@ -154,9 +154,15 @@ class TsAppContext(private val context: Context) : libtailscale.AppContext {
     override fun hardwareAttestationKeyLoad(id: String) = throw UnsupportedOperationException()
 
     override fun bindSocketToNetwork(fd: Int): Boolean {
+        // Záložní volba sítě nesmí sáhnout po tunelu samotném: při běžícím
+        // tunelu je activeNetwork typicky právě on a řídicí sokety jádra
+        // by se zacyklily do vlastního rozhraní.
         val net = defaultNetwork ?: run {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.activeNetwork
+            cm.activeNetwork?.takeIf { candidate ->
+                cm.getNetworkCapabilities(candidate)
+                    ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) != true
+            }
         } ?: return false
         return try {
             ParcelFileDescriptor.fromFd(fd).use { pfd -> net.bindSocket(pfd.fileDescriptor) }
@@ -190,5 +196,8 @@ class TsAppContext(private val context: Context) : libtailscale.AppContext {
         }
     }
 
-    class NoSuchKeyException : Exception("key not configured")
+    // Text zprávy MUSÍ být doslova "no such key" — Go strana knihovny ho
+    // porovnává řetězcově (syspolicy_handler.go), jiná zpráva se počítá
+    // jako skutečná chyba, ne jako "klíč není nastaven".
+    class NoSuchKeyException : Exception("no such key")
 }

@@ -119,6 +119,11 @@ class LinphoneApplication : Application(), SingletonImageLoader.Factory {
         coreContext = CoreContext(context)
         coreContext.start()
 
+        // fork: nativní pád (knihovna tunelu) handler výše nevidí — důvod
+        // minulého ukončení procesu se do deníku dopíše ze systémových
+        // záznamů (P21-NATIVE); musí až po initu coreContext (deník)
+        org.linphone.twentyone.TwentyOneExitInfo.collect(context)
+
         DynamicColors.applyToActivitiesIfAvailable(this)
         wakeLock.release()
     }

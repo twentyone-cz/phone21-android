@@ -175,14 +175,21 @@ object TsManager {
     }
 
     fun restartService() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "přestavba tunelu, rozsah=%s".format(prefs.tunnelScope))
         val intent = Intent(appContext, TsVpnService::class.java).apply {
             action = TsVpnService.ACTION_RESTART
         }
         try {
             appContext.startService(intent)
         } catch (e: Exception) {
-            Log.e("$TAG Failed to restart tunnel service: $e")
+            Log.e("$TAG Failed to stop tunnel service for restart: $e")
         }
+        // Nová instance až s odstupem, po vzoru upstreamu — restart na téže
+        // instanci (close + reset příznaku) končil dvojím odpojením Go
+        // strany a tunel po přestavbě zůstal dole.
+        android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed({ startService() }, 1200)
     }
 
     fun effectiveTunnelScope(): TsPreferences.TunnelScope {
@@ -197,6 +204,10 @@ object TsManager {
     }
 
     fun onVpnStatusChanged(active: Boolean) {
+        if (active && ::appContext.isInitialized) {
+            // zdravě postavený tunel = konec případné smyčky restartů
+            TunnelStartGuard.reset(appContext)
+        }
         vpnActive.postValue(active)
     }
 
@@ -366,8 +377,12 @@ object TsManager {
 
     private fun monitorNetworkChanges() {
         val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        // NOT_VPN je klíčové (upstream parita): bez něj se po zvednutí
+        // tunelu stane "výchozí sítí" tunel sám a jádro tunelu si do něj
+        // sváže vlastní řídicí sokety — spojení se zacyklí do sebe.
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
         cm.registerNetworkCallback(
             request,
