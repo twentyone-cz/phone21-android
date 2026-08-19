@@ -35,8 +35,8 @@ import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.tools.Log
 import org.linphone.utils.LinphoneUtils
-import androidx.core.net.toUri
 import org.linphone.compatibility.Compatibility
+import org.linphone.twentyone.TwentyOneCar
 
 class TelecomManager
     @WorkerThread
@@ -96,7 +96,9 @@ class TelecomManager
         Log.i("$TAG Call to [${call.remoteAddress.asStringUriOnly()}] created in state [${call.state}]")
 
         val address = call.callLog.remoteAddress
-        val uri = address.asStringUriOnly().toUri()
+        // fork: číselné user-části jdou jako „tel:", aby systém (Auto, HFP)
+        // spároval hovor s kontaktem — TwentyOneCar
+        val uri = TwentyOneCar.callAddressUri(address)
 
         val direction = if (call.dir == Call.Dir.Outgoing) {
             CallAttributesCompat.DIRECTION_OUTGOING

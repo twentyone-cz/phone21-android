@@ -19,6 +19,9 @@ import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.findNavController
 import org.linphone.R
 import org.linphone.core.tools.Log
+import org.linphone.twentyone.car.CarCallLog
+import org.linphone.twentyone.car.CarPhoneAccount
+import org.linphone.twentyone.car.CarPreferences
 
 class TwentyOneTunnelFragment : Fragment() {
     companion object {
@@ -34,6 +37,7 @@ class TwentyOneTunnelFragment : Fragment() {
     // proto padalo na ClassCastException hned při otevření obrazovky
     private lateinit var scopeSwitch: SwitchCompat
     private lateinit var toggleButton: Button
+    private lateinit var carLogSwitch: SwitchCompat
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -46,6 +50,27 @@ class TwentyOneTunnelFragment : Fragment() {
         } else {
             Log.w("$TAG VPN permission was refused")
         }
+    }
+
+    private val writeCallLogPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            CarCallLog.setEnabled(requireContext(), true)
+        } else {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-CAR",
+                "oprávnění k zápisu historie hovorů zamítnuto"
+            )
+            if (!shouldShowRequestPermissionRationale(
+                    android.Manifest.permission.WRITE_CALL_LOG
+                )
+            ) {
+                // trvale zamítnuto — dialog se už neukáže, zbývá nastavení aplikace
+                org.linphone.twentyone.TwentyOneDiag.openAppSettings(requireContext())
+            }
+        }
+        carLogSwitch.isChecked = CarCallLog.isActive(requireContext())
     }
 
     override fun onCreateView(
@@ -79,6 +104,66 @@ class TwentyOneTunnelFragment : Fragment() {
             if (TsManager.vpnActive.value == true) {
                 TsManager.restartService()
             }
+        }
+
+        carLogSwitch = view.findViewById(R.id.tunnel_car_log_switch)
+        carLogSwitch.isChecked = CarCallLog.isActive(requireContext())
+        carLogSwitch.setOnCheckedChangeListener { _, checked ->
+            if (checked) {
+                if (CarCallLog.hasPermission(requireContext())) {
+                    CarCallLog.setEnabled(requireContext(), true)
+                } else if (carLogSwitch.isPressed) {
+                    writeCallLogPermission.launch(
+                        android.Manifest.permission.WRITE_CALL_LOG
+                    )
+                } else {
+                    // obnova stavu view bez uživatele (otočení displeje) —
+                    // bez oprávnění se dialog nesmí otevřít sám od sebe
+                    carLogSwitch.isChecked = false
+                }
+            } else {
+                CarCallLog.setEnabled(requireContext(), false)
+            }
+        }
+
+        // fork: vytáčení z auta — účet pro volání se registruje/odebírá
+        // podle přepínače; výchozí vypnuto
+        val carPrefs = CarPreferences(requireContext())
+        val carSwitch = view.findViewById<SwitchCompat>(R.id.car_dialing_switch)
+        val carHint = view.findViewById<TextView>(R.id.car_dialing_hint)
+        val carAccounts = view.findViewById<Button>(R.id.car_dialing_accounts)
+
+        fun updateCarViews(enabled: Boolean) {
+            carHint.visibility = if (enabled) View.VISIBLE else View.GONE
+            carAccounts.visibility = if (enabled) View.VISIBLE else View.GONE
+        }
+        carSwitch.isChecked = carPrefs.carDialingEnabled
+        updateCarViews(carPrefs.carDialingEnabled)
+
+        carSwitch.setOnCheckedChangeListener { _, checked ->
+            if (checked) {
+                if (CarPhoneAccount.register(requireContext())) {
+                    carPrefs.carDialingEnabled = true
+                } else {
+                    // vrácení přepínače vyvolá listener znovu — větev
+                    // níže je proto podmíněná uloženou hodnotou
+                    carSwitch.isChecked = false
+                    android.widget.Toast.makeText(
+                        requireContext(),
+                        R.string.twentyone_car_register_failed,
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return@setOnCheckedChangeListener
+                }
+            } else if (carPrefs.carDialingEnabled) {
+                carPrefs.carDialingEnabled = false
+                CarPhoneAccount.unregister(requireContext())
+            }
+            updateCarViews(checked)
+        }
+
+        carAccounts.setOnClickListener {
+            CarPhoneAccount.openCallingAccounts(requireContext())
         }
 
         view.findViewById<Button>(R.id.tunnel_diag).setOnClickListener {
@@ -119,6 +204,14 @@ class TwentyOneTunnelFragment : Fragment() {
             }
         }
         updateState()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // oprávnění šlo mezitím odebrat/udělit v nastavení systému
+        if (::carLogSwitch.isInitialized) {
+            carLogSwitch.isChecked = CarCallLog.isActive(requireContext())
+        }
     }
 
     private fun showLoginUrlDialog(url: String) {

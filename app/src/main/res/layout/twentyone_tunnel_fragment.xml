@@ -60,6 +60,22 @@
             android:text="@string/twentyone_tunnel_scope_full"
             android:textColor="?attr/color_main2_700" />
 
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/tunnel_car_log_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/twentyone_car_log_switch"
+            android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="12sp"
+            android:textColor="?attr/color_main2_600"
+            android:text="@string/twentyone_car_log_hint" />
+
 
         <Button
             android:id="@+id/tunnel_diag"
@@ -76,6 +92,42 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
             android:text="@string/twentyone_tunnel_connect" />
+
+        <!-- fork: vytáčení z auta — managed účet pro volání, za volbou -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/twentyone_car_title"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="?attr/color_main2_800" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/car_dialing_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/twentyone_car_switch"
+            android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:id="@+id/car_dialing_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="14sp"
+            android:textColor="?attr/color_main2_600"
+            android:text="@string/twentyone_car_hint" />
+
+        <Button
+            android:id="@+id/car_dialing_accounts"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/twentyone_car_open_accounts"
+            android:textColor="?attr/color_main1_500" />
 
     
     <TextView

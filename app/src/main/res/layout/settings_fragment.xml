@@ -375,6 +375,22 @@
 
                 <androidx.appcompat.widget.AppCompatTextView
                     style="@style/section_header_style"
+                    android:id="@+id/twentyone_car_sms_settings"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:padding="10dp"
+                    android:layout_marginStart="16dp"
+                    android:layout_marginEnd="16dp"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/twentyone_car_sms_title"
+                    android:background="@drawable/squircle_transparent_button_background"
+                    app:layout_constraintWidth_max="@dimen/section_max_width"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintTop_toBottomOf="@id/twentyone_diag_settings"/>
+
+                <androidx.appcompat.widget.AppCompatTextView
+                    style="@style/section_header_style"
                     android:id="@+id/advanced_settings"
                     android:onClick="@{advancedSettingsClickListener}"
                     android:layout_width="0dp"
@@ -392,7 +408,7 @@
                     app:layout_constraintWidth_max="@dimen/section_max_width"
                     app:layout_constraintStart_toStartOf="parent"
                     app:layout_constraintEnd_toEndOf="parent"
-                    app:layout_constraintTop_toBottomOf="@id/twentyone_diag_settings"/>
+                    app:layout_constraintTop_toBottomOf="@id/twentyone_car_sms_settings"/>
 
                 <androidx.appcompat.widget.AppCompatTextView
                     style="@style/section_header_style"

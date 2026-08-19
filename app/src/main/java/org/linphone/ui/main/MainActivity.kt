@@ -624,6 +624,10 @@ class MainActivity : GenericActivity() {
             Intent.ACTION_DIAL, Intent.ACTION_CALL -> {
                 handleCallIntent(intent)
             }
+            Intent.ACTION_SENDTO -> {
+                // fork: sms:/smsto: odkazy (role SMS) — otevřít konverzaci
+                handleSmsSendToIntent(intent)
+            }
             Intent.ACTION_VIEW_LOCUS -> {
                 val locus = Compatibility.extractLocusIdFromIntent(intent)
                 if (locus != null) {
@@ -634,6 +638,30 @@ class MainActivity : GenericActivity() {
             else -> {
                 handleMainIntent(intent)
             }
+        }
+    }
+
+    // fork: sms:/smsto: odkaz nese číslo příjemce (a volitelně text) —
+    // najít/založit konverzaci s číslem a otevřít ji
+    private fun handleSmsSendToIntent(intent: Intent) {
+        val raw = intent.data?.schemeSpecificPart.orEmpty().substringBefore('?')
+        val number = android.net.Uri.decode(raw)
+        if (number.isEmpty()) {
+            Log.w("$TAG SENDTO intent without a number")
+            return
+        }
+        val body = intent.getStringExtra("sms_body") ?: intent.getStringExtra(Intent.EXTRA_TEXT)
+        coreContext.postOnCoreThread { core ->
+            val conversationId =
+                org.linphone.twentyone.TwentyOneCar.conversationIdForNumber(core, number)
+            if (conversationId == null) {
+                Log.e("$TAG Failed to get conversation for SENDTO number")
+                return@postOnCoreThread
+            }
+            if (!body.isNullOrEmpty()) {
+                sharedViewModel.textToShareFromIntent.postValue(body)
+            }
+            sharedViewModel.showConversationEvent.postValue(Event(conversationId))
         }
     }
 

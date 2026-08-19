@@ -13,6 +13,17 @@
     <!-- To be able to display contacts list & match calling/called numbers -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
+    <!-- fork: zrcadlení ukončených hovorů do systémové historie, aby je vidělo auto (PBAP) -->
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+
+    <!-- SMS do auta: role výchozí SMS aplikace — zrcadlení zpráv do
+         systémového úložiště SMS, odkud si je auto čte přes Bluetooth -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
+
     <!-- Starting Android 13 we need to ask notification permission -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
@@ -133,6 +144,23 @@
 
         </activity>
 
+        <!-- SMS do auta: příjem odkazů sms:/smsto: (povinná součást role SMS).
+             MainActivity na SENDTO nereaguje — aplikace se jen otevře. -->
+        <activity-alias
+            android:name="org.linphone.twentyone.car.CarSmsSendToAlias"
+            android:targetActivity=".ui.main.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </activity-alias>
+
         <activity
             android:name=".ui.welcome.WelcomeActivity"
             android:windowSoftInputMode="adjustResize"
@@ -226,6 +254,18 @@
             </intent-filter>
         </service>
 
+        <!-- fork: vytáčení z auta — účet pro volání (managed telecom).
+             Dokud volba v aplikaci nezaregistruje PhoneAccount, systém
+             se na službu nikdy nenaváže. -->
+        <service
+            android:name="org.linphone.twentyone.car.CarConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
         <service android:name="org.linphone.core.tools.firebase.FirebaseMessaging"
             android:enabled="true"
             android:exported="false">
@@ -243,6 +283,21 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Needed to keep app alive to be able to receive messages and calls from third party SIP servers for which push notifications aren't available." />
+        </service>
+
+        <!-- SMS do auta: povinná služba role SMS („odmítnout hovor zprávou") -->
+        <service
+            android:name="org.linphone.twentyone.car.CarRespondService"
+            android:exported="true"
+            android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.RESPOND_VIA_MESSAGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
         </service>
 
         <!--<service
@@ -267,6 +322,27 @@
             android:name=".notifications.NotificationBroadcastReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <!-- SMS do auta: povinné přijímače role SMS. exported=true je nutné,
+             ale oprávnění BROADCAST_SMS/BROADCAST_WAP_PUSH drží jen systém. -->
+        <receiver
+            android:name="org.linphone.twentyone.car.CarSmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_DELIVER" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="org.linphone.twentyone.car.CarWapPushReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_WAP_PUSH">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
+                <data android:mimeType="application/vnd.wap.mms-message" />
+            </intent-filter>
+        </receiver>
 
         <receiver android:name=".core.BootReceiver"
             android:exported="true">

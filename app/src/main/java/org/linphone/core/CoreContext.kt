@@ -446,6 +446,12 @@ class CoreContext
         }
 
         @WorkerThread
+        override fun onCallLogUpdated(core: Core, callLog: CallLog) {
+            // fork: zrcadlo ukončeného hovoru do systémové historie (pro auto)
+            org.linphone.twentyone.car.CarCallLog.mirror(callLog, context)
+        }
+
+        @WorkerThread
         override fun onTransferStateChanged(core: Core, transfered: Call, state: Call.State) {
             Log.i(
                 "$TAG Transferred call [${transfered.remoteAddress.asStringUriOnly()}] state changed [$state]"
@@ -685,6 +691,8 @@ class CoreContext
         core = Factory.instance().createCoreWithConfig(corePreferences.config, context)
         core.isAutoIterateEnabled = true
         core.addListener(coreListener)
+        // fork: zrcadlení zpráv do systémového úložiště SMS pro auto (P21-CAR)
+        core.addListener(org.linphone.twentyone.car.CarSmsMirror.coreListener)
 
         defaultAccountHasVideoConferenceFactoryUri = core.defaultAccount?.params?.audioVideoConferenceFactoryAddress != null
 

@@ -193,6 +193,18 @@
     <string name="twentyone_diag_copied">Zkopírováno do schránky.</string>
     <string name="twentyone_diag_empty">Zatím žádné chyby. Dobré znamení.</string>
     <string name="twentyone_tunnel_diag_link">Diagnostika (deník chyb)</string>
+    <string name="twentyone_car_log_switch">Historie hovorů do auta</string>
+    <string name="twentyone_car_log_hint">Ukládá hovory i do historie telefonu, odkud si je přečte autorádio přes Bluetooth.</string>
+    <string name="twentyone_car_sms_title">SMS do auta</string>
+    <string name="twentyone_car_sms_title_active">SMS do auta (zapnuto)</string>
+    <string name="twentyone_car_sms_unavailable">Tenhle telefon roli výchozí aplikace pro SMS nenabízí.</string>
+    <string name="twentyone_car_sms_already">Zrcadlení zpráv pro auto už je zapnuté.</string>
+    <string name="twentyone_car_title">Vytáčení z auta</string>
+    <string name="twentyone_car_switch">Nabídnout Phone21 systému jako účet pro volání</string>
+    <string name="twentyone_car_hint">Ještě jeden krok: v aplikaci Telefon → Nastavení → Účty pro volání povol „Phone21 (miniserver)“. Auto připojené k telefonu pak vytáčí přes miniserver — buď se tě systém při hovoru zeptá, nebo si Phone21 nastav jako výchozí pro odchozí hovory. Privátní síť musí být připojená.</string>
+    <string name="twentyone_car_open_accounts">Otevřít účty pro volání</string>
+    <string name="twentyone_car_account_label" translatable="false">Phone21 (miniserver)</string>
+    <string name="twentyone_car_register_failed">Účet pro volání se do systému nepodařilo přidat.</string>
     <string name="assistant_qr_code_invalid_toast">Invalid QR code!</string>
     <string name="assistant_login_third_party_sip_account">Use a third party SIP account</string>
     <string name="assistant_login_third_party_sip_account_title">Third party SIP account</string>
