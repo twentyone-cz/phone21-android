@@ -170,7 +170,9 @@ object TsManager {
             // (přesně to se stalo: klíč vydán, nikdy nepoužit, deník mlčel).
             poller.schedule({
                 val st = state.value
-                if (loggedIn.value != true) {
+                // RUNNING = přihlášeno (příznak z notifikací umí přijít
+                // později a hlásil falešné E8, i když registrace proběhla)
+                if (loggedIn.value != true && st != State.RUNNING) {
                     org.linphone.twentyone.TwentyOneDiag.log(
                         "P21-E8",
                         ("přihlášení do 30 s neproběhlo (stav=%s) — klíč se " +

@@ -110,7 +110,10 @@ class TunnelReadinessManager {
         val state = TsManager.state.value
         val loggedIn = TsManager.loggedIn.value == true
         val verified = TsManager.endpointVerified.value == true
-        val available = loggedIn && verified && (state == TsManager.State.RUNNING)
+        // Stav RUNNING z definice znamená přihlášený uzel — příznak
+        // přihlášení z notifikací chodí pozdě/nespolehlivě a držel účet
+        // v „disabled", i když tunel dávno běžel (do logu se dál píše).
+        val available = verified && (state == TsManager.State.RUNNING)
         if (available == ready) return
         ready = available
         Log.i("$TAG Network readiness is now [$available]")
