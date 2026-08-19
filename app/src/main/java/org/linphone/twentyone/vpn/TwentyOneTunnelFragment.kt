@@ -100,11 +100,41 @@ class TwentyOneTunnelFragment : Fragment() {
         TsManager.directConnection.observe(viewLifecycleOwner) { updateState() }
         TsManager.tailnetAddress.observe(viewLifecycleOwner) { updateState() }
         TsManager.browseToUrl.observe(viewLifecycleOwner) { url ->
-            if (!url.isNullOrEmpty()) {
+            if (url.isNullOrEmpty()) return@observe
+            // Hodnotu spotřebovat HNED: LiveData ji jinak přehraje při
+            // každém dalším otevření obrazovky a pokus o otevření odkazu
+            // by se opakoval donekonečna (přesně tak padala P21-S1).
+            TsManager.browseToUrl.value = null
+            try {
                 startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            } catch (e: android.content.ActivityNotFoundException) {
+                // telefon bez prohlížeče (na GrapheneOS jde vypnout) —
+                // neodchycená výjimka tady zabíjela celou aplikaci
+                // uprostřed registrace
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E14",
+                    "není čím otevřít přihlašovací odkaz (telefon bez prohlížeče)"
+                )
+                showLoginUrlDialog(url)
             }
         }
         updateState()
+    }
+
+    private fun showLoginUrlDialog(url: String) {
+        val ctx = requireContext()
+        android.app.AlertDialog.Builder(ctx)
+            .setTitle(getString(R.string.twentyone_tunnel_login_url_title))
+            .setMessage(getString(R.string.twentyone_tunnel_login_url_message, url))
+            .setPositiveButton(R.string.twentyone_tunnel_login_url_copy) { _, _ ->
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(
+                    android.content.ClipData.newPlainText("login", url)
+                )
+            }
+            .setNegativeButton(R.string.twentyone_tunnel_login_url_close, null)
+            .show()
     }
 
     private fun connect() {

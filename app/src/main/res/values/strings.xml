@@ -177,6 +177,10 @@
     <string name="twentyone_tunnel_connect">Připojit</string>
     <string name="twentyone_tunnel_disconnect">Odpojit</string>
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>
+    <string name="twentyone_tunnel_login_url_title">Dokončit přihlášení do sítě</string>
+    <string name="twentyone_tunnel_login_url_message">Síť chce dokončit přihlášení na téhle adrese, ale v telefonu není čím ji otevřít. Zkopíruj si ji a otevři na jiném zařízení:\n\n%s</string>
+    <string name="twentyone_tunnel_login_url_copy">Zkopírovat adresu</string>
+    <string name="twentyone_tunnel_login_url_close">Zavřít</string>
     <string name="twentyone_screen_landing" translatable="false">obrazovka P21-U1</string>
     <string name="twentyone_screen_tunnel" translatable="false">obrazovka P21-S1</string>
     <string name="twentyone_screen_diag" translatable="false">obrazovka P21-S2</string>
