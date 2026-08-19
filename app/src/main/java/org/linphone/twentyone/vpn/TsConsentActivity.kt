@@ -29,6 +29,8 @@ class TsConsentActivity : AppCompatActivity() {
             connect()
         } else {
             Log.w("$TAG VPN permission was refused, tunnel stays down")
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "souhlas s VPN odmítnut — tunel zůstává vypnutý")
         }
         finish()
     }
@@ -52,6 +54,8 @@ class TsConsentActivity : AppCompatActivity() {
     }
 
     private fun connect() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "souhlas s VPN udělen — přihlašuji klíčem z QR")
         TsManager.startService()
         TsManager.login(controlUrl, authKey)
     }

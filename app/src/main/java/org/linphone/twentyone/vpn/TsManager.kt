@@ -116,23 +116,70 @@ object TsManager {
             }
             Log.i("$TAG Logging in against [$url], pre-auth key ${if (authKey.isNullOrEmpty()) "absent" else "present"}")
 
-            val updatePrefs = JSONObject()
+            // Sekvence PŘESNĚ podle upstreamu (IpnViewModel.login):
+            // 1) editPrefs vrátí KOMPLETNÍ prefs — částečný UpdatePrefs by
+            //    ostatní pole vynuloval; s klíčem se zároveň ruší LoggedOut
+            val masked = JSONObject()
                 .put("ControlURL", url)
-                .put("WantRunning", true)
-            val options = JSONObject().put("UpdatePrefs", updatePrefs)
+                .put("ControlURLSet", true)
+            if (!authKey.isNullOrEmpty()) {
+                masked.put("LoggedOut", false).put("LoggedOutSet", true)
+            }
+            val edited = callLocalApi("PATCH", "prefs", masked.toString().toByteArray())
+            if (edited == null) {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E8", "úprava předvoleb tunelu selhala, endpoint=%s".format(url))
+                return@execute
+            }
+            val fullPrefs = try {
+                JSONObject(String(edited, Charsets.UTF_8))
+            } catch (e: Exception) {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E8", "nečitelné předvolby tunelu: %s".format(e.message ?: ""))
+                return@execute
+            }
+            fullPrefs.put("WantRunning", true)
+
+            // 2) start s kompletními prefs (resetuje control client) + klíč
+            val options = JSONObject().put("UpdatePrefs", fullPrefs)
             if (!authKey.isNullOrEmpty()) {
                 options.put("AuthKey", authKey)
             }
-
             if (callLocalApi("POST", "start", options.toString().toByteArray()) == null) {
                 Log.e("$TAG Failed to start tunnel session")
                 org.linphone.twentyone.TwentyOneDiag.log(
                     "P21-E8", "start tunelu selhal, endpoint=%s".format(url))
                 return@execute
             }
-            if (authKey.isNullOrEmpty()) {
-                callLocalApi("POST", "login-interactive", null)
+
+            // 3) login-interactive je POVINNÝ i s klíčem (upstream: "required
+            //    for both") — s klíčem neotevírá prohlížeč, jen spustí
+            //    registraci. Bez něj jádro klíč drží a NIKDY ho nepoužije
+            //    (přesně tak zůstal klíč z QR nevyužitý).
+            if (callLocalApi("POST", "login-interactive", null) == null) {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E8", "spuštění přihlášení selhalo, endpoint=%s".format(url))
+                return@execute
             }
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN",
+                "přihlášení odesláno (klíč=%s)".format(
+                    if (authKey.isNullOrEmpty()) "ne" else "ano"))
+            // Registrace u koordinátora běží asynchronně — do deníku se musí
+            // dostat i výsledek, jinak ztracený klíč nezanechá žádnou stopu
+            // (přesně to se stalo: klíč vydán, nikdy nepoužit, deník mlčel).
+            poller.schedule({
+                val st = state.value
+                if (loggedIn.value != true) {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-E8",
+                        ("přihlášení do 30 s neproběhlo (stav=%s) — klíč se " +
+                            "nejspíš nedostal ke koordinátorovi").format(st))
+                } else {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN", "přihlášení potvrzeno (stav=%s)".format(st))
+                }
+            }, 30, TimeUnit.SECONDS)
         }
     }
 
@@ -237,8 +284,14 @@ object TsManager {
                 browseToUrl.postValue(null)
             }
         }
-        if (notify.has("BrowseToURL")) {
-            browseToUrl.postValue(notify.getString("BrowseToURL"))
+        // POZOR: pole bývá v notifikacích přítomné s hodnotou null a org.json
+        // ho z getString vrací jako ŘETĚZEC "null" — bez těchhle stráží se
+        // "null" tvářil jako adresa k otevření (zdroj pádů před 21p.21)
+        if (notify.has("BrowseToURL") && !notify.isNull("BrowseToURL")) {
+            val url = notify.getString("BrowseToURL")
+            if (url.isNotBlank() && url != "null" && url.startsWith("http")) {
+                browseToUrl.postValue(url)
+            }
         }
         if (notify.has("Prefs")) {
             val prefsObject = notify.getJSONObject("Prefs")
