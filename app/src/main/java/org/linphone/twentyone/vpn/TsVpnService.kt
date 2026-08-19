@@ -119,7 +119,7 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
             if (isLockdownEnabled) {
                 org.linphone.twentyone.TwentyOneDiag.log(
                     "P21-E15",
-                    "systémové „Blokovat připojení bez VPN" je zapnuté — " +
+                    "systémové „Blokovat připojení bez VPN“ je zapnuté — " +
                         "mimo telefonování odřízne telefon od internetu"
                 )
                 TsNotifications.notifyLockdownWarning(this)
