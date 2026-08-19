@@ -216,6 +216,11 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn" />
+            <!-- Tunel neumí být jediná síť telefonu — systémové always-on
+                 (a s ním „Blokovat připojení bez VPN") se nenabízí. -->
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="false" />
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
