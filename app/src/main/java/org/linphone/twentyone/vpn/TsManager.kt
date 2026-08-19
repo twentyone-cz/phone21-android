@@ -215,6 +215,11 @@ object TsManager {
             appContext.startForegroundService(intent)
         } catch (e: Exception) {
             Log.e("$TAG Failed to start tunnel service: $e")
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E17",
+                "službu tunelu nejde nastartovat: %s %s".format(
+                    e.javaClass.simpleName, e.message ?: "")
+            )
         }
     }
 

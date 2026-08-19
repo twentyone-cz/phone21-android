@@ -82,6 +82,10 @@ class TunnelReadinessManager {
         evaluate()
     }
 
+    private val vpnObserver = Observer<Boolean> {
+        evaluate()
+    }
+
     @WorkerThread
     fun onCoreStarted(core: Core) {
         this.core = core
@@ -91,6 +95,7 @@ class TunnelReadinessManager {
             TsManager.state.observeForever(stateObserver)
             TsManager.loggedIn.observeForever(loginObserver)
             TsManager.endpointVerified.observeForever(endpointObserver)
+            TsManager.vpnActive.observeForever(vpnObserver)
         }
         applyState(false)
     }
@@ -102,27 +107,53 @@ class TunnelReadinessManager {
             TsManager.state.removeObserver(stateObserver)
             TsManager.loggedIn.removeObserver(loginObserver)
             TsManager.endpointVerified.removeObserver(endpointObserver)
+            TsManager.vpnActive.removeObserver(vpnObserver)
         }
         this.core = null
+    }
+
+    private var lastAutoStart = 0L
+
+    // Jádro tunelu běží i bez rozhraní (po vlastních socketech) — po
+    // restartu telefonu nebo násilném ukončení službu rozhraní nikdo
+    // nespustí a registrace by mlela io error. Když je souhlas s VPN
+    // už udělený, služba se spustí sama; bez souhlasu se nic neděje
+    // (dialog patří obrazovce Privátní síť / QR cestě).
+    private fun maybeStartService() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastAutoStart < 30_000) return
+        if (android.net.VpnService.prepare(coreContext.context) != null) return
+        lastAutoStart = now
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN",
+            "rozhraní tunelu neběží a souhlas je udělen — startuji službu"
+        )
+        TsManager.startService()
     }
 
     private fun evaluate() {
         val state = TsManager.state.value
         val loggedIn = TsManager.loggedIn.value == true
         val verified = TsManager.endpointVerified.value == true
+        val vpnUp = TsManager.vpnActive.value == true
         // Stav RUNNING z definice znamená přihlášený uzel — příznak
         // přihlášení z notifikací chodí pozdě/nespolehlivě a držel účet
         // v „disabled", i když tunel dávno běžel (do logu se dál píše).
-        val available = verified && (state == TsManager.State.RUNNING)
+        if (verified && state == TsManager.State.RUNNING && !vpnUp) {
+            maybeStartService()
+        }
+        // Bez postaveného rozhraní nemá registrace kudy jít — dřív se
+        // zapínala i tak a padala na io error.
+        val available = verified && (state == TsManager.State.RUNNING) && vpnUp
         if (available == ready) return
         ready = available
         Log.i("$TAG Network readiness is now [$available]")
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-NET",
-            ("síť %s (stav=%s přihlášení=%s ověření=%s) — registrace u " +
-                "ústředny se %s").format(
+            ("síť %s (stav=%s přihlášení=%s ověření=%s rozhraní=%s) — " +
+                "registrace u ústředny se %s").format(
                 if (available) "připravena" else "nepřipravena",
-                state, loggedIn, verified,
+                state, loggedIn, verified, vpnUp,
                 if (available) "zapíná" else "vypíná")
         )
         coreContext.postOnCoreThread {

@@ -104,6 +104,10 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
                 startForegroundNotification()
                 warnIfLockdown()
                 TsManager.setWantRunning(true)
+                // stopa do deníku: bez ní nejde rozlišit „služba vůbec
+                // nenastartovala" od „rozhraní se nepostavilo"
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "služba běží, žádám o rozhraní")
                 libtailscale.Libtailscale.requestVPN(this)
                 START_STICKY
             }
