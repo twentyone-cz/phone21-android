@@ -69,6 +69,12 @@ object TsManager {
     val tailnetAddress = MutableLiveData<String?>(null)
     val endpointVerified = MutableLiveData(false)
 
+    /** Poslední zjištěný stav systémového „Blokovat připojení bez VPN"
+     *  (čte ho služba tunelu při startu; null = zatím nezjištěno).
+     *  Diagnostika stahování podle něj dává jednoznačný verdikt. */
+    @Volatile
+    var lockdownDetected: Boolean? = null
+
     @Volatile
     private var endpointMatches = false
 

@@ -63,8 +63,9 @@ object TwentyOneProvisioning {
             } catch (e: Exception) {
                 Log.e("$TAG Download of [$url] via [$lastRoute] failed: $e")
                 val code = codeFor(e)
-                TwentyOneDiag.log(code, "cíl=%s cesta=%s výjimka=%s %s".format(
-                    target, lastRoute, e.javaClass.simpleName, e.message ?: ""))
+                TwentyOneDiag.log(code, "cíl=%s cesta=%s %s výjimka=%s %s".format(
+                    target, lastRoute, networkFacts(),
+                    e.javaClass.simpleName, e.message ?: ""))
                 onError(describe(e, target))
             }
         }
@@ -140,11 +141,38 @@ object TwentyOneProvisioning {
         return "<config" in head
     }
 
+    /** Změřené okolnosti pro deník: běží tunel? je zapnutá systémová
+     *  blokace provozu mimo VPN? Diagnóza místo hádání. */
+    private fun networkFacts(): String {
+        val lockdown = when (org.linphone.twentyone.vpn.TsManager.lockdownDetected) {
+            true -> "zapnutá"
+            false -> "vypnutá"
+            null -> "?"
+        }
+        return "tunel=%s blokace-mimo-vpn=%s".format(
+            if (vpnUp()) "běží" else "ne", lockdown)
+    }
+
+    private fun vpnUp(): Boolean {
+        val cm = coreContext.context.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as ConnectivityManager
+        @Suppress("DEPRECATION")
+        return cm.allNetworks.any {
+            cm.getNetworkCapabilities(it)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        }
+    }
+
     private fun codeFor(e: Exception): String = when {
         e is IllegalStateException -> "P21-E2"
         e is java.net.NoRouteToHostException && e.message == "bez wifi" -> "P21-E3"
         e is java.net.ConnectException || e is java.net.NoRouteToHostException -> "P21-E4"
-        e is java.net.SocketTimeoutException -> "P21-E5"
+        e is java.net.SocketTimeoutException ->
+            if (org.linphone.twentyone.vpn.TsManager.lockdownDetected == true) {
+                "P21-E16"
+            } else {
+                "P21-E5"
+            }
         e is java.net.UnknownHostException -> "P21-E6"
         else -> "P21-E7"
     }
@@ -159,13 +187,31 @@ object TwentyOneProvisioning {
             e is java.net.ConnectException || e is java.net.NoRouteToHostException ->
                 "[P21-E4] Na $target se přes $lastRoute nejde dostat — je " +
                 "telefon na stejné wifi jako miniserver?"
-            e is java.net.SocketTimeoutException ->
-                "[P21-E5] $target neodpovídá přes $lastRoute (vypršel čas). " +
-                "Sedí adresa s tvojí sítí? Nemá wifi izolaci klientů?"
+            e is java.net.SocketTimeoutException -> describeTimeout(target)
             e is java.net.UnknownHostException ->
                 "[P21-E6] Adresu $target se nepodařilo najít."
             else -> "[P21-E7] Stažení z $target selhalo: " +
                 "${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    /** Timeout má tři různé příčiny — kód i text se volí podle toho, co
+     *  se dá ZMĚŘIT, ne odhadem. */
+    private fun describeTimeout(target: String): String {
+        val lockdown = org.linphone.twentyone.vpn.TsManager.lockdownDetected
+        return when {
+            lockdown == true ->
+                "[P21-E16] Stahování blokuje systémové „Blokovat " +
+                "připojení bez VPN“. Vypni ho: Nastavení → VPN " +
+                "→ Phone21, pak naskenuj nový QR."
+            vpnUp() ->
+                "[P21-E5] $target neodpovídá přes $lastRoute a tunel právě " +
+                "běží. Zkontroluj systémové „Blokovat připojení bez " +
+                "VPN“ u Phone21; když je vypnuté, půjde o izolaci " +
+                "klientů na wifi."
+            else ->
+                "[P21-E5] $target neodpovídá přes $lastRoute (vypršel čas). " +
+                "Sedí adresa s tvojí sítí? Nemá wifi izolaci klientů?"
         }
     }
 }

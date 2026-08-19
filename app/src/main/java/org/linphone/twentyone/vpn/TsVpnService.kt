@@ -116,6 +116,7 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
     private fun warnIfLockdown() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         try {
+            TsManager.lockdownDetected = isLockdownEnabled
             if (isLockdownEnabled) {
                 org.linphone.twentyone.TwentyOneDiag.log(
                     "P21-E15",
