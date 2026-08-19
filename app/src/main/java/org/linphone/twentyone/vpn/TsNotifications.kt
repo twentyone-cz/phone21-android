@@ -15,6 +15,7 @@ import org.linphone.ui.main.MainActivity
 
 object TsNotifications {
     const val NOTIFICATION_ID = 42
+    const val LOCKDOWN_NOTIFICATION_ID = 43
     private const val CHANNEL_ID = "twentyone_tunnel"
 
     fun createChannel(context: Context) {
@@ -45,5 +46,33 @@ object TsNotifications {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(pendingIntent)
             .build()
+    }
+
+    /** Systémové „Blokovat připojení bez VPN" odřízne při našem tunelu
+     *  (vede jen telefonování) zbytek telefonu od internetu. Aplikace to
+     *  vypnout nemůže — aspoň na to nahlas upozorní a odvede uživatele
+     *  přímo do nastavení VPN. */
+    fun notifyLockdownWarning(context: Context) {
+        val intent = Intent(android.provider.Settings.ACTION_VPN_SETTINGS).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            1,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.linphone_notification)
+            .setContentTitle(context.getString(R.string.twentyone_tunnel_lockdown_title))
+            .setContentText(context.getString(R.string.twentyone_tunnel_lockdown_message))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                context.getString(R.string.twentyone_tunnel_lockdown_message)))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        context.getSystemService(NotificationManager::class.java)
+            .notify(LOCKDOWN_NOTIFICATION_ID, notification)
     }
 }

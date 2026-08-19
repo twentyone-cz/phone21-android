@@ -177,6 +177,8 @@
     <string name="twentyone_tunnel_connect">Připojit</string>
     <string name="twentyone_tunnel_disconnect">Odpojit</string>
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>
+    <string name="twentyone_tunnel_lockdown_title">Telefon může přijít o internet</string>
+    <string name="twentyone_tunnel_lockdown_message">V systému je pro Phone21 zapnuté „Blokovat připojení bez VPN". Naše síť vede jen telefonování, takže tahle volba odpojí zbytek telefonu od internetu. Klepni sem a v nastavení VPN ji u Phone21 vypni.</string>
     <string name="twentyone_tunnel_login_url_title">Dokončit přihlášení do sítě</string>
     <string name="twentyone_tunnel_login_url_message">Síť chce dokončit přihlášení na téhle adrese, ale v telefonu není čím ji otevřít. Zkopíruj si ji a otevři na jiném zařízení:\n\n%s</string>
     <string name="twentyone_tunnel_login_url_copy">Zkopírovat adresu</string>

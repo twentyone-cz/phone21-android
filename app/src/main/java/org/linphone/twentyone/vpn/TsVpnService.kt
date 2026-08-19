@@ -102,10 +102,29 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
             }
             else -> {
                 startForegroundNotification()
+                warnIfLockdown()
                 TsManager.setWantRunning(true)
                 libtailscale.Libtailscale.requestVPN(this)
                 START_STICKY
             }
+        }
+    }
+
+    /** Systémové „Blokovat připojení bez VPN" u tunelu, který vede jen
+     *  telefonování, odřízne zbytek telefonu od internetu. Aplikace tu
+     *  volbu neumí změnit — jen ji poznat a nahlas na ni upozornit. */
+    private fun warnIfLockdown() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        try {
+            if (isLockdownEnabled) {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-E15",
+                    "systémové „Blokovat připojení bez VPN" je zapnuté — " +
+                        "mimo telefonování odřízne telefon od internetu"
+                )
+                TsNotifications.notifyLockdownWarning(this)
+            }
+        } catch (_: Exception) {
         }
     }
 
