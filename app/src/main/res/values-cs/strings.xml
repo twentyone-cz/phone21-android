@@ -3,7 +3,7 @@
 <!ENTITY appName "Phone21">
 ]>
 <resources>
-    <string name="sip_address">SIP adresa</string>
+    <string name="sip_address">Adresa</string>
     <string name="sip_address_display_name">Zobrazené jméno</string>
     <plurals name="days">
         <item quantity="one">%s den</item>
@@ -18,7 +18,7 @@
         <item quantity="other">%s souborů se nahrává</item>
     </plurals>
     <string name="assistant_qr_code_invalid_toast">Neplatný QR kód!</string>
-    <string name="assistant_login_address_without_username_toast">SIP adrese neobsahuje uživatelské jméno!</string>
+    <string name="assistant_login_address_without_username_toast">Adresa neobsahuje uživatelské jméno!</string>
     <string name="help_about_contribute_translations_title">Příspět do překladu &appName;</string>
     <string name="help_troubleshooting_print_logs_in_logcat">Zapisovat logy do Logcatu</string>
     <string name="settings_security_enable_vfs_dialog_confirmation_message">Po aktivaci bude nutné aplikaci restartovat.\nPoté budou všechna data aplikace šifrována a přístupná pouze přes aplikaci.\n\nBuďte opatrní, tento krok je nevratný!</string>
@@ -28,11 +28,11 @@
     <string name="call_audio_device_type_headset">Náhlavní souprava</string>
     <string name="call_stats_zrtp_cipher_algo">Šifrovací algoritmus: %s</string>
     <string name="call_error_user_not_found_toast">Uživatel nebyl nalezen</string>
-    <string name="conference_failed_to_add_participant_invalid_address_toast">Neplatná SIP adresa, nelze přidat do konference</string>
+    <string name="conference_failed_to_add_participant_invalid_address_toast">Neplatná adresa, nelze přidat do konference</string>
     <string name="dialog_install">Instalovat</string>
     <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
     <string name="remote_provisioning_config_failed_toast">Došlo k chybě při pokusu o stažení a použití vzdálené konfigurace</string>
-    <string name="assistant_third_party_sip_account_warning_explanation">Některé funkce jako skupinové zprávy nebo videokonference vyžadují účet &appName;\n\nTyto funkce jsou skryté, pokud se zaregistrujete pomocí SIP účtu třetí strany.\n\nPro aktivaci v komerčním projektu nás prosím kontaktujte.</string>
+    <string name="assistant_third_party_sip_account_warning_explanation">Účet se dá nastavit i ručně, ale běžná cesta je naskenovat QR kód z ovládání miniserveru — nastaví účet i síť najednou.</string>
     <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění. Android se pak zeptá ještě na <b>zařízení v okolí</b> — to je Bluetooth, aby šel hovor přehodit do sluchátek nebo autorádia.</string>
     <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
     <string name="help_about_version_title">Verze</string>
@@ -114,7 +114,7 @@
     <string name="settings_network_use_wifi_only">Používat pouze sítě Wi-Fi</string>
     <string name="settings_advanced_enable_auto_answer_incoming_calls_after_delay_hint">Prodleva v milisekundách</string>
     <string name="manage_account_status_failed_summary">Připojení účtu selhalo, zkontrolujte nastavení.</string>
-    <string name="manage_account_dialog_remove_account_message">Pokud si přejete nevratně smazat svůj účet, navštivte: https://sip.linphone.org</string>
+    <string name="manage_account_dialog_remove_account_message">Účet z aplikace odeberete tímto krokem; na miniserveru zůstane beze změny.</string>
     <string name="account_settings_conference_factory_uri_title">URI konfiguračního serveru konference</string>
     <string name="account_settings_cpim_in_basic_conversations_title">Použít CPIM v \"základních\" konverzacích</string>
     <string name="account_settings_replace_plus_by_00_title">Při formátování telefonních čísel nahradit \"+\" za \"00\"</string>
@@ -188,7 +188,7 @@
     <string name="welcome_page_2_title">Bezpečné</string>
     <string name="welcome_page_3_title">Bez účtů</string>
     <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
-    <string name="sip_address_copied_to_clipboard_toast">SIP adresa zkopírována do schránky</string>
+    <string name="sip_address_copied_to_clipboard_toast">Adresa zkopírována do schránky</string>
     <string name="new_account_configured_toast">Nový účet byl nastaven</string>
     <string name="file_successfully_exported_to_media_store_toast">Soubor byl exportován do systémové galerie</string>
     <string name="file_successfully_exported_to_documents_toast">Soubor byl exportován do dokumentů</string>
@@ -203,10 +203,10 @@
     <string name="assistant_dialog_confirm_phone_number_message">Jste si jistý(á), že vaše telefonní číslo je %s?</string>
     <string name="assistant_account_login">Přihlásit se</string>
     <string name="assistant_scan_qr_code">Naskenovat QR kód</string>
-    <string name="assistant_login_third_party_sip_account">Použít SIP účet třetí strany</string>
-    <string name="assistant_login_third_party_sip_account_title">SIP účet třetí strany</string>
+    <string name="assistant_login_third_party_sip_account">Zadat údaje ručně</string>
+    <string name="assistant_login_third_party_sip_account_title">Ruční nastavení účtu</string>
     <string name="assistant_login_using_single_sign_on">Jednotné přihlášení (SSO)</string>
-    <string name="assistant_login_cant_parse_address_toast">Neplatná SIP adresa!</string>
+    <string name="assistant_login_cant_parse_address_toast">Neplatná adresa!</string>
     <string name="assistant_account_login_already_connected_error">Účet již existuje</string>
     <string name="assistant_no_account_yet">Ještě nemáte účet?</string>
     <string name="assistant_account_register">Registrace</string>
@@ -307,8 +307,8 @@
     <string name="settings_contacts_ldap_request_timeout_title">Časový limit (v sekundách)</string>
     <string name="settings_contacts_ldap_min_characters_title">Minimální počet znaků pro započetí dotazu</string>
     <string name="settings_contacts_ldap_name_attributes_title">Atributy názvu</string>
-    <string name="settings_contacts_ldap_sip_attributes_title">Atributy SIP</string>
-    <string name="settings_contacts_ldap_sip_domain_title">Doména SIP</string>
+    <string name="settings_contacts_ldap_sip_attributes_title">Atributy adresy</string>
+    <string name="settings_contacts_ldap_sip_domain_title">Doména adresy</string>
     <string name="settings_contacts_ldap_error_toast">Nastala chyba, server LDAP nebyl uložen!</string>
     <string name="settings_meetings_title">Schůzky</string>
     <string name="settings_meetings_default_layout_title">Výchozí rozložení</string>
@@ -371,7 +371,7 @@
     <string name="manage_account_choose_mode_apply_label">Použít</string>
     <string name="manage_account_e2e_encrypted_mode_default_title">Režim s koncovým šifrováním</string>
     <string name="manage_account_e2e_encrypted_mode_interoperable_title">Režim kompatibility</string>
-    <string name="manage_account_e2e_encrypted_mode_interoperable_summary">Tento režim Vám umožňuje využívat všechny funkce &appName; a zároveň zůstat kompatibilní s jakoukoli SIP službou díky šifrování typu point-to-point.</string>
+    <string name="manage_account_e2e_encrypted_mode_interoperable_summary">Tento režim umožňuje využívat všechny funkce &appName; a zároveň zůstat kompatibilní s jinými službami díky šifrování mezi koncovými body.</string>
     <string name="manage_account_device_remove">Odstranit</string>
     <string name="manage_account_device_last_connection">Poslední připojení:</string>
     <string name="manage_account_dialog_remove_account_title">Odhlásit se z účtu?</string>
@@ -414,7 +414,7 @@
     <string name="contacts_list_all_contacts_title">Všechny kontakty</string>
     <string name="contacts_list_filter_popup_see_all">Zobrazit vše</string>
     <string name="contacts_list_filter_popup_see_linphone_only">Zobrazit &appName; kontakty</string>
-    <string name="contacts_list_filter_popup_see_sip_only">Zobrazit SIP kontakty</string>
+    <string name="contacts_list_filter_popup_see_sip_only">Zobrazit ostatní kontakty</string>
     <string name="contact_new_title">Nový kontakt</string>
     <string name="contact_edit_title">Upravit kontakt</string>
     <string name="contact_editor_last_name">Příjmení</string>
@@ -425,7 +425,7 @@
     <string name="contact_editor_error_saving_contact_toast">Vytvoření kontaktu se nezdařilo!</string>
     <string name="contact_editor_dialog_abort_confirmation_title">Zahodit změny?</string>
     <string name="contact_editor_dialog_abort_confirmation_message">Všechny změny budou ztraceny</string>
-    <string name="contact_details_numbers_and_addresses_title">Telefonní čísla a SIP adresy</string>
+    <string name="contact_details_numbers_and_addresses_title">Telefonní čísla a adresy</string>
     <string name="contact_details_company_name">Společnost:</string>
     <string name="contact_details_job_title">Pracovní pozice:</string>
     <string name="contact_details_trust_title">Vztah</string>
@@ -444,7 +444,7 @@
     <string name="contact_dialog_devices_trust_help_title">Úroveň důvěry</string>
     <string name="contact_dialog_delete_title">Smazat %s?</string>
     <string name="contact_dialog_delete_message">Kontakt bude nadobro nevratně smazán.</string>
-    <string name="contact_dialog_pick_phone_number_or_sip_address_title">Vyberte číslo nebo SIP adresu</string>
+    <string name="contact_dialog_pick_phone_number_or_sip_address_title">Vyberte číslo nebo adresu</string>
     <string name="contact_presence_status_away">Pryč</string>
     <string name="contact_presence_status_was_online_yesterday_at">Dostupný včera v %s</string>
     <string name="contact_presence_status_was_online_today_at">Dostupný dnes v %s</string>
@@ -710,7 +710,7 @@
     <string name="car_favorites_contacts_title">Oblíbené</string>
     <string name="car_favorites_contacts_list_empty">Zatím žádné oblíbené kontakty</string>
     <string name="menu_see_existing_contact">Zobrazit kontakt</string>
-    <string name="menu_copy_sip_address">Kopírovat adresu SIP</string>
+    <string name="menu_copy_sip_address">Kopírovat adresu</string>
     <string name="menu_copy_phone_number">Kopírovat telefonní číslo</string>
     <string name="menu_delete_history">Smazat historii</string>
     <string name="menu_invite">Pozvat</string>
@@ -826,7 +826,7 @@
     <string name="meeting_failed_to_edit_schedule_toast">Úprava schůzky selhala!</string>
     <string name="settings_advanced_print_logs_crashlytics_title">Pomozte vývojářům řešit problémy odesláním protokolů do Crashlytics po pádu</string>
     <string name="settings_advanced_logs_upload_server_url">Adresa URL serveru pro sdílení logů</string>
-    <string name="contacts_list_sip_empty">Momentálně žádný SIP kontakt…</string>
+    <string name="contacts_list_sip_empty">Zatím žádný takový kontakt…</string>
     <string name="contacts_change_filter_label">Změnit filtr</string>
     <string name="help_about_contribute_translations_subtitle">Pomozte zpřístupnit aplikaci co největšímu počtu lidí.</string>
     <string name="help_about_user_guide_title">Průvodce &appName;</string>
@@ -856,7 +856,7 @@
     <string name="assistant_sip_account_lime_algorithm_hint">Povolené hodnoty jsou: c25519, c448, c25519k512, c25519mlk512 a c448mlk1024</string>
     <string name="settings_contacts_sort_by_first_name_title">Seřadit kontakty podle</string>
     <string name="settings_contacts_edit_native_contacts_in_linphone_title">Použijte editor kontaktů aplikace &appName; pro nativní kontakty</string>
-    <string name="settings_contacts_hide_empty_contacts_title">Skrýt kontakty bez SIP adresy a telefonního čísla</string>
+    <string name="settings_contacts_hide_empty_contacts_title">Skrýt kontakty bez adresy a telefonního čísla</string>
     <string name="settings_contacts_carddav_read_only_label">Tento adresář je pouze pro čtení</string>
     <string name="settings_contacts_ldap_verbose_mode_title">Přidat protokoly LDAP do protokolů &appName;</string>
     <string name="settings_contacts_ldap_empty_field_error_toast">Všechna pole musí být vyplněna</string>
@@ -871,7 +871,7 @@
     <string name="settings_developer_push_compatible_domains_list_title">Seznam domén kompatibilních s push notifikacemi (oddělené čárkami)</string>
     <string name="settings_developer_clear_native_friends_in_database_subtitle">Při příštím spuštění aplikace budou znovu importovány, pokud neodstraníte oprávnění pro kontakty</string>
     <string name="settings_developer_cleared_native_friends_in_database_toast">Importované kontakty byly smazány</string>
-    <string name="manage_account_outbound_proxy">Odchozí SIP proxy</string>
+    <string name="manage_account_outbound_proxy">Odchozí proxy</string>
     <string name="manage_account_dialog_outbound_proxy_help_message">Pokud je toto pole vyplněno, odchozí proxy bude automaticky povolena. Nechte jej prázdné, chcete-li ji zakázat.</string>
     <string name="history_list_change_selected_account_label">Změnit účet</string>
     <string name="contacts_list_search_results_limit_reached_label">Bylo dosaženo limitu výsledků vyhledávání, upřesněte své vyhledávání.</string>
@@ -924,7 +924,7 @@
     <string name="settings_contacts_ldap_saved_toast">LDAP server uložen</string>
     <string name="call_action_stop_record_call">Zastavit nahrávání</string>
     <string name="call_has_been_recorded">Záznam hovoru byl uložen</string>
-    <string name="settings_advanced_calls_sip_info_dmtf_title">Použít SIP INFO pro DTMF</string>
+    <string name="settings_advanced_calls_sip_info_dmtf_title">Alternativní přenos tónů</string>
     <string name="settings_advanced_calls_rfc_2833_dmtf_title">Použít RFC 2833 pro DTMF</string>
     <string name="conversation_info_confirm_participant_removal_dialog_title">Odstranit účastníka?</string>
     <string name="conversation_info_confirm_participant_removal_dialog_message">Tento účastník byl odstraněn ze skupinové konverzace.</string>

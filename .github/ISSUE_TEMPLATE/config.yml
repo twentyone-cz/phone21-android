@@ -1,14 +1,5 @@
-blank_issues_enabled: false
+blank_issues_enabled: true
 contact_links:
-  - name: SDK issues
-    url: https://github.com/BelledonneCommunications/linphone-sdk/issues
-    about: Please post issues about the SDK here.
-  - name: Desktop issues
-    url: https://github.com/BelledonneCommunications/linphone-desktop/issues
-    about: Please post issues about the Desktop (Linux, MacOSX, Windows) application here.
-  - name: iOS issues
-    url: https://github.com/BelledonneCommunications/linphone-iphone/issues
-    about: Please post issues about the iPhone application here.
-  - name: Contacts
-    url: https://www.linphone.org/contact
-    about: For any contacts like commercial, licensing, mailing-lists
+  - name: Návody a časté dotazy
+    url: https://phone.twentyone.cz
+    about: Nastavení telefonu, auto přes Bluetooth, časté potíže

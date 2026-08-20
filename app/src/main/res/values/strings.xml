@@ -10,7 +10,7 @@
     <!-- Not translatable strings -->
     <string name="vertical_separator" translatable="false">|</string>
 
-    <string name="assistant_web_platform_link" translatable="false">subscribe.linphone.org</string>
+    <string name="assistant_web_platform_link" translatable="false">phone.twentyone.cz</string>
     <string name="assistant_linphone_contact_us_link" translatable="false">phone.twentyone.cz</string>
 
     <string name="notification_channel_call_id" translatable="false">linphone_6.0_notification_call_id</string>
@@ -36,8 +36,8 @@
     <string name="website_user_guide_url" translatable="false">https://phone.twentyone.cz/instalace</string>
     <string name="website_privacy_policy_url" translatable="false">https://phone.twentyone.cz</string>
     <string name="website_terms_and_conditions_url" translatable="false">https://phone.twentyone.cz</string>
-    <string name="web_platform_register_email_url" translatable="false">https://subscribe.linphone.org/register/email</string>
-    <string name="web_platform_forgotten_password_url" translatable="false">https://subscribe.linphone.org</string>
+    <string name="web_platform_register_email_url" translatable="false">https://phone.twentyone.cz</string>
+    <string name="web_platform_forgotten_password_url" translatable="false">https://phone.twentyone.cz</string>
     <string name="website_translate_weblate_url" translatable="false">https://github.com/twentyone-cz/phone21-android</string>
     <string name="website_open_source_licences_usage_url" translatable="false">https://wiki.linphone.org/xwiki/wiki/public/view/Linphone/Third%20party%20components%20/#Hlinphone-android</string>
     <string name="conversation_end_to_end_encrypted_bottom_sheet_link" translatable="false"><u>https://phone.twentyone.cz</u></string>
@@ -45,7 +45,7 @@
     <string name="conversation_one_to_one_hidden_subject" translatable="false">Dummy subject</string>
 
     <!-- Common words -->
-    <string name="sip_address">SIP address</string>
+    <string name="sip_address">Address</string>
     <string name="device_id">Device ID</string>
     <string name="sip_address_display_name">Display name</string>
     <string name="sip_address_domain">Domain</string>
@@ -134,7 +134,7 @@
 
     <!-- Generic toasts -->
     <string name="phone_number_copied_to_clipboard_toast">Phone number copied into clipboard</string>
-    <string name="sip_address_copied_to_clipboard_toast">SIP address copied into clipboard</string>
+    <string name="sip_address_copied_to_clipboard_toast">Address copied into clipboard</string>
     <string name="new_account_configured_toast">New account configured</string>
     <string name="file_successfully_exported_to_media_store_toast">File has been exported to native gallery</string>
     <string name="export_file_to_media_store_error_toast">Error trying to export file to native gallery</string>
@@ -201,6 +201,30 @@
     <string name="twentyone_car_sms_unavailable">Tenhle telefon roli výchozí aplikace pro SMS nenabízí.</string>
     <string name="twentyone_car_sms_already">Zrcadlení zpráv pro auto už je zapnuté.</string>
     <string name="twentyone_car_sms_hint">Zprávy si auto čte z úložiště SMS telefonu — Phone21 se proto musí stát výchozí aplikací pro SMS. Odpovídat z auta nejde, jen číst.</string>
+    <!-- fork: kam se ukládají nové kontakty -->
+    <string name="twentyone_contacts_title">Kontakty</string>
+    <string name="twentyone_contacts_target_label">Nové kontakty ukládat do: %s</string>
+    <string name="twentyone_contacts_target_phone">adresáře telefonu</string>
+    <string name="twentyone_contacts_target_auto_suffix">%s (automaticky)</string>
+    <string name="twentyone_contacts_target_change">Změnit</string>
+    <string name="twentyone_contacts_target_dialog_title">Kam ukládat nové kontakty</string>
+    <string name="twentyone_contacts_target_option_auto">Automaticky</string>
+    <string name="twentyone_contacts_target_option_phone">Jen do telefonu</string>
+    <string name="twentyone_contacts_hint_none">Kontakty se ukládají do adresáře telefonu — vidí je i auto. Když nainstaluješ synchronizační aplikaci a přidáš adresář z miniserveru, nabídne se tady.</string>
+    <string name="twentyone_contacts_hint_app_no_book">Synchronizační aplikace je nainstalovaná, ale zatím nemá žádný adresář kontaktů. Přidej v ní účet miniserveru a zapni Kontakty.</string>
+    <string name="twentyone_contacts_hint_multiple">Adresářů je víc — vyber, do kterého se mají nové kontakty ukládat.</string>
+    <string name="twentyone_contacts_hint_lost">Dřív zvolený adresář v telefonu není. Kontakty se ukládají do telefonu, dokud nevybereš jiný.</string>
+    <!-- fork: běh na pozadí (výjimka z optimalizace baterie) -->
+    <string name="twentyone_battery_label">Běh na pozadí: %s</string>
+    <string name="twentyone_battery_unrestricted">neomezeno</string>
+    <string name="twentyone_battery_restricted">omezeno</string>
+    <string name="twentyone_battery_fix">Povolit běh na pozadí</string>
+    <string name="twentyone_battery_hint">Bez neomezeného běhu na pozadí může systém aplikaci ve spánku telefonu uspat a hovor nedozvoní.</string>
+    <!-- fork: síťová diagnostika -->
+    <string name="twentyone_diag_net_title">Síťová diagnostika</string>
+    <string name="twentyone_diag_net_ping">Změřit spojení s miniserverem</string>
+    <string name="twentyone_diag_net_waiting">Měřím…</string>
+    <string name="twentyone_diag_net_none">Zatím není co ukázat — připoj privátní síť.</string>
     <string name="twentyone_car_title">Auto (Bluetooth)</string>
     <string name="twentyone_car_switch">Nabídnout Phone21 systému jako účet pro volání</string>
     <string name="twentyone_car_hint">Ještě jeden krok: v aplikaci Telefon → Nastavení → Účty pro volání povol „Phone21 (miniserver)“. Auto připojené k telefonu pak vytáčí přes miniserver — buď se tě systém při hovoru zeptá, nebo si Phone21 nastav jako výchozí pro odchozí hovory. Privátní síť musí být připojená.</string>
@@ -208,11 +232,11 @@
     <string name="twentyone_car_account_label" translatable="false">Phone21 (miniserver)</string>
     <string name="twentyone_car_register_failed">Účet pro volání se do systému nepodařilo přidat.</string>
     <string name="assistant_qr_code_invalid_toast">Invalid QR code!</string>
-    <string name="assistant_login_third_party_sip_account">Use a third party SIP account</string>
-    <string name="assistant_login_third_party_sip_account_title">Third party SIP account</string>
+    <string name="assistant_login_third_party_sip_account">Enter details manually</string>
+    <string name="assistant_login_third_party_sip_account_title">Manual account setup</string>
     <string name="assistant_login_using_single_sign_on">Single sign on</string>
-    <string name="assistant_login_cant_parse_address_toast">SIP address is invalid!</string>
-    <string name="assistant_login_address_without_username_toast">SIP address doesn\'t contains a username!</string>
+    <string name="assistant_login_cant_parse_address_toast">Address is invalid!</string>
+    <string name="assistant_login_address_without_username_toast">Address doesn\'t contain a username!</string>
     <string name="assistant_account_login_already_connected_error">Account already exists</string>
     <string name="assistant_no_account_yet">No account yet?</string>
     <string name="assistant_account_register">Register</string>
@@ -225,7 +249,7 @@
     <string name="assistant_sip_account_transport_protocol">Transport</string>
     <string name="assistant_sip_account_lime_algorithm">LIME algorithm(s) (comma separated)</string>
     <string name="assistant_sip_account_lime_algorithm_hint">Allowed values are: c25519, c448, c25519k512, c25519mlk512 and c448mlk1024</string>
-    <string name="assistant_third_party_sip_account_warning_explanation">Some features require a &appName; account, such as group messaging, video conferences…\n\nThese features are hidden when you register with a third party SIP account.\n\nTo enable it in a commercial project, please contact us.</string>
+    <string name="assistant_third_party_sip_account_warning_explanation">An account can be set up manually, but the usual way is to scan the QR code from the miniserver control panel.</string>
     <string name="assistant_third_party_sip_account_create_linphone_account">I prefer to create a &appName; account</string>
     <string name="assistant_third_party_sip_account_warning_ok">I understand</string>
     <string name="assistant_account_register_unavailable_no_push_warning">Push notifications do not seem to be available on your device, but they are mandatory for creating an account in the mobile app.\n\nWe invite you to create an account on our web platform instead:</string>
@@ -322,7 +346,7 @@
     <string name="settings_calls_change_ringtone_pick_title">Pick ringtone</string>
     <string name="settings_calls_change_ringtone_picker_unavailable_toast">Ringtone picker isn\'t available!</string>
     <string name="settings_advanced_calls_rfc_2833_dmtf_title">Use RFC 2833 for DTMFs</string>
-    <string name="settings_advanced_calls_sip_info_dmtf_title">Use SIP INFO for DTMFs</string>
+    <string name="settings_advanced_calls_sip_info_dmtf_title">Alternative tone transport</string>
     <string name="settings_advanced_calls_proximity_sensor_title">Use proximity sensor to turn OFF the screen when near the ear</string>
     <string name="settings_conversations_title">Conversations</string>
     <string name="settings_conversations_auto_download_title">Auto-download files</string>
@@ -332,7 +356,7 @@
     <string name="settings_contacts_title">Contacts</string>
     <string name="settings_contacts_sort_by_first_name_title">Sort contacts by</string>
     <string name="settings_contacts_edit_native_contacts_in_linphone_title">Use &appName; contact editor for native contacts</string>
-    <string name="settings_contacts_hide_empty_contacts_title">Hide contacts without SIP address nor phone number</string>
+    <string name="settings_contacts_hide_empty_contacts_title">Hide contacts without address nor phone number</string>
     <string name="settings_contacts_presence_subscribe_title">Subscribe to presence info</string>
     <string name="settings_contacts_add_ldap_server_title">Add LDAP server</string>
     <string name="settings_contacts_edit_ldap_server_title">Edit LDAP server</string>
@@ -362,8 +386,8 @@
     <string name="settings_contacts_ldap_request_delay_title">Delay between two queries (in milliseconds)</string>
     <string name="settings_contacts_ldap_min_characters_title">Min characters to start a query</string>
     <string name="settings_contacts_ldap_name_attributes_title">Name attributes</string>
-    <string name="settings_contacts_ldap_sip_attributes_title">SIP attributes</string>
-    <string name="settings_contacts_ldap_sip_domain_title">SIP domain</string>
+    <string name="settings_contacts_ldap_sip_attributes_title">Address attributes</string>
+    <string name="settings_contacts_ldap_sip_domain_title">Address domain</string>
     <string name="settings_contacts_ldap_saved_toast">LDAP server saved</string>
     <string name="settings_contacts_ldap_error_toast">A error occurred, LDAP server not saved!</string>
     <string name="settings_contacts_ldap_empty_field_error_toast">All fields must be filled</string>
@@ -473,8 +497,8 @@
     <string name="manage_account_device_remove">Remove</string>
     <string name="manage_account_device_last_connection">Last connection:</string>
     <string name="manage_account_dialog_remove_account_title">Sign out of your account?</string>
-    <string name="manage_account_dialog_remove_account_message">If you wish to delete your account permanently, go to: https://sip.linphone.org</string>
-    <string name="manage_account_outbound_proxy">Outbound SIP Proxy</string>
+    <string name="manage_account_dialog_remove_account_message">This removes the account from the app; the miniserver stays unchanged.</string>
+    <string name="manage_account_outbound_proxy">Outbound proxy</string>
     <string name="manage_account_dialog_outbound_proxy_help_message">If this field is filled, the outbound proxy will be enabled automatically. Leave it empty to disable it.</string>
 
     <string name="account_settings_title">Account settings</string>
@@ -531,13 +555,13 @@
 
     <!-- Contacts -->
     <string name="contacts_list_empty">No contact for the moment…</string>
-    <string name="contacts_list_sip_empty">No SIP contact for the moment…</string>
+    <string name="contacts_list_sip_empty">No such contact yet…</string>
     <string name="contacts_change_filter_label">Change filter</string>
     <string name="contacts_list_favourites_title">Favourites</string>
     <string name="contacts_list_all_contacts_title">All contacts</string>
     <string name="contacts_list_filter_popup_see_all">See all</string>
     <string name="contacts_list_filter_popup_see_linphone_only">See &appName; contacts</string>
-    <string name="contacts_list_filter_popup_see_sip_only">See SIP contacts</string>
+    <string name="contacts_list_filter_popup_see_sip_only">Show other contacts</string>
     <string name="contacts_list_search_results_limit_reached_label">Search results limit reached, refine your search.</string>
 
     <string name="contact_new_title">New contact</string>
@@ -554,7 +578,7 @@
     <string name="contact_editor_dialog_abort_confirmation_message">All changes will be lost</string>
     <string name="contact_editor_mandatory_field_not_filled_toast">Please fill either first name, last name or company name</string>
 
-    <string name="contact_details_numbers_and_addresses_title">Phone numbers &amp; SIP addresses</string>
+    <string name="contact_details_numbers_and_addresses_title">Phone numbers and addresses</string>
     <string name="contact_details_company_name">Company:</string>
     <string name="contact_details_job_title">Job title:</string>
     <string name="contact_details_trust_title">Trust</string>
@@ -576,7 +600,7 @@
     <string name="contact_dialog_devices_trust_help_message">Check all of your contact devices to make sure your communications will be secured an unaltered.\nWhen all will be verified, you\'ll reach maximum trust level.</string>
     <string name="contact_dialog_delete_title">Delete %s?</string>
     <string name="contact_dialog_delete_message">This contact will be definitively removed.</string>
-    <string name="contact_dialog_pick_phone_number_or_sip_address_title">Choose a number or a SIP address</string>
+    <string name="contact_dialog_pick_phone_number_or_sip_address_title">Pick a number or an address</string>
 
     <string name="contact_presence_status_online">Online</string>
     <string name="contact_presence_status_was_online_on">Online on %s</string>
@@ -950,7 +974,7 @@
     <!-- Various menu entries -->
     <string name="menu_add_address_to_contacts">Add to contacts</string>
     <string name="menu_see_existing_contact">See contact</string>
-    <string name="menu_copy_sip_address">Copy SIP address</string>
+    <string name="menu_copy_sip_address">Copy address</string>
     <string name="menu_copy_phone_number">Copy phone number</string>
     <string name="menu_delete_history">Delete history</string>
     <string name="menu_delete_selected_item">Delete</string>
