@@ -22,6 +22,7 @@ import org.linphone.core.tools.Log
 import org.linphone.twentyone.car.CarCallLog
 import org.linphone.twentyone.car.CarPhoneAccount
 import org.linphone.twentyone.car.CarPreferences
+import org.linphone.twentyone.car.CarSmsRole
 
 class TwentyOneTunnelFragment : Fragment() {
     companion object {
@@ -38,6 +39,7 @@ class TwentyOneTunnelFragment : Fragment() {
     private lateinit var scopeSwitch: SwitchCompat
     private lateinit var toggleButton: Button
     private lateinit var carLogSwitch: SwitchCompat
+    private lateinit var carSmsButton: Button
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -71,6 +73,16 @@ class TwentyOneTunnelFragment : Fragment() {
             }
         }
         carLogSwitch.isChecked = CarCallLog.isActive(requireContext())
+    }
+
+    private val smsRoleRequest = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-CAR",
+            if (result.resultCode == Activity.RESULT_OK) "role SMS udělena" else "role SMS neudělena"
+        )
+        carSmsButton.setText(CarSmsRole.titleRes(requireContext()))
     }
 
     override fun onCreateView(
@@ -166,6 +178,16 @@ class TwentyOneTunnelFragment : Fragment() {
             CarPhoneAccount.openCallingAccounts(requireContext())
         }
 
+        // SMS do auta: žádost o roli výchozí SMS aplikace (P21-CAR)
+        carSmsButton = view.findViewById(R.id.car_sms_role)
+        carSmsButton.setText(CarSmsRole.titleRes(requireContext()))
+        carSmsButton.setOnClickListener {
+            val intent = CarSmsRole.requestIntent(requireContext())
+            if (intent != null) {
+                smsRoleRequest.launch(intent)
+            }
+        }
+
         view.findViewById<Button>(R.id.tunnel_diag).setOnClickListener {
             findNavController().navigate(
                 R.id.action_twentyOneTunnelFragment_to_twentyOneDiagFragment
@@ -208,9 +230,12 @@ class TwentyOneTunnelFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
-        // oprávnění šlo mezitím odebrat/udělit v nastavení systému
+        // oprávnění i role šly mezitím změnit v nastavení systému
         if (::carLogSwitch.isInitialized) {
             carLogSwitch.isChecked = CarCallLog.isActive(requireContext())
+        }
+        if (::carSmsButton.isInitialized) {
+            carSmsButton.setText(CarSmsRole.titleRes(requireContext()))
         }
     }
 

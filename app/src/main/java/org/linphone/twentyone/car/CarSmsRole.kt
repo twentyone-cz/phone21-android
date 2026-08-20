@@ -9,7 +9,6 @@ import android.app.role.RoleManager
 import android.content.Context
 import android.os.Build
 import android.widget.Toast
-import androidx.fragment.app.Fragment
 import org.linphone.R
 import org.linphone.twentyone.TwentyOneDiag
 
@@ -27,9 +26,9 @@ object CarSmsRole {
         if (isHeld(context)) R.string.twentyone_car_sms_title_active
         else R.string.twentyone_car_sms_title
 
-    /** Otevře systémové okno „nastavit jako výchozí aplikaci pro SMS". */
-    fun request(fragment: Fragment, requestCode: Int) {
-        val context = fragment.requireContext()
+    /** Intent systémového okna „nastavit jako výchozí aplikaci pro SMS";
+     *  null = nejde nebo není třeba (uživateli to vysvětlí toast). */
+    fun requestIntent(context: Context): android.content.Intent? {
         val rm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             context.getSystemService(RoleManager::class.java)
         } else {
@@ -42,7 +41,7 @@ object CarSmsRole {
                 R.string.twentyone_car_sms_unavailable,
                 Toast.LENGTH_SHORT
             ).show()
-            return
+            return null
         }
         if (rm.isRoleHeld(RoleManager.ROLE_SMS)) {
             Toast.makeText(
@@ -50,12 +49,9 @@ object CarSmsRole {
                 R.string.twentyone_car_sms_already,
                 Toast.LENGTH_SHORT
             ).show()
-            return
+            return null
         }
         TwentyOneDiag.log("P21-CAR", "žádost o roli výchozí SMS aplikace")
-        fragment.startActivityForResult(
-            rm.createRequestRoleIntent(RoleManager.ROLE_SMS),
-            requestCode
-        )
+        return rm.createRequestRoleIntent(RoleManager.ROLE_SMS)
     }
 }

@@ -51,9 +51,6 @@ class SettingsFragment : GenericMainFragment() {
         private const val TAG = "[Settings Fragment]"
 
         private const val RINGTONE_PICKER_INTENT_ID = 89
-
-        // SMS do auta: výsledek systémového okna role výchozí SMS aplikace
-        private const val SMS_ROLE_REQUEST_ID = 90
     }
 
     private lateinit var binding: SettingsFragmentBinding
@@ -165,11 +162,6 @@ class SettingsFragment : GenericMainFragment() {
                     R.id.action_settingsFragment_to_twentyOneDiagFragment
                 )
             }
-        }
-
-        binding.twentyoneCarSmsSettings.setOnClickListener {
-            // SMS do auta: žádost o roli výchozí SMS aplikace (P21-CAR)
-            org.linphone.twentyone.car.CarSmsRole.request(this, SMS_ROLE_REQUEST_ID)
         }
 
         binding.twentyoneTunnelSettings.setOnClickListener {
@@ -372,16 +364,6 @@ class SettingsFragment : GenericMainFragment() {
                 // TODO: show error to user
             }
         }
-        if (requestCode == SMS_ROLE_REQUEST_ID) {
-            // SMS do auta: zaznamenat výsledek žádosti o roli
-            org.linphone.twentyone.TwentyOneDiag.log(
-                "P21-CAR",
-                if (resultCode == Activity.RESULT_OK) "role SMS udělena" else "role SMS neudělena"
-            )
-            binding.twentyoneCarSmsSettings.setText(
-                org.linphone.twentyone.car.CarSmsRole.titleRes(requireContext())
-            )
-        }
     }
 
     override fun onResume() {
@@ -390,11 +372,6 @@ class SettingsFragment : GenericMainFragment() {
         viewModel.reloadLdapServers()
         viewModel.reloadConfiguredCardDavServers()
         viewModel.reloadShowDeveloperSettings()
-
-        // SMS do auta: řádek ukazuje aktuální stav role
-        binding.twentyoneCarSmsSettings.setText(
-            org.linphone.twentyone.car.CarSmsRole.titleRes(requireContext())
-        )
     }
 
     override fun onPause() {

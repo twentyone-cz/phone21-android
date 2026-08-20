@@ -21,6 +21,7 @@ class TunnelReadinessManager {
     private val coreListener = object : CoreListenerStub() {
         @WorkerThread
         override fun onAccountAdded(core: Core, account: Account) {
+            ensureInternationalPrefix(core)
             applyState(ready)
         }
 
@@ -86,10 +87,47 @@ class TunnelReadinessManager {
         evaluate()
     }
 
+    // Jednorázově: účet bez mezinárodní předvolby ji dostane podle země
+    // SIM karty telefonu (bez SIM podle země mobilní sítě, nouzově podle
+    // jazyka telefonu). Bez předvolby se příchozí číslo s předvolbou
+    // nespáruje se jménem kontaktu uloženého bez ní.
+    @WorkerThread
+    private fun ensureInternationalPrefix(core: Core) {
+        try {
+            val needy = core.accountList.filter { it.params.internationalPrefix.isNullOrEmpty() }
+            if (needy.isEmpty()) return
+            val tm = coreContext.context.getSystemService(android.content.Context.TELEPHONY_SERVICE)
+                as? android.telephony.TelephonyManager
+            val iso = tm?.simCountryIso.orEmpty()
+                .ifEmpty { tm?.networkCountryIso.orEmpty() }
+                .ifEmpty {
+                    coreContext.context.resources.configuration.locales
+                        .get(0)?.country.orEmpty()
+                }
+            if (iso.isEmpty()) return
+            val dialPlan = org.linphone.utils.PhoneNumberUtils.getDeviceDialPlan(iso) ?: return
+            val prefix = dialPlan.countryCallingCode.removePrefix("+")
+            if (prefix.isEmpty()) return
+            for (account in needy) {
+                val copy = account.params.clone()
+                copy.internationalPrefix = prefix
+                copy.internationalPrefixIsoCountryCode = dialPlan.isoCountryCode
+                copy.useInternationalPrefixForCallsAndChats = true
+                account.params = copy
+            }
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-CFG",
+                "mezinárodní předvolba účtu doplněna: +%s (%s)".format(prefix, iso)
+            )
+        } catch (_: Exception) {
+        }
+    }
+
     @WorkerThread
     fun onCoreStarted(core: Core) {
         this.core = core
         core.addListener(coreListener)
+        ensureInternationalPrefix(core)
         coreContext.postOnMainThread {
             TsManager.ensureStarted(coreContext.context)
             TsManager.state.observeForever(stateObserver)

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- fork: karta stavu zabudovaného tunelu. Bez dataBindingu (findViewById),
-     ať nevzniká vazba na upstream viewmodely. -->
+<!-- fork: obrazovka Konexe — spojení telefonu se světem: privátní síť
+     (tunel k miniserveru) a auto přes Bluetooth. Bez dataBindingu
+     (findViewById), ať nevzniká vazba na upstream viewmodely. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -20,11 +21,21 @@
             android:textStyle="bold"
             android:textColor="?attr/color_main2_800" />
 
+        <!-- sekce: privátní síť (tunel k miniserveru) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/twentyone_section_network"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="?attr/color_main2_800" />
+
         <TextView
             android:id="@+id/tunnel_state"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="12dp"
             android:textSize="16sp"
             android:textColor="?attr/color_main2_700" />
 
@@ -48,7 +59,7 @@
             android:id="@+id/tunnel_scope_label"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="16dp"
             android:textSize="14sp"
             android:textColor="?attr/color_main2_600" />
 
@@ -60,11 +71,28 @@
             android:text="@string/twentyone_tunnel_scope_full"
             android:textColor="?attr/color_main2_700" />
 
+        <Button
+            android:id="@+id/tunnel_toggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/twentyone_tunnel_connect" />
+
+        <!-- sekce: auto přes Bluetooth (historie, zprávy, vytáčení) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/twentyone_car_title"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="?attr/color_main2_800" />
+
         <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/tunnel_car_log_switch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="12dp"
             android:text="@string/twentyone_car_log_switch"
             android:textColor="?attr/color_main2_700" />
 
@@ -76,38 +104,11 @@
             android:textColor="?attr/color_main2_600"
             android:text="@string/twentyone_car_log_hint" />
 
-
-        <Button
-            android:id="@+id/tunnel_diag"
-            style="?android:attr/borderlessButtonStyle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="@string/twentyone_tunnel_diag_link"
-            android:textColor="?attr/color_main1_500" />
-
-        <Button
-            android:id="@+id/tunnel_toggle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:text="@string/twentyone_tunnel_connect" />
-
-        <!-- fork: vytáčení z auta — managed účet pro volání, za volbou -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:text="@string/twentyone_car_title"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:textColor="?attr/color_main2_800" />
-
         <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/car_dialing_switch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="16dp"
             android:text="@string/twentyone_car_switch"
             android:textColor="?attr/color_main2_700" />
 
@@ -115,8 +116,8 @@
             android:id="@+id/car_dialing_hint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textSize="14sp"
+            android:layout_marginTop="4dp"
+            android:textSize="12sp"
             android:textColor="?attr/color_main2_600"
             android:text="@string/twentyone_car_hint" />
 
@@ -129,16 +130,42 @@
             android:text="@string/twentyone_car_open_accounts"
             android:textColor="?attr/color_main1_500" />
 
-    
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:layout_gravity="center_horizontal"
-        android:textSize="11sp"
-        android:textColor="?attr/color_main2_400"
-        android:text="@string/twentyone_screen_tunnel" />
+        <Button
+            android:id="@+id/car_sms_role"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/twentyone_car_sms_title"
+            android:textColor="?attr/color_main1_500" />
 
-</LinearLayout>
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="12sp"
+            android:textColor="?attr/color_main2_600"
+            android:text="@string/twentyone_car_sms_hint" />
+
+        <!-- diagnostika je společná pro obě sekce -->
+        <Button
+            android:id="@+id/tunnel_diag"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/twentyone_tunnel_diag_link"
+            android:textColor="?attr/color_main1_500" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:layout_gravity="center_horizontal"
+            android:textSize="11sp"
+            android:textColor="?attr/color_main2_400"
+            android:text="@string/twentyone_screen_tunnel" />
+
+    </LinearLayout>
 
 </ScrollView>

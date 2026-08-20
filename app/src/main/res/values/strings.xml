@@ -164,7 +164,8 @@
     <string name="twentyone_tunnel_notification_channel">Připojení k privátní síti</string>
     <string name="twentyone_tunnel_notification_title">&appName;</string>
     <string name="twentyone_tunnel_notification_message">Připojeno k privátní síti</string>
-    <string name="twentyone_tunnel_title">Privátní síť</string>
+    <string name="twentyone_tunnel_title">Konexe</string>
+    <string name="twentyone_section_network">Privátní síť</string>
     <string name="twentyone_tunnel_state_connected">Připojeno</string>
     <string name="twentyone_tunnel_state_connecting">Připojuje se…</string>
     <string name="twentyone_tunnel_state_needs_login">Není přihlášeno</string>
@@ -199,7 +200,8 @@
     <string name="twentyone_car_sms_title_active">SMS do auta (zapnuto)</string>
     <string name="twentyone_car_sms_unavailable">Tenhle telefon roli výchozí aplikace pro SMS nenabízí.</string>
     <string name="twentyone_car_sms_already">Zrcadlení zpráv pro auto už je zapnuté.</string>
-    <string name="twentyone_car_title">Vytáčení z auta</string>
+    <string name="twentyone_car_sms_hint">Zprávy si auto čte z úložiště SMS telefonu — Phone21 se proto musí stát výchozí aplikací pro SMS. Odpovídat z auta nejde, jen číst.</string>
+    <string name="twentyone_car_title">Auto (Bluetooth)</string>
     <string name="twentyone_car_switch">Nabídnout Phone21 systému jako účet pro volání</string>
     <string name="twentyone_car_hint">Ještě jeden krok: v aplikaci Telefon → Nastavení → Účty pro volání povol „Phone21 (miniserver)“. Auto připojené k telefonu pak vytáčí přes miniserver — buď se tě systém při hovoru zeptá, nebo si Phone21 nastav jako výchozí pro odchozí hovory. Privátní síť musí být připojená.</string>
     <string name="twentyone_car_open_accounts">Otevřít účty pro volání</string>
