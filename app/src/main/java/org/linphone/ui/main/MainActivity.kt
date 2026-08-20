@@ -530,6 +530,9 @@ class MainActivity : GenericActivity() {
 
     fun loadContacts() {
         coreContext.contactsManager.loadContacts(this)
+        // fork: jednorázová migrace aplikačních kontaktů do systému
+        // (uvnitř no-op bez WRITE_CONTACTS nebo s hotovým flagem)
+        org.linphone.twentyone.contacts.TwentyOneContactsMigration.runIfNeeded(this)
     }
 
     private fun goToLatestVisitedFragment() {

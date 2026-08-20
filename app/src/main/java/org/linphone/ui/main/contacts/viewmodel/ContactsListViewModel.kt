@@ -278,6 +278,13 @@ class ContactsListViewModel
     fun deleteContact(contactModel: ContactAvatarModel) {
         coreContext.postOnCoreThread {
             Log.w("$TAG Removing friend [${contactModel.contactName}]")
+            // fork: nativní kontakt smazat i ze systému (viz ContactViewModel)
+            val nativeUri = contactModel.friend.nativeUri
+            if (nativeUri != null) {
+                org.linphone.twentyone.contacts.TwentyOneContacts.delete(
+                    coreContext.context, nativeUri
+                )
+            }
             coreContext.contactsManager.contactRemoved(contactModel.friend)
             contactModel.friend.remove()
             coreContext.contactsManager.notifyContactsListChanged()

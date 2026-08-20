@@ -95,6 +95,23 @@ class EditContactFragment : SlidingPaneChildFragment() {
         }
     }
 
+    // fork: WRITE_CONTACTS se žádá až při uložení; po odpovědi se uložení opakuje
+    private val writeContactsPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-CFG",
+                "WRITE_CONTACTS zamítnuto — kontakt zůstane jen v aplikaci"
+            )
+            org.linphone.twentyone.contacts.TwentyOneContactsMigration.markPending(requireContext())
+        }
+        viewModel.saveChanges(forceLocal = !granted)
+        if (granted) {
+            org.linphone.twentyone.contacts.TwentyOneContactsMigration.runIfNeeded(requireContext())
+        }
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -131,6 +148,27 @@ class EditContactFragment : SlidingPaneChildFragment() {
 
         binding.setDeleteImageClickListener {
             viewModel.picturePath.value = ""
+        }
+
+        viewModel.askWriteContactsPermissionEvent.observe(viewLifecycleOwner) {
+            it.consume {
+                writeContactsPermission.launch(android.Manifest.permission.WRITE_CONTACTS)
+            }
+        }
+
+        viewModel.savedToSystemEvent.observe(viewLifecycleOwner) {
+            it.consume {
+                (requireActivity() as GenericActivity).showGreenToast(
+                    getString(R.string.contact_editor_saved_changes_toast),
+                    R.drawable.info
+                )
+                backPressedCallback.isEnabled = false
+                // detail pod editorem drží smazaného lokálního frienda —
+                // zpět až na seznam, ne na mrtvý detail
+                findNavController().popBackStack(R.id.contactsListFragment, false)
+                // kontakt přiteče ze systému — jistota okamžitého překreslení
+                (requireActivity() as org.linphone.ui.main.MainActivity).loadContacts()
+            }
         }
 
         viewModel.saveChangesEvent.observe(viewLifecycleOwner) {

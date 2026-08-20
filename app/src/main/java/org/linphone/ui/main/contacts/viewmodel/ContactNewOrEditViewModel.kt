@@ -85,6 +85,10 @@ class ContactNewOrEditViewModel
 
     val removeNewNumberOrAddressFieldEvent = MutableLiveData<Event<NewOrEditNumberOrAddressModel>>()
 
+    // fork: žádost o WRITE_CONTACTS těsně před uložením + potvrzení zápisu do systému
+    val askWriteContactsPermissionEvent: MutableLiveData<Event<Boolean>> by lazy { MutableLiveData() }
+    val savedToSystemEvent: MutableLiveData<Event<Boolean>> by lazy { MutableLiveData() }
+
     private val sipAddressesBeforeEdit = arrayListOf<String>()
 
     private val phoneNumbersBeforeEdit = arrayListOf<String>()
@@ -157,13 +161,25 @@ class ContactNewOrEditViewModel
     }
 
     @UiThread
-    fun saveChanges() {
+    fun saveChanges() = saveChanges(forceLocal = false)
+
+    @UiThread
+    fun saveChanges(forceLocal: Boolean) {
         val fn = firstName.value.orEmpty().trim()
         val ln = lastName.value.orEmpty().trim()
         val organization = company.value.orEmpty().trim()
         if (fn.isEmpty() && ln.isEmpty() && organization.isEmpty()) {
             Log.e("$TAG At least a mandatory field wasn't filled, aborting save")
             showRedToast(R.string.contact_editor_mandatory_field_not_filled_toast, R.drawable.warning_circle)
+            return
+        }
+
+        // fork: bez oprávnění nejdřív požádat; fragment po odpovědi zavolá
+        // saveChanges(forceLocal = !granted) — zamítnutí = lokální uložení jako dřív
+        if (!forceLocal &&
+            !org.linphone.twentyone.contacts.TwentyOneContacts.hasWritePermission(coreContext.context)
+        ) {
+            askWriteContactsPermissionEvent.postValue(Event(true))
             return
         }
 
@@ -183,6 +199,56 @@ class ContactNewOrEditViewModel
                         }
                     }
                 }
+            }
+
+            // fork: primárně do systémového adresáře (auto/PBAP i Kontakty pak
+            // vidí totéž). Výjimky nechávají upstream chování: nativní kontakt
+            // (duplicita), kontakt z CardDAV listu (remove by smazal záznam
+            // na serveru) a nové kontakty mířící na CardDAV dle nastavení.
+            val editRefKey = friend.refKey
+            val inCardDav = editRefKey != null && core.friendsLists.any {
+                it.type == FriendList.Type.CardDAV && it.findFriendByRefKey(editRefKey) != null
+            }
+            val newGoesToCardDav = isEdit.value != true &&
+                core.getFriendListByName(corePreferences.friendListInWhichStoreNewlyCreatedFriends)
+                    ?.type == FriendList.Type.CardDAV
+            if (!forceLocal && !inCardDav && !newGoesToCardDav && friend.nativeUri == null) {
+                val phoneRows = phoneNumbers.mapNotNull {
+                    val n = it.value.value.orEmpty().trim()
+                    if (n.isEmpty()) {
+                        null
+                    } else {
+                        org.linphone.twentyone.contacts.TwentyOneContacts.PhoneRow(n, it.label)
+                    }
+                }
+                val sipRows = sipAddresses.mapNotNull {
+                    it.value.value.orEmpty().trim().ifEmpty { null }
+                }
+                val photoBytes = org.linphone.twentyone.contacts.TwentyOneContacts.photoBytes(
+                    coreContext.context, picturePath.value
+                )
+                val contactId = org.linphone.twentyone.contacts.TwentyOneContacts.insert(
+                    coreContext.context, fn, ln, name, organization,
+                    jobTitle.value.orEmpty().trim(), phoneRows, sipRows,
+                    photo = photoBytes, starred = friend.starred
+                )
+                if (contactId != null) {
+                    if (isEdit.value == true) {
+                        // dřív aplikační kontakt — po přenosu do systému lokální
+                        // smazat, jinak by ho seznam ukazoval dvakrát
+                        coreContext.contactsManager.contactRemoved(friend)
+                        friend.remove()
+                    }
+                    coreContext.contactsManager.notifyContactsListChanged()
+                    savedToSystemEvent.postValue(Event(true))
+                    return@postOnCoreThread
+                }
+                // selhání (GrapheneOS Contact Scopes apod.): kontakt NESMÍ
+                // zmizet — pokračuje lokální větev, příčina je v deníku;
+                // a migrace ho má příště zkusit přenést
+                org.linphone.twentyone.contacts.TwentyOneContactsMigration.markPending(
+                    coreContext.context
+                )
             }
 
             friend.edit()

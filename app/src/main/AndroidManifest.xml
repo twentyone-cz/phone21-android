@@ -16,6 +16,10 @@
     <!-- fork: zrcadlení ukončených hovorů do systémové historie, aby je vidělo auto (PBAP) -->
     <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
 
+    <!-- fork: kontakty se ukládají do systémového adresáře — auto (PBAP)
+         i systémové Kontakty pak vidí totéž -->
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+
     <!-- SMS do auta: role výchozí SMS aplikace — zrcadlení zpráv do
          systémového úložiště SMS, odkud si je auto čte přes Bluetooth -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />

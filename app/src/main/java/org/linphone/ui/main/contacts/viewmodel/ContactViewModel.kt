@@ -359,7 +359,9 @@ class ContactViewModel
         coreContext.postOnCoreThread {
             if (::friend.isInitialized) {
                 val uri = friend.nativeUri
-                if (uri != null && !corePreferences.editNativeContactsInLinphone) {
+                // fork: nativní kontakt VŽDY do systémového editoru — in-app
+                // editace by se po další synchronizaci se systémem tiše vrátila
+                if (uri != null) {
                     Log.i(
                         "$TAG Contact [${friend.name}] is a native contact, opening native contact editor using URI [$uri]"
                     )
@@ -409,6 +411,15 @@ class ContactViewModel
         coreContext.postOnCoreThread {
             if (::friend.isInitialized) {
                 Log.w("$TAG Deleting friend [${friend.name}]")
+                // fork: nativní kontakt smazat i ze systému, jinak ho příští
+                // průchod loaderu vzkřísí (selhání zapíše deník a kontakt se
+                // po synchronizaci vrátí — bezpečné chování)
+                val nativeUri = friend.nativeUri
+                if (nativeUri != null) {
+                    org.linphone.twentyone.contacts.TwentyOneContacts.delete(
+                        coreContext.context, nativeUri
+                    )
+                }
                 coreContext.contactsManager.contactRemoved(friend)
                 friend.remove()
                 coreContext.contactsManager.notifyContactsListChanged()

@@ -91,7 +91,7 @@ class PhoneNumberUtils {
         }
 
         @AnyThread
-        private fun labelToType(label: String): Int {
+        fun labelToType(label: String): Int { // fork: používá TwentyOneContacts
             return when (label) {
                 "assistant" -> ContactsContract.CommonDataKinds.Phone.TYPE_ASSISTANT
                 "callback" -> ContactsContract.CommonDataKinds.Phone.TYPE_CALLBACK
