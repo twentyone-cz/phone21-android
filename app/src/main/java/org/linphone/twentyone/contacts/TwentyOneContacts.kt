@@ -2,9 +2,10 @@
  * fork: zápis kontaktů do systémového adresáře (ContactsContract).
  * Aplikace systémové kontakty už čte (ContactLoader) — auto (Bluetooth PBAP)
  * i systémové Kontakty ale vidí jen systémový adresář, proto se kontakty
- * ukládají tam. Lokální RAW kontakt bez účtu (ACCOUNT_TYPE = null),
- * žádný sync adapter. Při selhání (GrapheneOS Contact Scopes) vrací null
- * a volající MUSÍ kontakt ponechat v aplikační databázi.
+ * ukládají tam. Bez zvoleného adresáře vzniká lokální RAW kontakt bez účtu
+ * (ACCOUNT_TYPE = null); s adresářem se zapisuje pod něj, takže ho převezme
+ * synchronizace. Při selhání zápisu vrací null a volající MUSÍ kontakt
+ * ponechat v aplikační databázi.
  */
 package org.linphone.twentyone.contacts
 
@@ -26,6 +27,10 @@ object TwentyOneContacts {
         context.checkSelfPermission(Manifest.permission.WRITE_CONTACTS) ==
             PackageManager.PERMISSION_GRANTED
 
+    fun hasReadPermission(context: Context): Boolean =
+        context.checkSelfPermission(Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED
+
     /** Vloží kontakt; vrací id (informativní), null JEN při skutečném selhání zápisu. */
     fun insert(
         context: Context,
@@ -37,15 +42,16 @@ object TwentyOneContacts {
         phones: List<PhoneRow>,
         sipAddresses: List<String>,
         photo: ByteArray? = null,
-        starred: Boolean = false
+        starred: Boolean = false,
+        book: TwentyOneContactsTarget.Book? = null
     ): String? {
         if (!hasWritePermission(context)) return null
         return try {
             val ops = arrayListOf<ContentProviderOperation>()
             ops.add(
                 ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
-                    .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
-                    .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, book?.type)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, book?.name)
                     .withValue(ContactsContract.RawContacts.STARRED, if (starred) 1 else 0)
                     .build()
             )

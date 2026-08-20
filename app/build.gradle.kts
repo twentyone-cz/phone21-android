@@ -111,7 +111,7 @@ android {
         // upstreamu 6.2.5, po rebasi by šel jen downgrade. Skok na ×1000
         // (2026-08-18) monotonii obnovil; versionCode NIKDY nesnižovat.
         val upstreamCode = 602004
-        val forkIteration = 30
+        val forkIteration = 31
         versionCode = upstreamCode * 1000 + forkIteration
         versionName = "6.2.4-21p.$forkIteration"
 

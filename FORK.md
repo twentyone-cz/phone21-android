@@ -32,12 +32,13 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/AndroidManifest.xml` | SMS role, ConnectionService, VpnService | telecom/sms/vpn |
 | `app/src/main/res/navigation/main_nav_graph.xml` | cíl obrazovky tunelu | vpn |
 | `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager | sync/vpn |
-| `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (viz docs/tunnel-aar.md) | vpn |
+| `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (postup je v interních poznámkách) | vpn |
 | `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
 | `app/src/main/java/org/linphone/LinphoneApplication.kt` | 1 řádka: jazyk aplikace = čeština | brand |
 | `app/src/main/java/org/linphone/telecom/TelecomManager.kt` | tel: URI identita hovoru (TwentyOneCar) | auto |
 | `app/src/main/java/org/linphone/ui/main/MainActivity.kt` | ACTION_SENDTO → konverzace; migrace kontaktů v loadContacts | sms/kontakty |
 | `app/src/main/java/org/linphone/utils/PhoneNumberUtils.kt` | labelToType zveřejněn | kontakty |
+| `app/src/main/AndroidManifest.xml` | `<queries>` na synchronizační aplikaci, oprávnění pro běh na pozadí | kontakty/baterie |
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactNewOrEditViewModel.kt` | uložení kontaktu do systémového adresáře | kontakty |
 | `app/src/main/java/org/linphone/ui/main/contacts/fragment/NewContactFragment.kt`, `EditContactFragment.kt` | WRITE_CONTACTS launcher + observery | kontakty |
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactViewModel.kt`, `ContactsListViewModel.kt` | mazání nativního kontaktu i ze systému | kontakty |
@@ -63,3 +64,18 @@ https://gitlab.linphone.org/BC/public/linphone-sdk
 
 Pozn.: `gradle/gradle-daemon-jvm.properties` je smazané — vynucovalo
 stažení JetBrains JDK; fork buildí systémovým JDK 21.
+
+## Kontakty: cíl zápisu (21p.31)
+
+Nové a upravené kontakty jdou do adresáře telefonu. Když je v telefonu
+adresář synchronizační aplikace, jde zápis do něj — cíl se vybírá na
+obrazovce Konexe (sekce Kontakty).
+
+Prefs `twentyone_contacts`: `migration_done` (jednorázový přenos z aplikační
+databáze), `target_mode` (AUTO/LOCAL/BOOK), `target_type`, `target_name`,
+`target_lost_hinted`. Detekce adresářů: `ContactsContract.Settings`
+sjednocené s účty existujících RAW kontaktů; hlavní účet synchronizační
+aplikace se vynechává (kontakty leží v jejích pod-adresářích).
+
+Prefs `twentyone_battery`: `asked` — dialog o běhu na pozadí se nabízí
+jednou po nastavení účtu, stav je pak vidět na Konexi.

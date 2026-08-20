@@ -66,6 +66,14 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
+    <!-- Běh na pozadí bez omezení baterie (dialog si vyžádá aplikace sama) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Viditelnost synchronizační aplikace kontaktů (Android 11+) -->
+    <queries>
+        <package android:name="at.bitfire.davdroid" />
+    </queries>
+
     <application
         android:name=".LinphoneApplication"
         android:usesCleartextTraffic="true"

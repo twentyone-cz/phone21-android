@@ -230,7 +230,10 @@ class ContactNewOrEditViewModel
                 val contactId = org.linphone.twentyone.contacts.TwentyOneContacts.insert(
                     coreContext.context, fn, ln, name, organization,
                     jobTitle.value.orEmpty().trim(), phoneRows, sipRows,
-                    photo = photoBytes, starred = friend.starred
+                    photo = photoBytes, starred = friend.starred,
+                    book = org.linphone.twentyone.contacts.TwentyOneContactsTarget.resolve(
+                        coreContext.context
+                    )
                 )
                 if (contactId != null) {
                     if (isEdit.value == true) {

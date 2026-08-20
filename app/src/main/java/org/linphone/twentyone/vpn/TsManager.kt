@@ -317,6 +317,139 @@ object TsManager {
         }
     }
 
+    /** Řádek diagnostiky o protějšku v privátní síti. */
+    data class NetPeer(
+        val host: String,
+        val online: Boolean,
+        val address: String,
+        val relay: String,
+        val directAddr: String,
+        val lastHandshake: String,
+        val rx: Long,
+        val tx: Long
+    )
+
+    /** Podklady pro obrazovku Diagnostika (co o síti ví jádro tunelu). */
+    data class NetDiag(
+        val endpoints: List<String>,
+        val publicEndpoints: List<String>,
+        val relay: String,
+        val health: List<String>,
+        val peers: List<NetPeer>
+    )
+
+    val netDiag = MutableLiveData<NetDiag>()
+
+    /** Adresa z veřejného rozsahu (ne privátní, ne CGNAT, ne link-local). */
+    fun isPublicEndpoint(endpoint: String): Boolean {
+        val host = endpoint.substringBeforeLast(':', endpoint).trim('[', ']')
+        if (host.isEmpty()) return false
+        if (host.contains(':')) {
+            val h = host.lowercase()
+            if (h == "::1" || h.startsWith("fe80") || h.startsWith("fc") || h.startsWith("fd")) {
+                return false
+            }
+            return true
+        }
+        val parts = host.split('.')
+        if (parts.size != 4) return false
+        val a = parts[0].toIntOrNull() ?: return false
+        val b = parts[1].toIntOrNull() ?: return false
+        return when {
+            a == 10 || a == 127 || a == 0 -> false
+            a == 192 && b == 168 -> false
+            a == 172 && b in 16..31 -> false
+            a == 169 && b == 254 -> false
+            a == 100 && b in 64..127 -> false
+            else -> true
+        }
+    }
+
+    private fun parseNetDiag(status: JSONObject): NetDiag {
+        val endpoints = ArrayList<String>()
+        var relay = ""
+        status.optJSONObject("Self")?.let { self ->
+            val addrs = self.optJSONArray("Addrs")
+            if (addrs != null) {
+                for (i in 0 until addrs.length()) {
+                    val v = addrs.optString(i, "")
+                    if (v.isNotEmpty()) endpoints.add(v)
+                }
+            }
+            relay = self.optString("Relay", "")
+        }
+        val health = ArrayList<String>()
+        status.optJSONArray("Health")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val v = arr.optString(i, "")
+                if (v.isNotEmpty()) health.add(v)
+            }
+        }
+        val peers = ArrayList<NetPeer>()
+        status.optJSONObject("Peer")?.let { map ->
+            val keys = map.keys()
+            while (keys.hasNext()) {
+                val peer = map.optJSONObject(keys.next()) ?: continue
+                val ips = peer.optJSONArray("TailscaleIPs")
+                peers.add(
+                    NetPeer(
+                        host = peer.optString("HostName", "?"),
+                        online = peer.optBoolean("Online", false),
+                        address = if (ips != null && ips.length() > 0) ips.getString(0) else "",
+                        relay = peer.optString("Relay", ""),
+                        directAddr = peer.optString("CurAddr", ""),
+                        lastHandshake = peer.optString("LastHandshake", ""),
+                        rx = peer.optLong("RxBytes", 0L),
+                        tx = peer.optLong("TxBytes", 0L)
+                    )
+                )
+            }
+        }
+        return NetDiag(
+            endpoints = endpoints,
+            publicEndpoints = endpoints.filter { isPublicEndpoint(it) },
+            relay = relay,
+            health = health,
+            peers = peers
+        )
+    }
+
+    /**
+     * Změří spojení s protějškem (přímé, nebo přes přenosový uzel).
+     * Vrací hotový text pro obrazovku, ať UI nemusí znát formát odpovědi.
+     */
+    fun pingPeer(address: String, callback: (String) -> Unit) {
+        worker.execute {
+            val body = callLocalApi(
+                "POST",
+                "ping?ip=" + java.net.URLEncoder.encode(address, "UTF-8") + "&type=disco",
+                ByteArray(0)
+            )
+            if (body == null) {
+                callback("měření se nepodařilo spustit")
+                return@execute
+            }
+            val text = try {
+                val json = JSONObject(String(body, Charsets.UTF_8))
+                val err = json.optString("Err", "")
+                val latency = json.optDouble("LatencySeconds", 0.0)
+                val endpoint = json.optString("Endpoint", "")
+                val derp = json.optString("DERPRegionCode", "")
+                when {
+                    err.isNotEmpty() -> "chyba: $err"
+                    endpoint.isNotEmpty() ->
+                        "přímo, %d ms".format((latency * 1000).toInt())
+                    derp.isNotEmpty() ->
+                        "přes uzel %s, %d ms".format(derp, (latency * 1000).toInt())
+                    else -> "%d ms".format((latency * 1000).toInt())
+                }
+            } catch (e: Exception) {
+                "odpověď se nepodařilo přečíst"
+            }
+            callback(text)
+        }
+    }
+
     private fun onStatus(status: JSONObject) {
         status.optJSONObject("Self")?.let { self ->
             val ips = self.optJSONArray("TailscaleIPs")
@@ -327,6 +460,7 @@ object TsManager {
             domainMatches = domainVerdict(self.optString("DNSName", ""), suffix.orEmpty())
             publishVerification()
         }
+        netDiag.postValue(parseNetDiag(status))
         updateConnectionQuality(status)
     }
 
@@ -390,12 +524,28 @@ object TsManager {
         if (direct && !current && directCycles >= SCOPE_SWITCH_STABLE_CYCLES) {
             Log.i("$TAG Direct peer connection is stable")
             directConnection.postValue(true)
+            logRoute(status, true)
             maybeRebuildTunnel(TsPreferences.TunnelScope.FULL)
         } else if (!direct && current && relayCycles >= SCOPE_SWITCH_STABLE_CYCLES) {
             Log.w("$TAG Peer connection fell back to a relay")
             directConnection.postValue(false)
+            logRoute(status, false)
             maybeRebuildTunnel(TsPreferences.TunnelScope.APP_ONLY)
         }
+    }
+
+    /** Do deníku jdou jen počty, žádné adresy. */
+    private fun logRoute(status: JSONObject, direct: Boolean) {
+        val diag = parseNetDiag(status)
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-NET",
+            "trasa k miniserveru: %s (vlastní endpointy %d, z toho veřejné %d; uzel %s)".format(
+                if (direct) "přímo" else "přes uzel",
+                diag.endpoints.size,
+                diag.publicEndpoints.size,
+                diag.relay.ifEmpty { "—" }
+            )
+        )
     }
 
     private fun maybeRebuildTunnel(desired: TsPreferences.TunnelScope) {

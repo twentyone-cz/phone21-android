@@ -78,6 +78,55 @@
             android:layout_marginTop="16dp"
             android:text="@string/twentyone_tunnel_connect" />
 
+        <!-- sekce: kam se ukládají nové kontakty -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/twentyone_contacts_title"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="?attr/color_main2_800" />
+
+        <TextView
+            android:id="@+id/contacts_target_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textSize="14sp"
+            android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:id="@+id/contacts_target_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp"
+            android:textColor="?attr/color_main2_600" />
+
+        <Button
+            android:id="@+id/contacts_target_change"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/twentyone_contacts_target_change" />
+
+        <!-- sekce: běh na pozadí (výjimka z optimalizace baterie) -->
+        <TextView
+            android:id="@+id/battery_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textSize="14sp"
+            android:textColor="?attr/color_main2_700" />
+
+        <Button
+            android:id="@+id/battery_fix"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/twentyone_battery_fix" />
+
         <!-- sekce: auto přes Bluetooth (historie, zprávy, vytáčení) -->
         <TextView
             android:layout_width="wrap_content"

@@ -23,6 +23,8 @@ import org.linphone.twentyone.car.CarCallLog
 import org.linphone.twentyone.car.CarPhoneAccount
 import org.linphone.twentyone.car.CarPreferences
 import org.linphone.twentyone.car.CarSmsRole
+import org.linphone.twentyone.TwentyOneBattery
+import org.linphone.twentyone.contacts.TwentyOneContactsTarget
 
 class TwentyOneTunnelFragment : Fragment() {
     companion object {
@@ -40,6 +42,10 @@ class TwentyOneTunnelFragment : Fragment() {
     private lateinit var toggleButton: Button
     private lateinit var carLogSwitch: SwitchCompat
     private lateinit var carSmsButton: Button
+    private lateinit var contactsLabel: TextView
+    private lateinit var contactsHint: TextView
+    private lateinit var batteryLabel: TextView
+    private lateinit var batteryFix: Button
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -117,6 +123,30 @@ class TwentyOneTunnelFragment : Fragment() {
                 TsManager.restartService()
             }
         }
+
+        // fork: kam se ukládají nové kontakty
+        contactsLabel = view.findViewById(R.id.contacts_target_label)
+        contactsHint = view.findViewById(R.id.contacts_target_hint)
+        view.findViewById<Button>(R.id.contacts_target_change).setOnClickListener {
+            showContactsTargetDialog()
+        }
+        updateContactsTarget()
+
+        // fork: běh na pozadí (výjimka z optimalizace baterie)
+        batteryLabel = view.findViewById(R.id.battery_label)
+        batteryFix = view.findViewById(R.id.battery_fix)
+        batteryFix.setOnClickListener {
+            try {
+                startActivity(TwentyOneBattery.requestIntent(requireContext()))
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(
+                    requireContext(),
+                    R.string.twentyone_battery_hint,
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        updateBattery()
 
         carLogSwitch = view.findViewById(R.id.tunnel_car_log_switch)
         carLogSwitch.isChecked = CarCallLog.isActive(requireContext())
@@ -237,6 +267,86 @@ class TwentyOneTunnelFragment : Fragment() {
         if (::carSmsButton.isInitialized) {
             carSmsButton.setText(CarSmsRole.titleRes(requireContext()))
         }
+        if (::contactsLabel.isInitialized) {
+            updateContactsTarget()
+        }
+        if (::batteryLabel.isInitialized) {
+            updateBattery()
+        }
+    }
+
+    private fun updateBattery() {
+        val ctx = requireContext()
+        val free = TwentyOneBattery.isUnrestricted(ctx)
+        batteryLabel.text = getString(
+            R.string.twentyone_battery_label,
+            getString(
+                if (free) {
+                    R.string.twentyone_battery_unrestricted
+                } else {
+                    R.string.twentyone_battery_restricted
+                }
+            )
+        )
+        batteryFix.visibility = if (free) View.GONE else View.VISIBLE
+    }
+
+    private fun updateContactsTarget() {
+        val ctx = requireContext()
+        contactsLabel.text = getString(
+            R.string.twentyone_contacts_target_label,
+            TwentyOneContactsTarget.describe(ctx)
+        )
+        val books = TwentyOneContactsTarget.availableBooks(ctx)
+        val hint = when {
+            TwentyOneContactsTarget.mode(ctx) == TwentyOneContactsTarget.Mode.BOOK &&
+                TwentyOneContactsTarget.resolve(ctx) == null ->
+                R.string.twentyone_contacts_hint_lost
+            books.isEmpty() && TwentyOneContactsTarget.davAppInstalled(ctx) ->
+                R.string.twentyone_contacts_hint_app_no_book
+            books.isEmpty() -> R.string.twentyone_contacts_hint_none
+            books.size > 1 && TwentyOneContactsTarget.mode(ctx) ==
+                TwentyOneContactsTarget.Mode.AUTO ->
+                R.string.twentyone_contacts_hint_multiple
+            else -> 0
+        }
+        if (hint == 0) {
+            contactsHint.visibility = View.GONE
+        } else {
+            contactsHint.visibility = View.VISIBLE
+            contactsHint.setText(hint)
+        }
+    }
+
+    private fun showContactsTargetDialog() {
+        val ctx = requireContext()
+        val books = TwentyOneContactsTarget.availableBooks(ctx)
+        val labels = ArrayList<String>()
+        labels.add(getString(R.string.twentyone_contacts_target_option_auto))
+        labels.add(getString(R.string.twentyone_contacts_target_option_phone))
+        books.forEach { labels.add(it.name) }
+        val mode = TwentyOneContactsTarget.mode(ctx)
+        val current = when (mode) {
+            TwentyOneContactsTarget.Mode.AUTO -> 0
+            TwentyOneContactsTarget.Mode.LOCAL -> 1
+            TwentyOneContactsTarget.Mode.BOOK -> {
+                val target = TwentyOneContactsTarget.resolve(ctx)
+                val idx = books.indexOfFirst { it == target }
+                if (idx >= 0) idx + 2 else 0
+            }
+        }
+        android.app.AlertDialog.Builder(ctx)
+            .setTitle(R.string.twentyone_contacts_target_dialog_title)
+            .setSingleChoiceItems(labels.toTypedArray(), current) { dialog, which ->
+                when (which) {
+                    0 -> TwentyOneContactsTarget.setAuto(ctx)
+                    1 -> TwentyOneContactsTarget.setLocal(ctx)
+                    else -> TwentyOneContactsTarget.setBook(ctx, books[which - 2])
+                }
+                updateContactsTarget()
+                dialog.dismiss()
+            }
+            .show()
     }
 
     private fun showLoginUrlDialog(url: String) {

@@ -58,5 +58,7 @@ class TsConsentActivity : AppCompatActivity() {
             "P21-TUN", "souhlas s VPN udělen — přihlašuji klíčem z QR")
         TsManager.startService()
         TsManager.login(controlUrl, authKey)
+        // účet i síť jsou nastavené — teď má smysl říct si o běh na pozadí
+        org.linphone.twentyone.TwentyOneBattery.offerOnce(this)
     }
 }
