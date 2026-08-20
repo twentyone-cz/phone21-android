@@ -214,6 +214,8 @@
     <string name="twentyone_contacts_hint_app_no_book">Synchronizační aplikace je nainstalovaná, ale zatím nemá žádný adresář kontaktů. Přidej v ní účet miniserveru a zapni Kontakty.</string>
     <string name="twentyone_contacts_hint_multiple">Adresářů je víc — vyber, do kterého se mají nové kontakty ukládat.</string>
     <string name="twentyone_contacts_hint_lost">Dřív zvolený adresář v telefonu není. Kontakty se ukládají do telefonu, dokud nevybereš jiný.</string>
+    <string name="twentyone_contacts_sync_tunnel">Synchronizovat kontakty i přes privátní síť</string>
+    <string name="twentyone_contacts_sync_tunnel_hint">Bez tohohle se kontakty synchronizují jen doma po wifi. Účet v synchronizační aplikaci musí mít adresu miniserveru z privátní sítě.</string>
     <!-- fork: běh na pozadí (výjimka z optimalizace baterie) -->
     <string name="twentyone_battery_label">Běh na pozadí: %s</string>
     <string name="twentyone_battery_unrestricted">neomezeno</string>

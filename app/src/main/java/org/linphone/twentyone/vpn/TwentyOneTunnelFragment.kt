@@ -132,6 +132,20 @@ class TwentyOneTunnelFragment : Fragment() {
         }
         updateContactsTarget()
 
+        // fork: pustit do tunelu i synchronizaci kontaktů
+        val syncSwitch = view.findViewById<SwitchCompat>(R.id.contacts_sync_tunnel_switch)
+        val syncHint = view.findViewById<TextView>(R.id.contacts_sync_tunnel_hint)
+        val syncVisible = TwentyOneContactsTarget.davAppInstalled(requireContext())
+        syncSwitch.visibility = if (syncVisible) View.VISIBLE else View.GONE
+        syncHint.visibility = if (syncVisible) View.VISIBLE else View.GONE
+        syncSwitch.isChecked = TsManager.prefs.contactsSyncViaTunnel
+        syncSwitch.setOnCheckedChangeListener { _, checked ->
+            TsManager.prefs.contactsSyncViaTunnel = checked
+            if (TsManager.vpnActive.value == true) {
+                TsManager.restartService()
+            }
+        }
+
         // fork: běh na pozadí (výjimka z optimalizace baterie)
         batteryLabel = view.findViewById(R.id.battery_label)
         batteryFix = view.findViewById(R.id.battery_fix)

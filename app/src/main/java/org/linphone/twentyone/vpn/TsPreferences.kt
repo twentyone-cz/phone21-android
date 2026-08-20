@@ -11,6 +11,7 @@ class TsPreferences(context: Context) {
     companion object {
         private const val PREFS_FILE = "twentyone_tunnel_settings"
         private const val KEY_TUNNEL_SCOPE = "tunnel_scope"
+        private const val KEY_CONTACTS_SYNC = "contacts_sync_via_tunnel"
         private const val KEY_EXIT_NODE_ID = "exit_node_id"
     }
 
@@ -33,6 +34,11 @@ class TsPreferences(context: Context) {
             else -> TunnelScope.APP_ONLY
         }
         set(value) = prefs.edit().putString(KEY_TUNNEL_SCOPE, value.name).apply()
+
+    /** Pustit do privátní sítě i synchronizační aplikaci kontaktů. */
+    var contactsSyncViaTunnel: Boolean
+        get() = prefs.getBoolean(KEY_CONTACTS_SYNC, false)
+        set(value) = prefs.edit().putBoolean(KEY_CONTACTS_SYNC, value).apply()
 
     var exitNodeId: String
         get() = prefs.getString(KEY_EXIT_NODE_ID, "").orEmpty()

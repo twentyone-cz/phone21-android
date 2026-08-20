@@ -205,6 +205,19 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
             } catch (e: PackageManager.NameNotFoundException) {
                 Log.e("$TAG Failed to restrict tunnel to own package: $e")
             }
+            // do tunelu smí i synchronizace kontaktů, když si to uživatel přeje
+            if (TsManager.prefs.contactsSyncViaTunnel) {
+                val sync = org.linphone.twentyone.contacts.TwentyOneContactsTarget.SYNC_APP
+                try {
+                    builder.addAllowedApplication(sync)
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN",
+                        "tunel staví i pro synchronizaci kontaktů"
+                    )
+                } catch (e: PackageManager.NameNotFoundException) {
+                    Log.w("$TAG Sync app not installed, tunnel stays app-only")
+                }
+            }
         } else {
             Log.i("$TAG Tunnel covers the whole device")
         }

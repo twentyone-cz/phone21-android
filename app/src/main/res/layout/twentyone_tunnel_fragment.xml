@@ -111,6 +111,22 @@
             android:layout_marginTop="8dp"
             android:text="@string/twentyone_contacts_target_change" />
 
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/contacts_sync_tunnel_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/twentyone_contacts_sync_tunnel"
+            android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:id="@+id/contacts_sync_tunnel_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/twentyone_contacts_sync_tunnel_hint"
+            android:textSize="13sp"
+            android:textColor="?attr/color_main2_600" />
+
         <!-- sekce: běh na pozadí (výjimka z optimalizace baterie) -->
         <TextView
             android:id="@+id/battery_label"
