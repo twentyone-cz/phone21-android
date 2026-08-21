@@ -77,7 +77,8 @@ databáze), `target_mode` (AUTO/LOCAL/BOOK), `target_type`, `target_name`,
 sjednocené s účty existujících RAW kontaktů; hlavní účet synchronizační
 aplikace se vynechává (kontakty leží v jejích pod-adresářích).
 
-Prefs `twentyone_tunnel_settings`: `contacts_sync_via_tunnel` — v režimu
+Prefs `twentyone_tunnel_settings`: `tunnel_access` (APP_ONLY/SERVER/INTERNET,
+21p.33; přebírá starý `tunnel_scope`), `contacts_sync_via_tunnel` — v režimu
 APP_ONLY se do tunelu přidá i synchronizační aplikace (21p.32); přepínač je
 vidět jen tehdy, když je aplikace nainstalovaná.
 

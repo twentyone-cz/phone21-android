@@ -63,13 +63,45 @@
             android:textSize="14sp"
             android:textColor="?attr/color_main2_600" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/twentyone_access_title"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="?attr/color_main2_800" />
+
         <androidx.appcompat.widget.SwitchCompat
-            android:id="@+id/tunnel_scope_switch"
+            android:id="@+id/access_server_switch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="@string/twentyone_tunnel_scope_full"
+            android:text="@string/twentyone_access_server"
             android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/twentyone_access_server_hint"
+            android:textSize="13sp"
+            android:textColor="?attr/color_main2_600" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/access_internet_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/twentyone_access_internet"
+            android:textColor="?attr/color_main2_700" />
+
+        <TextView
+            android:id="@+id/access_internet_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/twentyone_access_internet_hint"
+            android:textSize="13sp"
+            android:textColor="?attr/color_main2_600" />
 
         <Button
             android:id="@+id/tunnel_toggle"

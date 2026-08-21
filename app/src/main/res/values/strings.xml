@@ -201,6 +201,13 @@
     <string name="twentyone_car_sms_unavailable">Tenhle telefon roli výchozí aplikace pro SMS nenabízí.</string>
     <string name="twentyone_car_sms_already">Zrcadlení zpráv pro auto už je zapnuté.</string>
     <string name="twentyone_car_sms_hint">Zprávy si auto čte z úložiště SMS telefonu — Phone21 se proto musí stát výchozí aplikací pro SMS. Odpovídat z auta nejde, jen číst.</string>
+    <!-- fork: co všechno smí do tunelu -->
+    <string name="twentyone_access_title">Přístup přes privátní síť</string>
+    <string name="twentyone_access_server">Přístup na miniserver</string>
+    <string name="twentyone_access_server_hint">Do privátní sítě smí i ostatní aplikace v telefonu — prohlížeč, peněženka, synchronizace. Tunelem jde jen provoz na miniserver, zbytek internetu ne.</string>
+    <string name="twentyone_access_internet">Internet přes miniserver</string>
+    <string name="twentyone_access_internet_hint">Všechen provoz telefonu půjde ven přes miniserver (jako VPN). Miniserver to musí mít povolené a spojení musí být přímé — přes přenosový uzel se to samo vypne.</string>
+    <string name="twentyone_access_internet_paused">Internet přes miniserver: dočasně vypnuto, spojení jde přes přenosový uzel.</string>
     <!-- fork: kam se ukládají nové kontakty -->
     <string name="twentyone_contacts_title">Kontakty</string>
     <string name="twentyone_contacts_target_label">Nové kontakty ukládat do: %s</string>

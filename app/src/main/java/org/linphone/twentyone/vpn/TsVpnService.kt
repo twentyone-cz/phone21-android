@@ -2,9 +2,12 @@
  * fork: VpnService, kterou si drží zabudovaný tunel. Předloha:
  * tailscale-android IPNService.kt + VPNServiceBuilder.kt (BSD-3-Clause).
  *
- * Rozsah tunelu se řídí TsPreferences.tunnelScope:
- *  - APP_ONLY: do tunelu jde jen provoz této aplikace (addAllowedApplication),
- *  - FULL: celý telefon, s exit node na krabičce.
+ * Kdo smí do tunelu, řídí TsPreferences.tunnelAccess:
+ *  - APP_ONLY (výchozí): jen tahle aplikace (addAllowedApplication),
+ *    volitelně i synchronizace kontaktů,
+ *  - SERVER: všechny aplikace; trasy do tunelu jsou pořád jen adresy
+ *    privátní sítě, ostatní provoz jde mimo něj,
+ *  - INTERNET: navíc výstupní uzel, takže tunelem jde i obecný provoz.
  */
 package org.linphone.twentyone.vpn
 
@@ -197,8 +200,8 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
         }
         builder.setUnderlyingNetworks(null)
 
-        val scope = TsManager.effectiveTunnelScope()
-        if (scope == TsPreferences.TunnelScope.APP_ONLY) {
+        val access = TsManager.effectiveTunnelAccess()
+        if (access == TsPreferences.TunnelAccess.APP_ONLY) {
             try {
                 builder.addAllowedApplication(packageName)
                 Log.i("$TAG Tunnel restricted to [$packageName]")
@@ -219,7 +222,7 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
                 }
             }
         } else {
-            Log.i("$TAG Tunnel covers the whole device")
+            Log.i("$TAG Tunnel is open to all apps (access=$access)")
         }
 
         return TsVpnBuilder(builder)

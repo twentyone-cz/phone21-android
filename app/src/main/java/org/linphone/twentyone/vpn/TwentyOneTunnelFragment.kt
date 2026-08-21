@@ -38,7 +38,8 @@ class TwentyOneTunnelFragment : Fragment() {
     // POZOR: v AppCompat/Material aktivitě se <Switch> v layoutu nafoukne jako
     // SwitchCompat, což NENÍ potomek android.widget.Switch — findViewById<Switch>
     // proto padalo na ClassCastException hned při otevření obrazovky
-    private lateinit var scopeSwitch: SwitchCompat
+    private lateinit var accessServerSwitch: SwitchCompat
+    private lateinit var accessInternetSwitch: SwitchCompat
     private lateinit var toggleButton: Button
     private lateinit var carLogSwitch: SwitchCompat
     private lateinit var carSmsButton: Button
@@ -106,23 +107,42 @@ class TwentyOneTunnelFragment : Fragment() {
         routeView = view.findViewById(R.id.tunnel_route)
         addressView = view.findViewById(R.id.tunnel_address)
         scopeLabel = view.findViewById(R.id.tunnel_scope_label)
-        scopeSwitch = view.findViewById(R.id.tunnel_scope_switch)
+        accessServerSwitch = view.findViewById(R.id.access_server_switch)
+        accessInternetSwitch = view.findViewById(R.id.access_internet_switch)
         toggleButton = view.findViewById(R.id.tunnel_toggle)
 
         TsManager.ensureStarted(requireContext().applicationContext)
 
-        scopeSwitch.isChecked = TsManager.prefs.tunnelScope == TsPreferences.TunnelScope.FULL
-        scopeSwitch.setOnCheckedChangeListener { _, checked ->
-            TsManager.prefs.tunnelScope = if (checked) {
-                TsPreferences.TunnelScope.FULL
-            } else {
-                TsPreferences.TunnelScope.APP_ONLY
-            }
-            updateScopeLabel()
+        // dva stupně nad výchozím stavem; vyšší v sobě obsahuje nižší
+        fun applyAccess(access: TsPreferences.TunnelAccess) {
+            TsManager.prefs.tunnelAccess = access
+            TsManager.applyExitNode(access == TsPreferences.TunnelAccess.INTERNET)
+            updateAccessViews()
             if (TsManager.vpnActive.value == true) {
                 TsManager.restartService()
             }
         }
+        accessServerSwitch.setOnCheckedChangeListener { view2, checked ->
+            if (!view2.isPressed) return@setOnCheckedChangeListener
+            applyAccess(
+                if (checked) {
+                    TsPreferences.TunnelAccess.SERVER
+                } else {
+                    TsPreferences.TunnelAccess.APP_ONLY
+                }
+            )
+        }
+        accessInternetSwitch.setOnCheckedChangeListener { view2, checked ->
+            if (!view2.isPressed) return@setOnCheckedChangeListener
+            applyAccess(
+                if (checked) {
+                    TsPreferences.TunnelAccess.INTERNET
+                } else {
+                    TsPreferences.TunnelAccess.SERVER
+                }
+            )
+        }
+        updateAccessViews()
 
         // fork: kam se ukládají nové kontakty
         contactsLabel = view.findViewById(R.id.contacts_target_label)
@@ -135,7 +155,9 @@ class TwentyOneTunnelFragment : Fragment() {
         // fork: pustit do tunelu i synchronizaci kontaktů
         val syncSwitch = view.findViewById<SwitchCompat>(R.id.contacts_sync_tunnel_switch)
         val syncHint = view.findViewById<TextView>(R.id.contacts_sync_tunnel_hint)
-        val syncVisible = TwentyOneContactsTarget.davAppInstalled(requireContext())
+        // při otevřeném tunelu pro všechny aplikace je volba zbytečná
+        val syncVisible = TwentyOneContactsTarget.davAppInstalled(requireContext()) &&
+            TsManager.prefs.tunnelAccess == TsPreferences.TunnelAccess.APP_ONLY
         syncSwitch.visibility = if (syncVisible) View.VISIBLE else View.GONE
         syncHint.visibility = if (syncVisible) View.VISIBLE else View.GONE
         syncSwitch.isChecked = TsManager.prefs.contactsSyncViaTunnel
@@ -425,18 +447,24 @@ class TwentyOneTunnelFragment : Fragment() {
                 R.string.twentyone_tunnel_connect
             }
         )
-        updateScopeLabel()
+        updateAccessViews()
     }
 
-    private fun updateScopeLabel() {
-        val wanted = TsManager.prefs.tunnelScope
-        val effective = TsManager.effectiveTunnelScope()
+    private fun updateAccessViews() {
+        val wanted = TsManager.prefs.tunnelAccess
+        val effective = TsManager.effectiveTunnelAccess()
+        accessServerSwitch.isChecked = wanted != TsPreferences.TunnelAccess.APP_ONLY
+        accessInternetSwitch.isChecked = wanted == TsPreferences.TunnelAccess.INTERNET
+        accessInternetSwitch.isEnabled = wanted != TsPreferences.TunnelAccess.APP_ONLY
         scopeLabel.text = getString(
             when {
-                wanted == TsPreferences.TunnelScope.FULL &&
-                    effective == TsPreferences.TunnelScope.APP_ONLY ->
-                    R.string.twentyone_tunnel_scope_full_paused
-                wanted == TsPreferences.TunnelScope.FULL -> R.string.twentyone_tunnel_scope_full
+                wanted == TsPreferences.TunnelAccess.INTERNET &&
+                    effective != TsPreferences.TunnelAccess.INTERNET ->
+                    R.string.twentyone_access_internet_paused
+                wanted == TsPreferences.TunnelAccess.INTERNET ->
+                    R.string.twentyone_access_internet
+                wanted == TsPreferences.TunnelAccess.SERVER ->
+                    R.string.twentyone_access_server
                 else -> R.string.twentyone_tunnel_scope_app
             }
         )

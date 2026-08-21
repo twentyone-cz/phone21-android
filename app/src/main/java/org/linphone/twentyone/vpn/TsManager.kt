@@ -59,7 +59,7 @@ object TsManager {
 
     private var directCycles = 0
     private var relayCycles = 0
-    private var scopeInUse = TsPreferences.TunnelScope.APP_ONLY
+    private var accessInUse = TsPreferences.TunnelAccess.APP_ONLY
 
     val state = MutableLiveData(State.NO_STATE)
     val vpnActive = MutableLiveData(false)
@@ -236,7 +236,7 @@ object TsManager {
 
     fun restartService() {
         org.linphone.twentyone.TwentyOneDiag.log(
-            "P21-TUN", "přestavba tunelu, rozsah=%s".format(prefs.tunnelScope))
+            "P21-TUN", "přestavba tunelu, přístup=%s".format(prefs.tunnelAccess))
         val intent = Intent(appContext, TsVpnService::class.java).apply {
             action = TsVpnService.ACTION_RESTART
         }
@@ -252,15 +252,22 @@ object TsManager {
             .postDelayed({ startService() }, 1200)
     }
 
-    fun effectiveTunnelScope(): TsPreferences.TunnelScope {
-        scopeInUse = if (prefs.tunnelScope == TsPreferences.TunnelScope.FULL &&
-            directConnection.value == true
+    /**
+     * Stupeň, který se opravdu použije. Snižuje se JEN nejvyšší stupeň
+     * (internet přes miniserver) a jen když spojení běží přes přenosový
+     * uzel — tam by celý provoz telefonu tekl oklikou. Přístup na
+     * miniserver se nesnižuje: do tunelu stejně jdou jen jeho adresy.
+     */
+    fun effectiveTunnelAccess(): TsPreferences.TunnelAccess {
+        val wanted = prefs.tunnelAccess
+        accessInUse = if (wanted == TsPreferences.TunnelAccess.INTERNET &&
+            directConnection.value != true
         ) {
-            TsPreferences.TunnelScope.FULL
+            TsPreferences.TunnelAccess.SERVER
         } else {
-            TsPreferences.TunnelScope.APP_ONLY
+            wanted
         }
-        return scopeInUse
+        return accessInUse
     }
 
     fun onVpnStatusChanged(active: Boolean) {
@@ -525,12 +532,12 @@ object TsManager {
             Log.i("$TAG Direct peer connection is stable")
             directConnection.postValue(true)
             logRoute(status, true)
-            maybeRebuildTunnel(TsPreferences.TunnelScope.FULL)
+            maybeRebuildTunnel(TsPreferences.TunnelAccess.INTERNET)
         } else if (!direct && current && relayCycles >= SCOPE_SWITCH_STABLE_CYCLES) {
             Log.w("$TAG Peer connection fell back to a relay")
             directConnection.postValue(false)
             logRoute(status, false)
-            maybeRebuildTunnel(TsPreferences.TunnelScope.APP_ONLY)
+            maybeRebuildTunnel(TsPreferences.TunnelAccess.SERVER)
         }
     }
 
@@ -548,12 +555,45 @@ object TsManager {
         )
     }
 
-    private fun maybeRebuildTunnel(desired: TsPreferences.TunnelScope) {
-        if (prefs.tunnelScope != TsPreferences.TunnelScope.FULL) return
-        if (scopeInUse == desired) return
-        Log.i("$TAG Rebuilding tunnel, scope [$scopeInUse] -> [$desired]")
+    /** Přestavba se týká jen nejvyššího stupně (viz effectiveTunnelAccess). */
+    private fun maybeRebuildTunnel(desired: TsPreferences.TunnelAccess) {
+        if (prefs.tunnelAccess != TsPreferences.TunnelAccess.INTERNET) return
+        if (accessInUse == desired) return
+        Log.i("$TAG Rebuilding tunnel, access [$accessInUse] -> [$desired]")
+        applyExitNode(desired == TsPreferences.TunnelAccess.INTERNET)
         restartService()
     }
+
+    /**
+     * Zapne/vypne směrování všeho provozu přes miniserver. Uzel musí být
+     * na miniserveru nabídnutý (stupeň „i dál do sítě") a schválený správou
+     * sítě, jinak se nic nestane.
+     */
+    fun applyExitNode(enable: Boolean) {
+        worker.execute {
+            val address = tailnetPeerAddress()
+            val body = if (enable && address != null) {
+                "{\"ExitNodeIP\":\"%s\",\"ExitNodeIPSet\":true}".format(address)
+            } else {
+                "{\"ExitNodeIP\":\"\",\"ExitNodeIPSet\":true}"
+            }
+            val result = callLocalApi("PATCH", "prefs", body.toByteArray(Charsets.UTF_8))
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN",
+                if (result == null) {
+                    "nastavení internetu přes miniserver se nepodařilo"
+                } else if (enable) {
+                    "internet telefonu jde přes miniserver"
+                } else {
+                    "internet telefonu jde napřímo"
+                }
+            )
+        }
+    }
+
+    /** Adresa miniserveru v privátní síti (jediný protějšek v síti). */
+    private fun tailnetPeerAddress(): String? =
+        netDiag.value?.peers?.firstOrNull { it.address.isNotEmpty() }?.address
 
     fun refreshStatus() {
         worker.execute {
