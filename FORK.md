@@ -65,6 +65,70 @@ https://gitlab.linphone.org/BC/public/linphone-sdk
 Pozn.: `gradle/gradle-daemon-jvm.properties` je smazané — vynucovalo
 stažení JetBrains JDK; fork buildí systémovým JDK 21.
 
+## Provisioning z miniserveru: sekce `[twentyone]` (21p.34)
+
+Jedno QR z ovládání brány nastaví SIP účet i privátní síť. XML generuje brána
+(repo `/home/dev/projects/Phone21`, `webui/app.py`: `prov_xml()` a
+`network_section()`), appka ho čte v `vpn/TsProvisioning.kt`. Závazný kontrakt
+je v repu brány: `docs/ts-protokol.md`, kapitola 6.
+
+Sekce se do XML vypíše, když je známé **cokoli** z trojice — adresa brány se
+posílá i tehdy, když se klíč telefonu nepodařilo získat (telefon už v síti být
+může a potřebuje jen vědět, kudy ven).
+
+| klíč | co nese | kdo ho píše | `overwrite="true"` |
+|---|---|---|---|
+| `ts_control_url` | adresa koordinátoru sítě | brána z odpovědi koordinátoru | ANO |
+| `ts_authkey` | jednorázový klíč telefonu (platí 1 h) | koordinátor, brána přeposílá | NE |
+| `ts_exit_node` | adresa brány v síti (tailnet IPv4) | brána ze souboru `ts/ip` | ANO |
+
+**`ts_control_url`** — adresa koordinátoru, ke kterému se má telefon přihlásit.
+Bere se z pole `login_server` odpovědi na `POST /partner/preauthkeys`
+(`webui/app.py`, `request_network_key()`); bez uloženého tokenu účtu se klíč
+ani adresa koordinátoru nevydají a QR nese jen SIP účet a `ts_exit_node`.
+Appka ji čte `TsProvisioning.takeNetworkKey()` a **nemaže** (maže se jen
+klíč), takže položka v `linphonerc` zůstává ležet —
+proto `overwrite="true"`: bez atributu by xml2lpc existující položku nechal být
+a telefon by po přestěhování koordinátoru zůstal u staré adresy. Hodnota je
+přitom jen kontrolní: `TsManager.login()` ji porovná s
+`BuildConfig.NETWORK_COORDINATOR` a při neshodě ji ignoruje (QR nesmí telefon
+přehlásit k cizímu koordinátorovi).
+
+**`ts_authkey`** — jednorázový klíč telefonu do privátní sítě. Vydává ho
+koordinátor (`POST /partner/preauthkeys`), brána ho jen přiloží k QR; platí
+hodinu a spotřebuje se prvním přihlášením. **Jediná položka bez
+`overwrite="true"`**, a to schválně: appka ji hned po přečtení maže zápisem
+prázdné hodnoty (`takeNetworkKey()`: `setString(SECTION, "ts_authkey", "")` +
+`sync()` — prázdná hodnota položku v liblinphone opravdu odstraní), aby klíč
+nikde neležel. Položka tím pádem v konfiguraci neexistuje a příští QR ji zapíše
+i bez atributu: přepis zajišťuje mazání v appce, ne `overwrite`.
+
+**`ts_exit_node`** — adresa brány v privátní síti (tailnet IPv4, `100.x`).
+Je to tatáž hodnota, kterou QR nese jako SIP doménu: `ProvHandler` si ji vezme
+z `ts_ip()` (soubor `ts/ip`, jediný zapisovatel je sidecar brány) a předá ji do
+`prov_xml(ip, ts_url, ts_key, ip)`. Appka ji čte `takeExitNodeAddress()` a
+ukládá do prefs `gateway_address`; slouží **jen k tomu, aby se brána poznala
+mezi protějšky** — do předvoleb jádra tunelu jde vždy `StableID` vybraného
+protějšku, nikdy adresa. `overwrite="true"` má, přestože ji appka po přečtení
+taky maže: mazání proběhne jen při `ConfiguringState.Successful`
+(`TunnelReadinessManager.onConfiguring`), takže po neúspěšné konfiguraci může
+v `linphonerc` zůstat stará adresa — a ta se po přeregistrování brány mění.
+
+**Pravidlo `overwrite`:** atribut patří výhradně na `<entry>` (na `<section>`
+ho liblinphone 5.5.13 nezná) a porovnává se přesným `strcmp` s `true` — ani
+`True`, ani `1` neprojde. Bez něj xml2lpc existující položku nechá být
+(„Don't touch"). Od 21p.34 ho proto nesou i všechny `<entry>` v `proxy_0`
+a `auth_info_0`, jinak druhé QR nepřepíše ani doménu, ani heslo. Cena: ruční
+úprava SIP účtu v telefonu nové QR nepřežije. Souvisí s tím pojistka
+v `TwentyOneProvisioning`: před aplikací konfigurace se odeberou přihlašovací
+údaje výchozího účtu (kvůli `ha1` z minulé domény) a při NEúspěšné konfiguraci
+se z klonu vrátí zpátky (`TunnelReadinessManager.onConfiguring`).
+
+**Klient sítě:** `app/libs/libtailscale.aar` je postavené z `tailscale.com`
+v1.102.2 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.102.2`,
+dlouhá verze `1.102.2-t6cac91817`). Koordinátor headscale 0.29.1 vyžaduje
+klienta ≥ 1.80 — splněno.
+
 ## Kontakty: cíl zápisu (21p.31)
 
 Nové a upravené kontakty jdou do adresáře telefonu. Když je v telefonu
@@ -80,7 +144,14 @@ aplikace se vynechává (kontakty leží v jejích pod-adresářích).
 Prefs `twentyone_tunnel_settings`: `tunnel_access` (APP_ONLY/SERVER/INTERNET,
 21p.33; přebírá starý `tunnel_scope`), `contacts_sync_via_tunnel` — v režimu
 APP_ONLY se do tunelu přidá i synchronizační aplikace (21p.32); přepínač je
-vidět jen tehdy, když je aplikace nainstalovaná.
+vidět jen tehdy, když je aplikace nainstalovaná. Od 21p.34 navíc
+`gateway_address` (adresa brány z posledního QR, klíč `ts_exit_node`; jen
+k poznání brány mezi protějšky, zapisuje se `commit()`, protože musí ležet dřív,
+než se uzel začne nasazovat) a `gateway_stable_id` (`StableID` naposledy
+vybrané brány — je to ZÁZNAM do deníku P21-TUN, ne záloha, ze které by se dalo
+nasazovat; při změně `gateway_address` se maže, ať se nikdy nepřenese do jiné
+sítě). Klíč `tunnel_scope` zůstává jen kvůli migraci, mrtvý enum `TunnelScope`
+je od 21p.34 pryč.
 
 Prefs `twentyone_battery`: `asked` — dialog o běhu na pozadí se nabízí
 jednou po nastavení účtu, stav je pak vidět na Konexi.

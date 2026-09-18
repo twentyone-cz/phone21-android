@@ -25,6 +25,35 @@ object TwentyOneProvisioning {
     private const val TAG = "[Provisioning]"
     private val executor = Executors.newSingleThreadExecutor()
 
+    /** Kopie přihlašovacích údajů výchozího účtu, které jsme odebrali před
+     *  aplikací konfigurace. Když aplikace selže (vadné nebo vypršelé QR),
+     *  musí se vrátit — jinak by telefon zůstal bez hesla a trvale
+     *  neregistrovaný, aniž by to bylo z čeho poznat. Čte a maže ji
+     *  [org.linphone.twentyone.vpn.TunnelReadinessManager.onConfiguring]. */
+    @Volatile
+    var removedAuthInfo: org.linphone.core.AuthInfo? = null
+        private set
+
+    /** Vrátí odebrané údaje zpět. Idempotentní. */
+    fun restoreAuthInfo(core: org.linphone.core.Core) {
+        val saved = removedAuthInfo ?: return
+        removedAuthInfo = null
+        // Znovu jen tehdy, když mezitím nic nového nepřibylo — po úspěšné
+        // konfiguraci má účet vlastní, čerstvé údaje a ty nesmíme přebít.
+        val existing = core.defaultAccount?.findAuthInfo()
+        if (existing != null) {
+            Log.i("$TAG Not restoring credentials, account already has its own")
+            return
+        }
+        Log.w("$TAG Restoring credentials of default account after failed config")
+        core.addAuthInfo(saved)
+    }
+
+    /** Zahodí zapamatované údaje (po úspěšné konfiguraci). */
+    fun forgetRemovedAuthInfo() {
+        removedAuthInfo = null
+    }
+
     /** Stáhne konfiguraci a aplikuje ji. Chyby hlásí voláním [onError]
      *  s krátkým lidským popisem — ten se zobrazí v hlášce. */
     fun fetchAndApply(url: String, onError: (String) -> Unit) {
@@ -55,6 +84,19 @@ object TwentyOneProvisioning {
                 val file = File(coreContext.context.filesDir, "provisioning.xml")
                 file.writeBytes(data)
                 coreContext.postOnCoreThread { core ->
+                    // Uložené přihlašovací údaje výchozího účtu musí pryč JEŠTĚ
+                    // před aplikací konfigurace: jádro si heslo pamatuje i jako
+                    // ha1 spočítané pro minulou doménu, a to by přebilo heslo
+                    // i doménu, které nová konfigurace přepisuje. Cíleně jen
+                    // výchozí účet — hromadné smazání by vzalo i údaje
+                    // synchronizace kontaktů, které s ústřednou nesouvisejí.
+                    core.defaultAccount?.findAuthInfo()?.let {
+                        Log.i("$TAG Removing stored credentials of default account")
+                        // kopii si necháme: když aplikace konfigurace selže,
+                        // vrátíme ji, ať telefon nezůstane bez hesla
+                        removedAuthInfo = it.clone()
+                        core.removeAuthInfo(it)
+                    }
                     core.provisioningUri = "file://" + file.absolutePath
                     Log.i("$TAG Config downloaded (${data.size} B), applying from file")
                     core.stop()
