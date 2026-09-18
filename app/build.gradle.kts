@@ -17,6 +17,14 @@ plugins {
 val packageName = "cz.twentyone.phone21"  // fork: jen applicationId; namespace zůstává org.linphone
 val useDifferentPackageNameForDebugBuild = false
 
+// fork: versionCode = upstreamCode × 1000 + iterace (max 999).
+// Původní schéma ×10 přeteklo: 21p.19 = 6020059 leží v pásmu
+// upstreamu 6.2.5, po rebasi by šel jen downgrade. Skok na ×1000
+// (2026-08-18) monotonii obnovil; versionCode NIKDY nesnižovat.
+val upstreamCode = 602004
+val forkIteration = 34
+val appVersionName = "6.2.4-21p.$forkIteration"
+
 val sdkPath = providers.gradleProperty("LinphoneSdkBuildDir").get()
 val googleServices = File(projectDir.absolutePath + "/google-services.json")
 val linphoneLibs = File("$sdkPath/libs/")
@@ -106,14 +114,10 @@ android {
         applicationId = packageName
         minSdk = 28
         targetSdk = 37
-        // fork: versionCode = upstreamCode × 1000 + iterace (max 999).
-        // Původní schéma ×10 přeteklo: 21p.19 = 6020059 leží v pásmu
-        // upstreamu 6.2.5, po rebasi by šel jen downgrade. Skok na ×1000
-        // (2026-08-18) monotonii obnovil; versionCode NIKDY nesnižovat.
-        val upstreamCode = 602004
-        val forkIteration = 33
+        // fork: upstreamCode/forkIteration/appVersionName jsou nahoře u packageName,
+        // aby z nich mohlo vyjít i jméno APK (git describe je před tagem o vydání pozadu).
         versionCode = upstreamCode * 1000 + forkIteration
-        versionName = "6.2.4-21p.$forkIteration"
+        versionName = appVersionName
 
         manifestPlaceholders["appAuthRedirectScheme"] = packageName
 
@@ -133,7 +137,9 @@ android {
         variant.outputs
             .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
             .forEach { output ->
-                output.outputFileName = "phone21-${variant.buildType.name}-$gitVersion.apk"
+                // fork: jméno APK z versionName forku, ne z git describe — tag vzniká
+                // až po sestavení, takže gitVersion by dal jméno předchozího vydání.
+                output.outputFileName = "phone21-${variant.buildType.name}-$appVersionName.apk"
             }
     }
 

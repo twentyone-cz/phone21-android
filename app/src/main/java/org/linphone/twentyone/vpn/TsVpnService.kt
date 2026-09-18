@@ -200,7 +200,9 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
         }
         builder.setUnderlyingNetworks(null)
 
-        val access = TsManager.effectiveTunnelAccess()
+        // tunnelAccessForBuild: tady rozhraní opravdu vzniká, takže právě tady
+        // se zaznamená stupeň, se kterým je postavené (accessInUse)
+        val access = TsManager.tunnelAccessForBuild()
         if (access == TsPreferences.TunnelAccess.APP_ONLY) {
             try {
                 builder.addAllowedApplication(packageName)

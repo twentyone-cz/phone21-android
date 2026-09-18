@@ -54,6 +54,19 @@ class TunnelReadinessManager {
                 core.accountList.size,
                 message ?: "")
         )
+        // Před aplikací konfigurace jsme odebrali přihlašovací údaje výchozího
+        // účtu (kvůli ha1 z minulé domény). Když se konfigurace nepovedla,
+        // musí se vrátit — jinak telefon zůstane bez hesla a trvale
+        // neregistrovaný, a z hlášky ani z deníku se to nepozná. Platí i pro
+        // Skipped: odebrání proběhlo, aplikace ne.
+        if (status == ConfiguringState.Successful) {
+            org.linphone.twentyone.TwentyOneProvisioning.forgetRemovedAuthInfo()
+        } else {
+            org.linphone.twentyone.TwentyOneProvisioning.restoreAuthInfo(core)
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-CFG", "konfigurace neproběhla (%s) — přihlašovací údaje účtu vráceny".format(status)
+            )
+        }
         if (status == ConfiguringState.Skipped) return
         // stažená konfigurace nese heslo účtu — smazat i po NEúspěchu
         // (soubor s heslem nesmí ležet ve files/ a mrtvá adresa se nesmí
@@ -61,6 +74,21 @@ class TunnelReadinessManager {
         java.io.File(coreContext.context.filesDir, "provisioning.xml").delete()
         if (!core.provisioningUri.isNullOrEmpty()) core.provisioningUri = null
         if (status != ConfiguringState.Successful) return
+        // POŘADÍ JE ZÁVAZNÉ: adresa brány se čte a ukládá dřív než klíč.
+        // Chybějící klíč (return níž) nesmí adresu zahodit — brána ji posílá
+        // i tehdy, když se klíč telefonu nepodařilo získat.
+        val gateway = TsProvisioning.takeExitNodeAddress(core)
+        if (gateway.isNotEmpty()) {
+            val prefs = TsPreferences(coreContext.context)
+            if (!gateway.equals(prefs.gatewayAddress, ignoreCase = true)) {
+                // jiná brána než minule → poslední známý identifikátor neplatí
+                prefs.gatewayStableId = ""
+            }
+            prefs.gatewayAddress = gateway
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-NET", "konfigurace nese adresu brány v privátní síti"
+            )
+        }
         val (url, key) = TsProvisioning.takeNetworkKey(core)
         if (key.isEmpty()) return
         val intent = Intent(coreContext.context, TsConsentActivity::class.java).apply {
@@ -84,6 +112,13 @@ class TunnelReadinessManager {
     }
 
     private val vpnObserver = Observer<Boolean> {
+        evaluate()
+    }
+
+    // Odříznutí (síť běží, ale nemá jediný protějšek) = registrace nemá kam
+    // jít. Bez tohoto pozorovatele by appka dokola zkoušela registraci přes
+    // síť bez brány a plnila deník P21-REG.
+    private val pausedObserver = Observer<Boolean> {
         evaluate()
     }
 
@@ -134,6 +169,7 @@ class TunnelReadinessManager {
             TsManager.loggedIn.observeForever(loginObserver)
             TsManager.endpointVerified.observeForever(endpointObserver)
             TsManager.vpnActive.observeForever(vpnObserver)
+            TsManager.networkPaused.observeForever(pausedObserver)
         }
         applyState(false)
     }
@@ -146,6 +182,7 @@ class TunnelReadinessManager {
             TsManager.loggedIn.removeObserver(loginObserver)
             TsManager.endpointVerified.removeObserver(endpointObserver)
             TsManager.vpnActive.removeObserver(vpnObserver)
+            TsManager.networkPaused.removeObserver(pausedObserver)
         }
         this.core = null
     }
@@ -174,6 +211,7 @@ class TunnelReadinessManager {
         val loggedIn = TsManager.loggedIn.value == true
         val verified = TsManager.endpointVerified.value == true
         val vpnUp = TsManager.vpnActive.value == true
+        val paused = TsManager.networkPaused.value == true
         // Stav RUNNING z definice znamená přihlášený uzel — příznak
         // přihlášení z notifikací chodí pozdě/nespolehlivě a držel účet
         // v „disabled", i když tunel dávno běžel (do logu se dál píše).
@@ -182,16 +220,19 @@ class TunnelReadinessManager {
         }
         // Bez postaveného rozhraní nemá registrace kudy jít — dřív se
         // zapínala i tak a padala na io error.
-        val available = verified && (state == TsManager.State.RUNNING) && vpnUp
+        // Pozastavená síť (prázdná mapa protějšků) je pro registraci totéž
+        // co spadlé rozhraní: ústředna není odkud dosažitelná. Po návratu
+        // protějšků se příznak zhasne a registrace se zapne zpátky sama.
+        val available = verified && (state == TsManager.State.RUNNING) && vpnUp && !paused
         if (available == ready) return
         ready = available
         Log.i("$TAG Network readiness is now [$available]")
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-NET",
-            ("síť %s (stav=%s přihlášení=%s ověření=%s rozhraní=%s) — " +
+            ("síť %s (stav=%s přihlášení=%s ověření=%s rozhraní=%s pozastaveno=%s) — " +
                 "registrace u ústředny se %s").format(
                 if (available) "připravena" else "nepřipravena",
-                state, loggedIn, verified, vpnUp,
+                state, loggedIn, verified, vpnUp, paused,
                 if (available) "zapíná" else "vypíná")
         )
         coreContext.postOnCoreThread {

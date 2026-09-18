@@ -14,6 +14,26 @@ object TsProvisioning {
     private const val SECTION = "twentyone"
     private const val KEY_URL = "ts_control_url"
     private const val KEY_AUTH = "ts_authkey"
+    private const val KEY_EXIT = "ts_exit_node"
+
+    /**
+     * Adresa brány v privátní síti ze zrovna aplikovaného provisioningu.
+     *
+     * Čte se NEZÁVISLE na klíči: brána adresu posílá i tehdy, když se klíč
+     * telefonu nepodařilo získat. Po přečtení se položka hned maže —
+     * zápis prázdné hodnoty ji v liblinphone opravdu odstraní, takže
+     * příští QR ji přepíše i bez atributu overwrite.
+     */
+    @WorkerThread
+    fun takeExitNodeAddress(core: Core): String {
+        val config = core.config ?: return ""
+        val address = config.getString(SECTION, KEY_EXIT, "").orEmpty().trim()
+        if (address.isEmpty()) return ""
+        config.setString(SECTION, KEY_EXIT, "")
+        config.sync()
+        Log.i("$TAG Gateway address found in provisioning")
+        return address
+    }
 
     /** Klíč ze zrovna aplikovaného provisioningu, nebo prázdno. */
     @WorkerThread

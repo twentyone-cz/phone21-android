@@ -12,11 +12,13 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.findNavController
+import com.google.android.material.button.MaterialButton
 import org.linphone.R
 import org.linphone.core.tools.Log
 import org.linphone.twentyone.car.CarCallLog
@@ -25,10 +27,15 @@ import org.linphone.twentyone.car.CarPreferences
 import org.linphone.twentyone.car.CarSmsRole
 import org.linphone.twentyone.TwentyOneBattery
 import org.linphone.twentyone.contacts.TwentyOneContactsTarget
+import org.linphone.ui.assistant.AssistantActivity
 
 class TwentyOneTunnelFragment : Fragment() {
     companion object {
         private const val TAG = "[Tunnel Fragment]"
+
+        // značky views vkládaných z kódu — podle nich se poznají už vložené
+        private const val TAG_HINT = "twentyone_tunnel_hint"
+        private const val TAG_LOGOUT = "twentyone_tunnel_logout"
     }
 
     private lateinit var stateView: TextView
@@ -47,6 +54,12 @@ class TwentyOneTunnelFragment : Fragment() {
     private lateinit var contactsHint: TextView
     private lateinit var batteryLabel: TextView
     private lateinit var batteryFix: Button
+
+    // Nápověda pod stavem a náhradní volba „odhlásit“ vznikají z kódu:
+    // layout obrazovky se v téhle vlně nemění. Reference se v onDestroyView
+    // pouští, ať fragment nedrží zbořené view.
+    private var hintView: TextView? = null
+    private var logoutButton: Button? = null
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -110,13 +123,26 @@ class TwentyOneTunnelFragment : Fragment() {
         accessServerSwitch = view.findViewById(R.id.access_server_switch)
         accessInternetSwitch = view.findViewById(R.id.access_internet_switch)
         toggleButton = view.findViewById(R.id.tunnel_toggle)
+        installExtraViews()
 
         TsManager.ensureStarted(requireContext().applicationContext)
 
         // dva stupně nad výchozím stavem; vyšší v sobě obsahuje nižší
         fun applyAccess(access: TsPreferences.TunnelAccess) {
             TsManager.prefs.tunnelAccess = access
-            TsManager.applyExitNode(access == TsPreferences.TunnelAccess.INTERNET)
+            // Uzel se nasazuje podle stupně, který OPRAVDU platí (přes
+            // přenosový uzel se nejvyšší stupeň snižuje) — a až PO uložení
+            // volby, aby effectiveTunnelAccess() četla novou hodnotu.
+            // Dřív se zapínal natvrdo podle přání a přes relay tak vznikl
+            // výstupní uzel, o kterém zbytek appky nevěděl.
+            TsManager.applyExitNode(
+                TsManager.effectiveTunnelAccess() == TsPreferences.TunnelAccess.INTERNET
+            )
+            // Věta pod stavem se řídí SKUTEČNOSTÍ (je uzel nasazený?), a ta
+            // se dozví až z dalšího stavu sítě. Bez tohohle dotazu by se
+            // potvrzení objevilo až s dalším pollem. Dotaz jde na stejný
+            // jednovláknový worker jako PATCH výše, takže se provede až po něm.
+            TsManager.refreshStatus()
             updateAccessViews()
             if (TsManager.vpnActive.value == true) {
                 TsManager.restartService()
@@ -261,10 +287,13 @@ class TwentyOneTunnelFragment : Fragment() {
         }
 
         toggleButton.setOnClickListener {
-            if (TsManager.vpnActive.value == true) {
-                TsManager.stopService()
-            } else {
-                connect()
+            when {
+                // Telefon ze sítě vypadl: „Připojit" by jen nastartoval
+                // službu a nic by se nestalo (příznak přihlášení zůstává
+                // viset). Jediná cesta zpět je nový kód.
+                needsNewCode() -> startNewCode()
+                TsManager.vpnActive.value == true -> TsManager.stopService()
+                else -> connect()
             }
         }
 
@@ -272,6 +301,12 @@ class TwentyOneTunnelFragment : Fragment() {
         TsManager.vpnActive.observe(viewLifecycleOwner) { updateState() }
         TsManager.directConnection.observe(viewLifecycleOwner) { updateState() }
         TsManager.tailnetAddress.observe(viewLifecycleOwner) { updateState() }
+        TsManager.networkPaused.observe(viewLifecycleOwner) { updateState() }
+        TsManager.gatewayState.observe(viewLifecycleOwner) { updateState() }
+        // Věta o provozu ven se opírá o poslední stav sítě (je uzel opravdu
+        // nasazený?) — bez tohohle pozorovatele by zůstala viset na tom, co
+        // platilo při otevření obrazovky.
+        TsManager.netDiag.observe(viewLifecycleOwner) { updateState() }
         TsManager.browseToUrl.observe(viewLifecycleOwner) { url ->
             if (url.isNullOrEmpty()) return@observe
             // Hodnotu spotřebovat HNED: LiveData ji jinak přehraje při
@@ -292,6 +327,69 @@ class TwentyOneTunnelFragment : Fragment() {
             }
         }
         updateState()
+    }
+
+    /**
+     * Nápověda pod stavem a tlačítko „odhlásit“. Zakládají se z kódu, aby
+     * obrazovka nepotřebovala změnu layoutu; když by rodič nebyl sloupec,
+     * prostě nevzniknou a zbytek obrazovky funguje dál.
+     */
+    private fun installExtraViews() {
+        val column = stateView.parent as? LinearLayout ?: return
+        val density = resources.displayMetrics.density
+
+        // Pojistka proti dvojímu vložení: onCreateView vrací pokaždé čerstvě
+        // nafouknutý strom, takže při běžném průchodu životním cyklem
+        // duplikát vzniknout nemůže. Kdyby ale metoda někdy proběhla nad
+        // TÝMŽ sloupcem podruhé, visely by na obrazovce dvě nápovědy a dvě
+        // tlačítka „odhlásit" — a to druhé by nikdo neaktualizoval. Hotová
+        // views se proto poznají podle značky a jen se převezmou.
+        hintView = (column.findViewWithTag<View>(TAG_HINT) as? TextView)
+            ?: TextView(requireContext()).apply {
+                tag = TAG_HINT
+                textSize = 14f
+                setTextColor(routeView.currentTextColor)
+                visibility = View.GONE
+                column.addView(
+                    this,
+                    column.indexOfChild(stateView) + 1,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (4 * density).toInt() }
+                )
+            }
+
+        // MaterialButton, ne obyčejný Button: v Material3 tématu se <Button>
+        // z layoutu nafoukne právě jako MaterialButton a tenhle by jinak
+        // vypadal jinak než ten vedle něj.
+        logoutButton = (column.findViewWithTag<View>(TAG_LOGOUT) as? Button)
+            ?: MaterialButton(requireContext()).apply {
+                tag = TAG_LOGOUT
+                setText(R.string.twentyone_tunnel_logout)
+                visibility = View.GONE
+                setOnClickListener {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN",
+                        "odhlášení telefonu ze sítě na žádost uživatele"
+                    )
+                    TsManager.logout()
+                }
+                column.addView(
+                    this,
+                    column.indexOfChild(toggleButton) + 1,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (8 * density).toInt() }
+                )
+            }
+    }
+
+    override fun onDestroyView() {
+        hintView = null
+        logoutButton = null
+        super.onDestroyView()
     }
 
     override fun onResume() {
@@ -401,7 +499,45 @@ class TwentyOneTunnelFragment : Fragment() {
             .show()
     }
 
+    /**
+     * Odříznutí (síť běží, ale nemá jediné zařízení) platí JEN pro běžící
+     * síť. Příznak v TsManager se přepočítává výhradně z doručeného stavu
+     * sítě a ty se mimo RUNNING netahají, takže umí zůstat viset na true
+     * i po „Odpojit" nebo po vyhození telefonu ze sítě. Obrazovka se ho
+     * proto ptá jen ve stavu RUNNING — jinak by na odpojeném telefonu
+     * svítilo „Pozastaveno" a věta o chybějícím kreditu, a hlavní tlačítko
+     * by místo nabídky nového kódu zůstalo tichým „Připojit".
+     */
+    private fun isPaused(state: TsManager.State?): Boolean =
+        state == TsManager.State.RUNNING && TsManager.networkPaused.value == true
+
+    /**
+     * Telefon do sítě nepatří (koordinátor ho zná jako odebraný). Není to
+     * odříznutí: odříznutá síť běží dál a kód by pro ni byl k ničemu.
+     */
+    private fun needsNewCode(): Boolean {
+        val state = TsManager.state.value
+        // Pozastavení může přebít nabídku nového kódu jen tehdy, když síť
+        // opravdu běží; zaseknutý příznak mimo RUNNING nesmí telefon
+        // vyhozený ze sítě připravit o jedinou cestu zpátky.
+        if (isPaused(state)) return false
+        return state == TsManager.State.NEEDS_LOGIN ||
+            state == TsManager.State.NEEDS_MACHINE_AUTH
+    }
+
+    /** Jediná cesta zpět do sítě: přečíst nový kód v průvodci. */
+    private fun startNewCode() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "telefon do sítě nepatří — otevírám čtení nového kódu"
+        )
+        startActivity(Intent(requireContext(), AssistantActivity::class.java))
+    }
+
     private fun connect() {
+        if (needsNewCode()) {
+            startNewCode()
+            return
+        }
         val intent = VpnService.prepare(requireContext())
         if (intent != null) {
             vpnPermission.launch(intent)
@@ -415,17 +551,29 @@ class TwentyOneTunnelFragment : Fragment() {
 
     private fun updateState() {
         val state = TsManager.state.value ?: TsManager.State.NO_STATE
+        // Odříznutí NENÍ odhlášení: nesmí tvrdit, že telefon do sítě
+        // nepatří, ani nabízet nový kód. A vyhodnocuje se jen v běžící
+        // síti (viz isPaused) — mimo RUNNING je příznak nevěrohodný.
+        val paused = isPaused(state)
+        val needsCode = needsNewCode()
+
         stateView.text = getString(
-            when (state) {
-                TsManager.State.RUNNING -> R.string.twentyone_tunnel_state_connected
-                TsManager.State.STARTING -> R.string.twentyone_tunnel_state_connecting
-                TsManager.State.NEEDS_LOGIN,
-                TsManager.State.NEEDS_MACHINE_AUTH -> R.string.twentyone_tunnel_state_needs_login
+            when {
+                paused -> R.string.twentyone_tunnel_state_paused
+                state == TsManager.State.RUNNING -> R.string.twentyone_tunnel_state_connected
+                state == TsManager.State.STARTING -> R.string.twentyone_tunnel_state_connecting
+                needsCode -> R.string.twentyone_tunnel_state_needs_login
                 else -> R.string.twentyone_tunnel_state_stopped
             }
         )
 
-        routeView.visibility = if (state == TsManager.State.RUNNING) View.VISIBLE else View.GONE
+        // Trasa se měří k bráně; při odříznutí není ke komu a věta o přímém
+        // spojení by lhala, proto řádek zmizí celý.
+        routeView.visibility = if (state == TsManager.State.RUNNING && !paused) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
         routeView.text = getString(
             if (TsManager.directConnection.value == true) {
                 R.string.twentyone_tunnel_route_direct
@@ -434,6 +582,15 @@ class TwentyOneTunnelFragment : Fragment() {
             }
         )
 
+        val hint = hintFor(state, paused, needsCode)
+        hintView?.visibility = if (hint == null) View.GONE else View.VISIBLE
+        if (hint != null) hintView?.text = hint
+
+        // Odhlášení dává smysl jen tomu, kdo ze sítě vypadl; při odříznutí by
+        // to byla past (telefon by se ze sítě odhlásil kvůli chybějícímu
+        // kreditu a zpátky by ho pustil až nový kód).
+        logoutButton?.visibility = if (needsCode) View.VISIBLE else View.GONE
+
         val address = TsManager.tailnetAddress.value
         addressView.visibility = if (address.isNullOrEmpty()) View.GONE else View.VISIBLE
         if (!address.isNullOrEmpty()) {
@@ -441,14 +598,76 @@ class TwentyOneTunnelFragment : Fragment() {
         }
 
         toggleButton.setText(
-            if (TsManager.vpnActive.value == true) {
-                R.string.twentyone_tunnel_disconnect
-            } else {
-                R.string.twentyone_tunnel_connect
+            when {
+                needsCode -> R.string.twentyone_tunnel_needs_login_action
+                TsManager.vpnActive.value == true -> R.string.twentyone_tunnel_disconnect
+                else -> R.string.twentyone_tunnel_connect
             }
         )
         updateAccessViews()
     }
+
+    /**
+     * Věta pod stavem. Pořadí: odříznutí → telefon mimo síť → co appka ví
+     * o bráně (to zajímá jen toho, kdo chce provoz ven přes miniserver).
+     */
+    private fun hintFor(
+        state: TsManager.State,
+        paused: Boolean,
+        needsCode: Boolean
+    ): String? {
+        if (paused) {
+            val base = getString(R.string.twentyone_tunnel_paused_hint)
+            return if (TsManager.prefs.tunnelAccess == TsPreferences.TunnelAccess.INTERNET) {
+                base + "\n" + getString(R.string.twentyone_tunnel_paused_internet)
+            } else {
+                base
+            }
+        }
+        if (needsCode) {
+            return getString(R.string.twentyone_tunnel_needs_login_hint) + "\n" +
+                getString(R.string.twentyone_tunnel_needs_login_no_code)
+        }
+        if (state != TsManager.State.RUNNING ||
+            TsManager.prefs.tunnelAccess != TsPreferences.TunnelAccess.INTERNET
+        ) {
+            return null
+        }
+        return when (TsManager.gatewayState.value) {
+            TsManager.GatewayState.ABSENT ->
+                getString(R.string.twentyone_tunnel_gateway_absent)
+            TsManager.GatewayState.NO_EXIT_OPTION ->
+                getString(R.string.twentyone_tunnel_gateway_no_exit)
+            TsManager.GatewayState.AMBIGUOUS ->
+                getString(R.string.twentyone_tunnel_gateway_ambiguous)
+            // „Provoz ven vede přes miniserver" jen tehdy, když opravdu vede:
+            // přes přenosový uzel se stupeň snižuje (uzel nasazený není) a
+            // samotné READY je jen to, co by ŠLO — ne to, co je nastavené.
+            TsManager.GatewayState.READY ->
+                if (TsManager.effectiveTunnelAccess() ==
+                    TsPreferences.TunnelAccess.INTERNET &&
+                    exitNodeInUse()
+                ) {
+                    getString(R.string.twentyone_tunnel_gateway_ready)
+                } else {
+                    null
+                }
+            null -> null
+        }
+    }
+
+    /**
+     * Vede provoz ven opravdu přes bránu? Bere se ze stavu sítě, ne z přání:
+     * protějšek nese příznak výstupního uzlu jen tehdy, když jeho stabilní
+     * identifikátor opravdu leží v předvolbách jádra. Dokud se nasazení
+     * nepotvrdí (zápis neprošel, brána v tu chvíli cestu ven nenabízela,
+     * srovnání se ještě nestihlo), obrazovka radši mlčí, než aby slibovala
+     * něco, co neplatí. Vlastní opatrná věta pro „brána je, ale uzel zatím
+     * nasazený není" by chtěla nový text v strings.xml — ten v téhle vlně
+     * přibýt nemůže, proto se zatím nepíše nic.
+     */
+    private fun exitNodeInUse(): Boolean =
+        TsManager.gatewayPeer(TsManager.netDiag.value)?.isExitNode == true
 
     private fun updateAccessViews() {
         val wanted = TsManager.prefs.tunnelAccess

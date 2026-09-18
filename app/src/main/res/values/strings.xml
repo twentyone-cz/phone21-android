@@ -167,13 +167,25 @@
     <string name="twentyone_section_network">Privátní síť</string>
     <string name="twentyone_tunnel_state_connected">Připojeno</string>
     <string name="twentyone_tunnel_state_connecting">Připojuje se…</string>
-    <string name="twentyone_tunnel_state_needs_login">Není přihlášeno</string>
+    <string name="twentyone_tunnel_state_needs_login">Telefon už do sítě nepatří</string>
     <string name="twentyone_tunnel_state_stopped">Odpojeno</string>
+    <string name="twentyone_tunnel_state_paused">Pozastaveno</string>
     <string name="twentyone_tunnel_route_direct">Přímé spojení s miniserverem</string>
     <string name="twentyone_tunnel_route_relay">Spojení přes přenosový uzel</string>
     <string name="twentyone_tunnel_scope_app">Jen telefonování</string>
-    <string name="twentyone_tunnel_scope_full">Celý telefon přes miniserver</string>
-    <string name="twentyone_tunnel_scope_full_paused">Celý telefon přes miniserver (dočasně jen telefonování)</string>
+    <!-- fork: odříznutá síť (běží, ale nemá jediné zařízení) — nesmí žádat kód ani nabízet přihlášení -->
+    <string name="twentyone_tunnel_paused_hint">Síť je pozastavená, v účtu chybí kredit. Po dobití se sama obnoví.</string>
+    <string name="twentyone_tunnel_paused_internet">Internet přes miniserver je po dobu pozastavení vypnutý. Sám se zapne, až se síť obnoví.</string>
+    <!-- fork: telefon ze sítě vypadl — jediná cesta zpět je nový QR kód -->
+    <string name="twentyone_tunnel_needs_login_hint">Tenhle telefon už do sítě nepatří — nejspíš ho někdo odebral v ovládání miniserveru. Připoj ho znovu novým QR kódem.</string>
+    <string name="twentyone_tunnel_needs_login_action">Naskenovat nový QR kód</string>
+    <string name="twentyone_tunnel_needs_login_no_code">QR kód najdeš v ovládání miniserveru na záložce Telefon.</string>
+    <string name="twentyone_tunnel_logout">Odhlásit telefon ze sítě</string>
+    <!-- fork: co appka ví o miniserveru v síti (tři stavy + nerozhodnuto) -->
+    <string name="twentyone_tunnel_gateway_absent">Miniserver v síti není vidět.</string>
+    <string name="twentyone_tunnel_gateway_no_exit">Miniserver je v síti, ale provoz ven zatím nepouští. Zapni mu v ovládání volbu „i dál do sítě“.</string>
+    <string name="twentyone_tunnel_gateway_ready">Provoz ven vede přes miniserver.</string>
+    <string name="twentyone_tunnel_gateway_ambiguous">V síti se jako miniserver tváří víc zařízení, nejde poznat které. Zatím platí to poslední známé.</string>
     <string name="twentyone_tunnel_connect">Připojit</string>
     <string name="twentyone_tunnel_disconnect">Odpojit</string>
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>
@@ -205,7 +217,7 @@
     <string name="twentyone_access_server">Přístup na miniserver</string>
     <string name="twentyone_access_server_hint">Do privátní sítě smí i ostatní aplikace v telefonu — prohlížeč, peněženka, synchronizace. Tunelem jde jen provoz na miniserver, zbytek internetu ne.</string>
     <string name="twentyone_access_internet">Internet přes miniserver</string>
-    <string name="twentyone_access_internet_hint">Všechen provoz telefonu půjde ven přes miniserver (jako VPN). Miniserver to musí mít povolené a spojení musí být přímé — přes přenosový uzel se to samo vypne.</string>
+    <string name="twentyone_access_internet_hint">Všechen provoz telefonu půjde ven přes miniserver. Miniserver to musí mít povolené a spojení musí být přímé — přes přenosový uzel se to samo vypne.</string>
     <string name="twentyone_access_internet_paused">Internet přes miniserver: dočasně vypnuto, spojení jde přes přenosový uzel.</string>
     <!-- fork: kam se ukládají nové kontakty -->
     <string name="twentyone_contacts_title">Kontakty</string>
@@ -233,6 +245,7 @@
     <string name="twentyone_diag_net_ping">Změřit spojení s miniserverem</string>
     <string name="twentyone_diag_net_waiting">Měřím…</string>
     <string name="twentyone_diag_net_none">Zatím není co ukázat — připoj privátní síť.</string>
+    <string name="twentyone_diag_net_paused">Síť běží, ale je pozastavená — v účtu chybí kredit. Po dobití se sama obnoví.</string>
     <string name="twentyone_car_title">Auto (Bluetooth)</string>
     <string name="twentyone_car_switch">Nabídnout Phone21 systému jako účet pro volání</string>
     <string name="twentyone_car_hint">Ještě jeden krok: v aplikaci Telefon → Nastavení → Účty pro volání povol „Phone21 (miniserver)“. Auto připojené k telefonu pak vytáčí přes miniserver — buď se tě systém při hovoru zeptá, nebo si Phone21 nastav jako výchozí pro odchozí hovory. Privátní síť musí být připojená.</string>
