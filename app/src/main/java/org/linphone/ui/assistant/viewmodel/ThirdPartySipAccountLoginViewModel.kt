@@ -300,6 +300,19 @@ class ThirdPartySipAccountLoginViewModel
             registrationInProgress.postValue(true)
             core.addListener(coreListener)
             core.addAccount(newlyCreatedAccount)
+
+            // bez připravené sítě se na registraci nečeká, účet zůstane uložený
+            if (!coreContext.tunnelReadinessManager.isReady) {
+                Log.w("$TAG Network not ready, account saved without waiting for registration")
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-REG",
+                    "účet uložen ručně bez připojené sítě — registrace počká na síť"
+                )
+                core.removeListener(coreListener)
+                registrationInProgress.postValue(false)
+                core.defaultAccount = newlyCreatedAccount
+                accountLoggedInEvent.postValue(Event(true))
+            }
         }
     }
 

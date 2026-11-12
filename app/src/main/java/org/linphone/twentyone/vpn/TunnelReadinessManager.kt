@@ -16,7 +16,13 @@ class TunnelReadinessManager {
     }
 
     private var core: Core? = null
+
+    @Volatile
     private var ready = false
+
+    /** Je síť připravená pro registraci účtu? */
+    val isReady: Boolean
+        get() = ready
 
     private val coreListener = object : CoreListenerStub() {
         @WorkerThread
@@ -164,6 +170,8 @@ class TunnelReadinessManager {
         core.addListener(coreListener)
         ensureInternationalPrefix(core)
         coreContext.postOnMainThread {
+            // nový start jádra začíná od nepřipravené sítě
+            ready = false
             TsManager.ensureStarted(coreContext.context)
             TsManager.state.observeForever(stateObserver)
             TsManager.loggedIn.observeForever(loginObserver)

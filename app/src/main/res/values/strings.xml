@@ -167,7 +167,7 @@
     <string name="twentyone_section_network">Privátní síť</string>
     <string name="twentyone_tunnel_state_connected">Připojeno</string>
     <string name="twentyone_tunnel_state_connecting">Připojuje se…</string>
-    <string name="twentyone_tunnel_state_needs_login">Telefon už do sítě nepatří</string>
+    <string name="twentyone_tunnel_state_needs_login">Telefon není v síti</string>
     <string name="twentyone_tunnel_state_stopped">Odpojeno</string>
     <string name="twentyone_tunnel_state_paused">Pozastaveno</string>
     <string name="twentyone_tunnel_route_direct">Přímé spojení s miniserverem</string>
@@ -177,10 +177,11 @@
     <string name="twentyone_tunnel_paused_hint">Síť je pozastavená, v účtu chybí kredit. Po dobití se sama obnoví.</string>
     <string name="twentyone_tunnel_paused_internet">Internet přes miniserver je po dobu pozastavení vypnutý. Sám se zapne, až se síť obnoví.</string>
     <!-- fork: telefon ze sítě vypadl — jediná cesta zpět je nový QR kód -->
-    <string name="twentyone_tunnel_needs_login_hint">Tenhle telefon už do sítě nepatří — nejspíš ho někdo odebral v ovládání miniserveru. Připoj ho znovu novým QR kódem.</string>
+    <string name="twentyone_tunnel_needs_login_hint">Telefon do sítě zatím nepatří, nebo ho někdo odebral. Připoj ho novým QR kódem, nebo přes Moji síť — otevře se stránka, kde se přihlásíš peněženkou a telefon schválíš. To jde i na dálku.</string>
     <string name="twentyone_tunnel_needs_login_action">Naskenovat nový QR kód</string>
     <string name="twentyone_tunnel_needs_login_no_code">QR kód najdeš v ovládání miniserveru na záložce Telefon.</string>
     <string name="twentyone_tunnel_logout">Odhlásit telefon ze sítě</string>
+    <string name="twentyone_tunnel_web_login">Připojit přes Moji síť</string>
     <!-- fork: co appka ví o miniserveru v síti (tři stavy + nerozhodnuto) -->
     <string name="twentyone_tunnel_gateway_absent">Miniserver v síti není vidět.</string>
     <string name="twentyone_tunnel_gateway_no_exit">Miniserver je v síti, ale provoz ven zatím nepouští. Zapni mu v ovládání volbu „i dál do sítě“.</string>
