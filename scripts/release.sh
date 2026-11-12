@@ -51,4 +51,13 @@ if [[ "${NO_PUBLISH:-0}" != "1" ]]; then
   gh release create "$TAG" --repo twentyone-cz/phone21-android \
     --title "Phone21 $TAG" --generate-notes \
     "$APK#phone21-$TAG.apk"
+  # Zapstore: podpis identitou twentyone.cz přes vzdálený podpisovač (.env se SIGN_WITH)
+  ZS_DIR="${ZAPSTORE_DIR:-$HOME/zapstore/phone21}"
+  ZSP="${ZSP:-$HOME/.local/bin/zsp}"
+  if [[ -f "$ZS_DIR/.env" && -x "$ZSP" ]]; then
+    ( cd "$ZS_DIR" && "$ZSP" publish ) \
+      || echo "POZOR: do Zapstore se nepodařilo publikovat — zopakuj: cd $ZS_DIR && $ZSP publish" >&2
+  else
+    echo "Zapstore přeskočen (chybí $ZS_DIR/.env nebo $ZSP)"
+  fi
 fi
