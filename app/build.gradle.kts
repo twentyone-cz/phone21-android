@@ -270,8 +270,14 @@ dependencies {
     // To be able to parse native crash tombstone and print them with SDK logs the next time the app will start
     implementation(libs.google.protobuf)
 
-    implementation(platform(libs.google.firebase.bom))
-    implementation(libs.google.firebase.messaging)
+    // fork: bez google-services.json se Firebase do APK nebalí (jen pro překlad)
+    if (firebaseCloudMessagingAvailable) {
+        implementation(platform(libs.google.firebase.bom))
+        implementation(libs.google.firebase.messaging)
+    } else {
+        compileOnly(platform(libs.google.firebase.bom))
+        compileOnly(libs.google.firebase.messaging)
+    }
     if (crashlyticsAvailable) {
         implementation(libs.google.firebase.crashlytics)
     } else {

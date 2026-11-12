@@ -275,13 +275,9 @@
             </intent-filter>
         </service>
 
+        <!-- fork: push notifikace přes Firebase se nepoužívají -->
         <service android:name="org.linphone.core.tools.firebase.FirebaseMessaging"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
+            tools:node="remove" />
 
         <service
             android:name=".core.CoreKeepAliveThirdPartyAccountsService"

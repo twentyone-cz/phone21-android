@@ -155,7 +155,8 @@ class HelpViewModel
 
         try {
             firebaseProjectId.value = FirebaseApp.getInstance().options.projectId
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // fork: Firebase v APK není (NoClassDefFoundError)
             Log.e("$TAG Failed to get FirebaseApp instance: $e")
             firebaseProjectId.value = "unknown"
         }
