@@ -29,7 +29,7 @@ ITER="${TAG##*-21p.}"
 BASE="${TAG%-21p.*}"
 grep -Eq "val forkIteration = ${ITER}\b" "$REPO/app/build.gradle.kts" \
   || { echo "forkIteration v app/build.gradle.kts nesedí s tagem $TAG" >&2; exit 1; }
-grep -Fq "versionName = \"${BASE}-21p.\$forkIteration\"" "$REPO/app/build.gradle.kts" \
+grep -Eq "[vV]ersionName = \"${BASE}-21p\.\\\$forkIteration\"" "$REPO/app/build.gradle.kts" \
   || { echo "versionName v app/build.gradle.kts nesedí s tagem $TAG" >&2; exit 1; }
 
 cat > "$REPO/keystore.properties" <<EOF
