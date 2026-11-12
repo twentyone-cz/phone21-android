@@ -391,7 +391,12 @@ class CallActivity : GenericActivity() {
     }
 
     override fun onPause() {
-        coreContext.enableProximitySensor(false)
+        // během hovoru senzor běží dál (zhasnutí displeje senzorem aktivitu na některých telefonech pozastaví)
+        coreContext.postOnCoreThread { core ->
+            if (core.callsNb == 0) {
+                coreContext.enableProximitySensor(false)
+            }
+        }
 
         super.onPause()
 
