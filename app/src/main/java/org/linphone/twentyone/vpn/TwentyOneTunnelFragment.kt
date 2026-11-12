@@ -14,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
@@ -135,26 +136,6 @@ class TwentyOneTunnelFragment : Fragment() {
         TsManager.ensureStarted(requireContext().applicationContext)
 
         // dva stupně nad výchozím stavem; vyšší v sobě obsahuje nižší
-        fun applyAccess(access: TsPreferences.TunnelAccess) {
-            TsManager.prefs.tunnelAccess = access
-            // Uzel se nasazuje podle stupně, který OPRAVDU platí (přes
-            // přenosový uzel se nejvyšší stupeň snižuje) — a až PO uložení
-            // volby, aby effectiveTunnelAccess() četla novou hodnotu.
-            // Dřív se zapínal natvrdo podle přání a přes relay tak vznikl
-            // výstupní uzel, o kterém zbytek appky nevěděl.
-            TsManager.applyExitNode(
-                TsManager.effectiveTunnelAccess() == TsPreferences.TunnelAccess.INTERNET
-            )
-            // Věta pod stavem se řídí SKUTEČNOSTÍ (je uzel nasazený?), a ta
-            // se dozví až z dalšího stavu sítě. Bez tohohle dotazu by se
-            // potvrzení objevilo až s dalším pollem. Dotaz jde na stejný
-            // jednovláknový worker jako PATCH výše, takže se provede až po něm.
-            TsManager.refreshStatus()
-            updateAccessViews()
-            if (TsManager.vpnActive.value == true) {
-                TsManager.restartService()
-            }
-        }
         accessServerSwitch.setOnCheckedChangeListener { view2, checked ->
             if (!view2.isPressed) return@setOnCheckedChangeListener
             applyAccess(
@@ -431,6 +412,9 @@ class TwentyOneTunnelFragment : Fragment() {
         }
         if (::batteryLabel.isInitialized) {
             updateBattery()
+        }
+        if (::accessServerSwitch.isInitialized) {
+            pullAccess()
         }
     }
 
@@ -709,6 +693,53 @@ class TwentyOneTunnelFragment : Fragment() {
      */
     private fun exitNodeInUse(): Boolean =
         TsManager.gatewayPeer(TsManager.netDiag.value)?.isExitNode == true
+
+    /** Stupeň přístupu v telefonu; push = zapsat ho i na miniserver. */
+    private fun applyAccess(access: TsPreferences.TunnelAccess, push: Boolean = true) {
+        TsManager.prefs.tunnelAccess = access
+        // Uzel se nasazuje podle stupně, který OPRAVDU platí (přes
+        // přenosový uzel se nejvyšší stupeň snižuje) — a až PO uložení
+        // volby, aby effectiveTunnelAccess() četla novou hodnotu.
+        // Dřív se zapínal natvrdo podle přání a přes relay tak vznikl
+        // výstupní uzel, o kterém zbytek appky nevěděl.
+        TsManager.applyExitNode(
+            TsManager.effectiveTunnelAccess() == TsPreferences.TunnelAccess.INTERNET
+        )
+        // Věta pod stavem se řídí SKUTEČNOSTÍ (je uzel nasazený?), a ta
+        // se dozví až z dalšího stavu sítě. Bez tohohle dotazu by se
+        // potvrzení objevilo až s dalším pollem. Dotaz jde na stejný
+        // jednovláknový worker jako PATCH výše, takže se provede až po něm.
+        TsManager.refreshStatus()
+        updateAccessViews()
+        if (TsManager.vpnActive.value == true) {
+            TsManager.restartService()
+        }
+        if (push) {
+            TsServerAccess.push(TsManager.prefs, access) { result ->
+                val msg = when (result) {
+                    TsServerAccess.Result.OK -> null
+                    TsServerAccess.Result.NO_TOKEN, TsServerAccess.Result.NO_GATEWAY ->
+                        R.string.twentyone_access_sync_no_token
+                    TsServerAccess.Result.UNAUTHORIZED -> R.string.twentyone_access_sync_unauthorized
+                    TsServerAccess.Result.FAILED -> R.string.twentyone_access_sync_failed
+                }
+                if (msg != null && isAdded) {
+                    Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    /** Volba změněná v ovládání miniserveru se při návratu na obrazovku převezme. */
+    private fun pullAccess() {
+        TsServerAccess.pull(TsManager.prefs) { result, level ->
+            if (result != TsServerAccess.Result.OK || level == null || !isAdded) return@pull
+            if (level != TsManager.prefs.tunnelAccess) {
+                applyAccess(level, push = false)
+                Toast.makeText(requireContext(), R.string.twentyone_access_sync_pulled, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     private fun updateAccessViews() {
         val wanted = TsManager.prefs.tunnelAccess

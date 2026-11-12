@@ -15,6 +15,7 @@ class TsPreferences(context: Context) {
         private const val KEY_CONTACTS_SYNC = "contacts_sync_via_tunnel"
         private const val KEY_GATEWAY_ADDRESS = "gateway_address"
         private const val KEY_GATEWAY_STABLE_ID = "gateway_stable_id"
+        private const val KEY_ACCESS_TOKEN = "access_token"
     }
 
     /**
@@ -94,5 +95,12 @@ class TsPreferences(context: Context) {
         get() = prefs.getString(KEY_GATEWAY_STABLE_ID, "").orEmpty()
         set(value) {
             prefs.edit().putString(KEY_GATEWAY_STABLE_ID, value).commit()
+        }
+
+    /** Token z QR, kterým telefon čte a nastavuje stupeň přístupu na miniserveru. */
+    var accessToken: String
+        get() = prefs.getString(KEY_ACCESS_TOKEN, "").orEmpty()
+        set(value) {
+            prefs.edit().putString(KEY_ACCESS_TOKEN, value).commit()
         }
 }

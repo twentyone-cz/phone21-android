@@ -95,6 +95,10 @@ class TunnelReadinessManager {
                 "P21-NET", "konfigurace nese adresu brány v privátní síti"
             )
         }
+        val accessToken = TsProvisioning.takeAccessToken(core)
+        if (accessToken.isNotEmpty()) {
+            TsPreferences(coreContext.context).accessToken = accessToken
+        }
         val (url, key) = TsProvisioning.takeNetworkKey(core)
         if (key.isEmpty()) return
         val intent = Intent(coreContext.context, TsConsentActivity::class.java).apply {
