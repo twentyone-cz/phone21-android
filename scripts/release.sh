@@ -3,6 +3,7 @@
 #
 #   KEYSTORE_DIR=... ./scripts/release.sh            # build + release
 #   KEYSTORE_DIR=... NO_PUBLISH=1 ./scripts/release.sh   # jen build
+#   NOTES_FILE=poznamky.md                               # text vydání (jinak generovaný)
 #
 # Klíč NIKDY nedávat do repa ani do CI secrets — podepisuje se lokálně.
 set -euo pipefail
@@ -48,8 +49,10 @@ APK=$(ls "$REPO"/app/build/outputs/apk/release/phone21-release-*.apk | head -1)
 echo "APK: $APK"
 
 if [[ "${NO_PUBLISH:-0}" != "1" ]]; then
+  NOTES_ARGS=(--generate-notes)
+  if [[ -n "${NOTES_FILE:-}" ]]; then NOTES_ARGS=(--notes-file "$NOTES_FILE"); fi
   gh release create "$TAG" --repo twentyone-cz/phone21-android \
-    --title "Phone21 $TAG" --generate-notes \
+    --title "Phone21 $TAG" "${NOTES_ARGS[@]}" \
     "$APK#phone21-$TAG.apk"
   # Zapstore: podpis identitou twentyone.cz přes vzdálený podpisovač (.env se SIGN_WITH)
   ZS_DIR="${ZAPSTORE_DIR:-$HOME/zapstore/phone21}"
