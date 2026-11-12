@@ -1,0 +1,15 @@
+# Zapstore: vydání z GitHub Releases, podepisuje identita twentyone.cz (_@twentyone.cz)
+repository: https://github.com/twentyone-cz/phone21-android
+match: '^phone21-release-.*\.apk$'
+name: Phone21
+summary: Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver doma.
+description: |
+  Phone21 je aplikace k miniserveru Phone21. Tvoje telefonní číslo (SIM v modemu
+  u tebe doma) máš v telefonu kdekoli na světě: hovory, SMS i kontakty, přes
+  šifrovanou privátní síť. Bez roamingu, bez smluv navíc, platba Lightningem.
+
+  Aplikaci nastavíš jedním QR kódem z ovládání miniserveru.
+  Návod: https://phone.twentyone.cz/instalace
+license: GPL-3.0-or-later
+website: https://phone.twentyone.cz
+tags: [telephony, privacy, bitcoin]
