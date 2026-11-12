@@ -31,13 +31,14 @@ object TwentyOneProvisioning {
      *  neregistrovaný, aniž by to bylo z čeho poznat. Čte a maže ji
      *  [org.linphone.twentyone.vpn.TunnelReadinessManager.onConfiguring]. */
     @Volatile
-    var removedAuthInfo: org.linphone.core.AuthInfo? = null
+    var removedAuthInfo: List<org.linphone.core.AuthInfo> = emptyList()
         private set
 
     /** Vrátí odebrané údaje zpět. Idempotentní. */
     fun restoreAuthInfo(core: org.linphone.core.Core) {
-        val saved = removedAuthInfo ?: return
-        removedAuthInfo = null
+        val saved = removedAuthInfo
+        if (saved.isEmpty()) return
+        removedAuthInfo = emptyList()
         // Znovu jen tehdy, když mezitím nic nového nepřibylo — po úspěšné
         // konfiguraci má účet vlastní, čerstvé údaje a ty nesmíme přebít.
         val existing = core.defaultAccount?.findAuthInfo()
@@ -45,14 +46,19 @@ object TwentyOneProvisioning {
             Log.i("$TAG Not restoring credentials, account already has its own")
             return
         }
-        Log.w("$TAG Restoring credentials of default account after failed config")
-        core.addAuthInfo(saved)
+        Log.w("$TAG Restoring ${saved.size} credential(s) after failed config")
+        saved.forEach { core.addAuthInfo(it) }
     }
 
     /** Zahodí zapamatované údaje (po úspěšné konfiguraci). */
     fun forgetRemovedAuthInfo() {
-        removedAuthInfo = null
+        removedAuthInfo = emptyList()
     }
+
+    /** Uživatelské jméno účtu z konfigurace (sekce auth_info_0), nebo null. */
+    private fun provisionedUsername(xml: String): String? =
+        Regex("""<section name="auth_info_0">[\s\S]*?<entry name="username"[^>]*>([^<]+)</entry>""")
+            .find(xml)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
 
     /** Stáhne konfiguraci a aplikuje ji. Chyby hlásí voláním [onError]
      *  s krátkým lidským popisem — ten se zobrazí v hlášce. */
@@ -90,12 +96,19 @@ object TwentyOneProvisioning {
                     // i doménu, které nová konfigurace přepisuje. Cíleně jen
                     // výchozí účet — hromadné smazání by vzalo i údaje
                     // synchronizace kontaktů, které s ústřednou nesouvisejí.
-                    core.defaultAccount?.findAuthInfo()?.let {
-                        Log.i("$TAG Removing stored credentials of default account")
-                        // kopii si necháme: když aplikace konfigurace selže,
-                        // vrátíme ji, ať telefon nezůstane bez hesla
-                        removedAuthInfo = it.clone()
-                        core.removeAuthInfo(it)
+                    // Totéž pro všechny uložené údaje se jménem z konfigurace:
+                    // po smazání účtu zůstávají a přihlášení je najde dřív.
+                    val user = provisionedUsername(String(data, Charsets.UTF_8))
+                    val stale = (
+                        listOfNotNull(core.defaultAccount?.findAuthInfo()) +
+                            core.authInfoList.filter { user != null && it.username == user }
+                        ).distinctBy { "${it.username}|${it.realm}|${it.domain}" }
+                    if (stale.isNotEmpty()) {
+                        Log.i("$TAG Removing ${stale.size} stored credential(s) before config")
+                        // kopie si necháme: když aplikace konfigurace selže,
+                        // vrátíme je, ať telefon nezůstane bez hesla
+                        removedAuthInfo = stale.map { it.clone() }
+                        stale.forEach { core.removeAuthInfo(it) }
                     }
                     core.provisioningUri = "file://" + file.absolutePath
                     Log.i("$TAG Config downloaded (${data.size} B), applying from file")
