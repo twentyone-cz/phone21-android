@@ -172,10 +172,10 @@
     <string name="twentyone_tunnel_state_paused">Pozastaveno</string>
     <string name="twentyone_tunnel_route_direct">Přímé spojení s miniserverem</string>
     <string name="twentyone_tunnel_route_relay">Spojení přes přenosový uzel</string>
-    <string name="twentyone_tunnel_scope_app">Jen telefonování</string>
+    <string name="twentyone_tunnel_scope_app">Jen hovory</string>
     <!-- fork: odříznutá síť (běží, ale nemá jediné zařízení) — nesmí žádat kód ani nabízet přihlášení -->
     <string name="twentyone_tunnel_paused_hint">Síť je pozastavená, v účtu chybí kredit. Po dobití se sama obnoví.</string>
-    <string name="twentyone_tunnel_paused_internet">Internet přes miniserver je po dobu pozastavení vypnutý. Sám se zapne, až se síť obnoví.</string>
+    <string name="twentyone_tunnel_paused_internet">Vše přes miniserver je po dobu pozastavení vypnuté. Sám se zapne, až se síť obnoví.</string>
     <!-- fork: telefon ze sítě vypadl — jediná cesta zpět je nový QR kód -->
     <string name="twentyone_tunnel_needs_login_hint">Telefon do sítě zatím nepatří, nebo ho někdo odebral. Připoj ho novým QR kódem, nebo přes Moji síť — otevře se stránka, kde se přihlásíš peněženkou a telefon schválíš. To jde i na dálku.</string>
     <string name="twentyone_tunnel_needs_login_action">Naskenovat nový QR kód</string>
@@ -184,7 +184,7 @@
     <string name="twentyone_tunnel_web_login">Připojit přes Moji síť</string>
     <!-- fork: co appka ví o miniserveru v síti (tři stavy + nerozhodnuto) -->
     <string name="twentyone_tunnel_gateway_absent">Miniserver v síti není vidět.</string>
-    <string name="twentyone_tunnel_gateway_no_exit">Miniserver je v síti, ale provoz ven zatím nepouští. Zapni mu v ovládání volbu „i dál do sítě“.</string>
+    <string name="twentyone_tunnel_gateway_no_exit">Miniserver je v síti, ale provoz ven zatím nepouští. Obvykle se to do půl minuty nastaví samo; když ne, zkontroluj v ovládání miniserveru (záložka Síť), že je zvolené „vše přes miniserver“.</string>
     <string name="twentyone_tunnel_gateway_ready">Provoz ven vede přes miniserver.</string>
     <string name="twentyone_tunnel_gateway_ambiguous">V síti se jako miniserver tváří víc zařízení, nejde poznat které. Zatím platí to poslední známé.</string>
     <string name="twentyone_tunnel_connect">Připojit</string>
@@ -216,10 +216,14 @@
     <!-- fork: co všechno smí do tunelu -->
     <string name="twentyone_access_title">Přístup přes privátní síť</string>
     <string name="twentyone_access_server">Přístup na miniserver</string>
-    <string name="twentyone_access_server_hint">Do privátní sítě smí i ostatní aplikace v telefonu — prohlížeč, peněženka, synchronizace. Tunelem jde jen provoz na miniserver, zbytek internetu ne.</string>
-    <string name="twentyone_access_internet">Internet přes miniserver</string>
-    <string name="twentyone_access_internet_hint">Všechen provoz telefonu půjde ven přes miniserver. Miniserver to musí mít povolené a spojení musí být přímé — přes přenosový uzel se to samo vypne.</string>
-    <string name="twentyone_access_internet_paused">Internet přes miniserver: dočasně vypnuto, spojení jde přes přenosový uzel.</string>
+    <string name="twentyone_access_server_hint">Do privátní sítě smí i ostatní aplikace v telefonu — prohlížeč, peněženka, synchronizace — a dosáhnou na všechny služby miniserveru. Tunelem jde jen provoz na miniserver, zbytek internetu ne. Stejnou volbu ukazuje i ovládání miniserveru.</string>
+    <string name="twentyone_access_internet">Vše přes miniserver</string>
+    <string name="twentyone_access_internet_hint">Všechen provoz telefonu půjde ven přes miniserver; miniserver se nastaví sám. Spojení musí být přímé — přes přenosový uzel se to samo vypne.</string>
+    <string name="twentyone_access_internet_paused">Vše přes miniserver: dočasně vypnuto, spojení jde přes přenosový uzel.</string>
+    <string name="twentyone_access_sync_no_token">Na miniserveru se volba nezměnila — načti do telefonu znovu QR kód z ovládání (záložka Telefon), pak to půjde i odsud.</string>
+    <string name="twentyone_access_sync_unauthorized">Miniserver změnu odmítl — po změně hesla telefonu načti nový QR kód z ovládání.</string>
+    <string name="twentyone_access_sync_failed">Miniserver teď není dosažitelný — volba zatím platí jen v telefonu. Zkus ji přepnout znovu, až bude síť připojená.</string>
+    <string name="twentyone_access_sync_pulled">Volba přístupu převzata z miniserveru.</string>
     <!-- fork: kam se ukládají nové kontakty -->
     <string name="twentyone_contacts_title">Kontakty</string>
     <string name="twentyone_contacts_target_label">Nové kontakty ukládat do: %s</string>
