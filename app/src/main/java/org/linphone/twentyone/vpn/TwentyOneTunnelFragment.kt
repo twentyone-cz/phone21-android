@@ -36,6 +36,7 @@ class TwentyOneTunnelFragment : Fragment() {
         // značky views vkládaných z kódu — podle nich se poznají už vložené
         private const val TAG_HINT = "twentyone_tunnel_hint"
         private const val TAG_LOGOUT = "twentyone_tunnel_logout"
+        private const val TAG_WEB_LOGIN = "twentyone_tunnel_web_login"
     }
 
     private lateinit var stateView: TextView
@@ -60,13 +61,19 @@ class TwentyOneTunnelFragment : Fragment() {
     // pouští, ať fragment nedrží zbořené view.
     private var hintView: TextView? = null
     private var logoutButton: Button? = null
+    private var webLoginButton: Button? = null
+
+    // souhlas s VPN si vyžádalo přihlášení přes Moji síť
+    private var webLoginPending = false
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        val forceLogin = webLoginPending
+        webLoginPending = false
         if (result.resultCode == Activity.RESULT_OK) {
             TsManager.startService()
-            if (TsManager.loggedIn.value != true) {
+            if (forceLogin || TsManager.loggedIn.value != true) {
                 TsManager.login(TsManager.prefs.controlUrl, null)
             }
         } else {
@@ -384,11 +391,29 @@ class TwentyOneTunnelFragment : Fragment() {
                     ).apply { topMargin = (8 * density).toInt() }
                 )
             }
+
+        // přihlášení v prohlížeči jako druhá cesta do sítě vedle QR kódu
+        webLoginButton = (column.findViewWithTag<View>(TAG_WEB_LOGIN) as? Button)
+            ?: MaterialButton(requireContext()).apply {
+                tag = TAG_WEB_LOGIN
+                setText(R.string.twentyone_tunnel_web_login)
+                visibility = View.GONE
+                setOnClickListener { webLogin() }
+                column.addView(
+                    this,
+                    column.indexOfChild(toggleButton) + 1,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (8 * density).toInt() }
+                )
+            }
     }
 
     override fun onDestroyView() {
         hintView = null
         logoutButton = null
+        webLoginButton = null
         super.onDestroyView()
     }
 
@@ -533,6 +558,21 @@ class TwentyOneTunnelFragment : Fragment() {
         startActivity(Intent(requireContext(), AssistantActivity::class.java))
     }
 
+    /** Přihlášení přes Moji síť: odkaz se otevře v prohlížeči (browseToUrl). */
+    private fun webLogin() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "telefon mimo síť — přihlášení přes Moji síť v prohlížeči"
+        )
+        val intent = VpnService.prepare(requireContext())
+        if (intent != null) {
+            webLoginPending = true
+            vpnPermission.launch(intent)
+            return
+        }
+        TsManager.startService()
+        TsManager.login(TsManager.prefs.controlUrl, null)
+    }
+
     private fun connect() {
         if (needsNewCode()) {
             startNewCode()
@@ -590,6 +630,7 @@ class TwentyOneTunnelFragment : Fragment() {
         // to byla past (telefon by se ze sítě odhlásil kvůli chybějícímu
         // kreditu a zpátky by ho pustil až nový kód).
         logoutButton?.visibility = if (needsCode) View.VISIBLE else View.GONE
+        webLoginButton?.visibility = if (needsCode) View.VISIBLE else View.GONE
 
         val address = TsManager.tailnetAddress.value
         addressView.visibility = if (address.isNullOrEmpty()) View.GONE else View.VISIBLE
