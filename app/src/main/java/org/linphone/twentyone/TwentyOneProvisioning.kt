@@ -6,6 +6,10 @@
  * běží náš tunel, provoz aplikace jde skrz něj — jenže miniserver se při
  * nastavování stahuje z domácí wifi, kam tunel nevede. Proto se stažení
  * váže výslovně na síť bez VPN a knihovně se předá hotový soubor.
+ *
+ * QR zobrazené na dálku míří na miniserver v privátní síti a za # nese
+ * jednorázový klíč do ní: telefon se nejdřív připojí a konfiguraci si pak
+ * stáhne tunelem.
  */
 package org.linphone.twentyone
 
@@ -24,6 +28,26 @@ import org.linphone.core.tools.Log
 object TwentyOneProvisioning {
     private const val TAG = "[Provisioning]"
     private val executor = Executors.newSingleThreadExecutor()
+    private val joinKeyRegex = Regex("^[A-Za-z0-9_-]{20,200}$")
+    private const val JOIN_TIMEOUT_MS = 120_000L
+    private const val TUNNEL_DOWNLOAD_ATTEMPTS = 4
+    private const val TUNNEL_RETRY_MS = 3_000L
+
+    /** Odkaz z QR bez klíče do sítě — do logů. */
+    fun redact(url: String): String =
+        url.replace(Regex("([#&]k=)[^&]*"), "$1…")
+
+    /** Odkaz bez části za # a klíč do sítě z ní (prázdný, když tam není). */
+    internal fun splitJoinKey(url: String): Pair<String, String> {
+        val hash = url.indexOf('#')
+        if (hash < 0) return url to ""
+        val key = url.substring(hash + 1).split('&')
+            .firstOrNull { it.startsWith("k=") }
+            ?.removePrefix("k=")
+            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+            .orEmpty()
+        return url.substring(0, hash) to (if (joinKeyRegex.matches(key)) key else "")
+    }
 
     /** Kopie přihlašovacích údajů výchozího účtu, které jsme odebrali před
      *  aplikací konfigurace. Když aplikace selže (vadné nebo vypršelé QR),
@@ -62,8 +86,9 @@ object TwentyOneProvisioning {
 
     /** Stáhne konfiguraci a aplikuje ji. Chyby hlásí voláním [onError]
      *  s krátkým lidským popisem — ten se zobrazí v hlášce. */
-    fun fetchAndApply(url: String, onError: (String) -> Unit) {
+    fun fetchAndApply(qrUrl: String, onError: (String) -> Unit) {
         executor.execute {
+            val (url, joinKey) = splitJoinKey(qrUrl)
             val target = try {
                 URL(url).let { "%s:%d".format(it.host, if (it.port > 0) it.port else 80) }
             } catch (_: Exception) {
@@ -79,8 +104,18 @@ object TwentyOneProvisioning {
                     "QR znovu.")
                 return@execute
             }
+            val viaTunnel = joinKey.isNotEmpty()
+            if (viaTunnel && !org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
+                if (!joinNetwork(joinKey)) {
+                    TwentyOneDiag.log("P21-E18", "cíl=%s %s".format(target, networkFacts()))
+                    onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
+                        "potvrdil jsi souhlas s VPN? Klíč v QR platí jen jednou, " +
+                        "vygeneruj nový QR a zkus to znovu.")
+                    return@execute
+                }
+            }
             try {
-                val data = download(url)
+                val data = if (viaTunnel) downloadViaTunnel(url) else download(url)
                 if (!looksLikeConfig(data)) {
                     TwentyOneDiag.log("P21-E1", "cíl=%s cesta=%s délka=%d".format(
                         target, lastRoute, data.size))
@@ -117,6 +152,13 @@ object TwentyOneProvisioning {
                 }
             } catch (e: Exception) {
                 Log.e("$TAG Download of [$url] via [$lastRoute] failed: $e")
+                if (viaTunnel && e !is IllegalStateException) {
+                    TwentyOneDiag.log("P21-E19", "cíl=%s %s výjimka=%s %s".format(
+                        target, networkFacts(), e.javaClass.simpleName, e.message ?: ""))
+                    onError("[P21-E19] Telefon je v privátní síti, ale miniserver " +
+                        "$target přes ni neodpovídá. Je miniserver zapnutý a v síti?")
+                    return@execute
+                }
                 val code = codeFor(e)
                 TwentyOneDiag.log(code, "cíl=%s cesta=%s %s výjimka=%s %s".format(
                     target, lastRoute, networkFacts(),
@@ -128,6 +170,60 @@ object TwentyOneProvisioning {
 
     @Volatile
     private var lastRoute = "?"
+
+    /** Přihlásí telefon do privátní sítě klíčem z QR a počká, až tunel běží. */
+    private fun joinNetwork(key: String): Boolean {
+        val context = coreContext.context
+        TwentyOneDiag.log("P21-TUN", "QR nese klíč do sítě — připojuji telefon před stažením konfigurace")
+        coreContext.showGreenToastEvent.postValue(
+            org.linphone.utils.Event(
+                Pair(org.linphone.R.string.twentyone_qr_joining, org.linphone.R.drawable.info)
+            )
+        )
+        if (org.linphone.twentyone.vpn.TsManager.isLoggedIn()) {
+            // přihlášený telefon: klíč se nepoužije, jen se spustí rozhraní
+            TwentyOneDiag.log("P21-TUN", "telefon už v síti je — klíč z QR nepoužit, čekám na rozhraní")
+            org.linphone.twentyone.vpn.TsManager.startService()
+        } else {
+            val intent = android.content.Intent(
+                context, org.linphone.twentyone.vpn.TsConsentActivity::class.java
+            ).apply {
+                putExtra(org.linphone.twentyone.vpn.TsConsentActivity.EXTRA_KEY, key)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                context.startActivity(intent)
+            }
+        }
+        val deadline = android.os.SystemClock.elapsedRealtime() + JOIN_TIMEOUT_MS
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            if (org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
+                TwentyOneDiag.log("P21-TUN", "telefon je v síti — stahuji konfiguraci tunelem")
+                return true
+            }
+            Thread.sleep(1_000)
+        }
+        Log.w("$TAG Tunnel did not come up within ${JOIN_TIMEOUT_MS / 1000} s")
+        return false
+    }
+
+    /** Stažení tunelem, několik pokusů; HTTP chyba se neopakuje. */
+    private fun downloadViaTunnel(url: String): ByteArray {
+        lastRoute = "privátní síť"
+        var last: Exception? = null
+        repeat(TUNNEL_DOWNLOAD_ATTEMPTS) { attempt ->
+            try {
+                return fetch(URL(url).openConnection() as HttpURLConnection)
+            } catch (e: IllegalStateException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+                Log.w("$TAG Tunnel fetch attempt ${attempt + 1} failed: $e")
+                Thread.sleep(TUNNEL_RETRY_MS)
+            }
+        }
+        throw last ?: java.io.IOException("stažení tunelem selhalo")
+    }
 
     private fun download(url: String): ByteArray {
         // Nejdřív stejnou cestou jako prohlížeč (bez vázání na síť) — na

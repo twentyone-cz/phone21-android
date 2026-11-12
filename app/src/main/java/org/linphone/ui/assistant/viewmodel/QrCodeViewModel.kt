@@ -73,7 +73,7 @@ class QrCodeViewModel
 
         @WorkerThread
         override fun onQrcodeFound(core: Core, result: String?) {
-            Log.i("$TAG QR Code found: [$result]")
+            Log.i("$TAG QR Code found: [${TwentyOneProvisioning.redact(result.orEmpty())}]")
             if (result == null) {
                 showRedToast(R.string.assistant_qr_code_invalid_toast, R.drawable.warning_circle)
             } else {
@@ -84,7 +84,7 @@ class QrCodeViewModel
                     return
                 }
 
-                Log.i("$TAG Downloading provisioning from QR code URL [$url]")
+                Log.i("$TAG Downloading provisioning from QR code URL [${TwentyOneProvisioning.redact(url)}]")
                 core.nativePreviewWindowId = null
                 core.isVideoPreviewEnabled = false
                 core.isQrcodeVideoPreviewEnabled = false

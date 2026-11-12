@@ -864,10 +864,10 @@ class MainActivity : GenericActivity() {
     }
 
     private fun handleConfigIntent(uri: String) {
-        Log.i("$TAG Trying to parse config intent [$uri] as remote provisioning URL")
+        Log.i("$TAG Trying to parse config intent [${TwentyOneProvisioning.redact(uri)}] as remote provisioning URL")
         val url = LinphoneUtils.getRemoteProvisioningUrlFromUri(uri)
         if (url == null) {
-            Log.e("$TAG Couldn't parse URI [$uri] into a valid remote provisioning URL, aborting")
+            Log.e("$TAG Couldn't parse URI [${TwentyOneProvisioning.redact(uri)}] into a valid remote provisioning URL, aborting")
             return
         }
 

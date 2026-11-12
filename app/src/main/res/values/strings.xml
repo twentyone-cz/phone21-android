@@ -160,6 +160,7 @@
     <string name="twentyone_landing_subtitle">Připoj se ke svému miniserveru naskenováním QR kódu z jeho ovládání (záložka Telefon).</string>
     <string name="twentyone_landing_scan_qr">Naskenovat QR kód</string>
     <string name="twentyone_landing_manual">Zadat údaje ručně</string>
+    <string name="twentyone_qr_joining">Připojuji telefon do privátní sítě…</string>
     <string name="twentyone_tunnel_notification_channel">Připojení k privátní síti</string>
     <string name="twentyone_tunnel_notification_title">&appName;</string>
     <string name="twentyone_tunnel_notification_message">Připojeno k privátní síti</string>
