@@ -73,7 +73,7 @@ class TwentyOneTunnelFragment : Fragment() {
         webLoginPending = false
         if (result.resultCode == Activity.RESULT_OK) {
             TsManager.startService()
-            if (forceLogin || TsManager.loggedIn.value != true) {
+            if (forceLogin || needsNewCode() || TsManager.loggedIn.value != true) {
                 TsManager.login(TsManager.prefs.controlUrl, null)
             }
         } else {
