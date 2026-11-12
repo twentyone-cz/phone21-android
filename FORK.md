@@ -42,6 +42,10 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactNewOrEditViewModel.kt` | uložení kontaktu do systémového adresáře | kontakty |
 | `app/src/main/java/org/linphone/ui/main/contacts/fragment/NewContactFragment.kt`, `EditContactFragment.kt` | WRITE_CONTACTS launcher + observery | kontakty |
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactViewModel.kt`, `ContactsListViewModel.kt` | mazání nativního kontaktu i ze systému | kontakty |
+| `app/build.gradle.kts` | Firebase messaging jen `compileOnly`, když chybí `google-services.json` | bez Google |
+| `app/src/main/AndroidManifest.xml` | služba FirebaseMessaging `tools:node="remove"` | bez Google |
+| `app/proguard-rules.pro` | `-dontwarn` pro com.google.firebase a com.google.android.gms | bez Google |
+| `app/src/main/java/org/linphone/ui/main/help/viewmodel/HelpViewModel.kt` | `catch (Throwable)` u FirebaseApp | bez Google |
 
 Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
 bez konfliktů.

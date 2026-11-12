@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# fork: Firebase a Play Services se do APK nebalí
+-dontwarn com.google.firebase.**
+-dontwarn com.google.android.gms.**
