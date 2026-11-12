@@ -29,12 +29,13 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/mipmap*`, splash drawables | ikony | brand |
 | `app/src/main/res/navigation/assistant_nav_graph.xml` | startDestination | onboarding |
 | `app/src/main/assets/linphonerc_factory` | [ui]/[app] klíče | onboarding |
+| `app/src/main/assets/linphonerc_default` | vyprázdněné servery upstreamu | onboarding |
 | `app/src/main/AndroidManifest.xml` | SMS role, ConnectionService, VpnService | telecom/sms/vpn |
 | `app/src/main/res/navigation/main_nav_graph.xml` | cíl obrazovky tunelu | vpn |
-| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager | sync/vpn |
+| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager; úklid v `onConfiguringStatus` | sync/vpn/provisioning |
 | `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (postup je v interních poznámkách) | vpn |
 | `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
-| `app/src/main/java/org/linphone/LinphoneApplication.kt` | 1 řádka: jazyk aplikace = čeština | brand |
+| `app/src/main/java/org/linphone/LinphoneApplication.kt` | jazyk aplikace = čeština; zápis pádů do deníku | brand/diagnostika |
 | `app/src/main/java/org/linphone/telecom/TelecomManager.kt` | tel: URI identita hovoru (TwentyOneCar) | auto |
 | `app/src/main/java/org/linphone/ui/main/MainActivity.kt` | ACTION_SENDTO → konverzace; migrace kontaktů v loadContacts | sms/kontakty |
 | `app/src/main/java/org/linphone/utils/PhoneNumberUtils.kt` | labelToType zveřejněn | kontakty |
@@ -46,6 +47,16 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/AndroidManifest.xml` | služba FirebaseMessaging `tools:node="remove"` | bez Google |
 | `app/proguard-rules.pro` | `-dontwarn` pro com.google.firebase a com.google.android.gms | bez Google |
 | `app/src/main/java/org/linphone/ui/main/help/viewmodel/HelpViewModel.kt` | `catch (Throwable)` u FirebaseApp | bez Google |
+| `gradle/gradle-daemon-jvm.properties` | SMAZÁN (build systémovým JDK) | build |
+| `app/src/main/res/drawable/assistant_logo.xml`, `welcome_linphone_logo.xml` | vlastní grafika | brand |
+| `app/src/main/java/org/linphone/ui/assistant/AssistantActivity.kt` | cesta po oprávněních na náš úvod, zpět na úvodu | onboarding |
+| `app/src/main/java/org/linphone/ui/assistant/fragment/PermissionsFragment.kt`, `QrCodeScannerFragment.kt` | žádost o oprávnění Místní síť | onboarding |
+| `app/src/main/java/org/linphone/ui/assistant/viewmodel/QrCodeViewModel.kt` | stažení konfigurace vlastním kódem | provisioning |
+| `app/src/main/java/org/linphone/ui/assistant/viewmodel/ThirdPartySipAccountLoginViewModel.kt` | ruční účet bez připravené sítě | onboarding |
+| `app/src/main/java/org/linphone/ui/call/CallActivity.kt` | senzor přiblížení v `onPause` jen bez hovoru | hovory |
+| `app/src/main/java/org/linphone/ui/main/settings/fragment/SettingsFragment.kt`, `res/layout/settings_fragment.xml` | řádky Konexe a Diagnostika | vpn/diagnostika |
+| `app/src/main/res/xml/data_extraction_rules.xml` | záloha aplikace vypnuta | bezpečnost |
+| `app/src/main/AndroidManifest.xml` | cleartext HTTP, `allowBackup=false` | provisioning/bezpečnost |
 
 Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
 bez konfliktů.
