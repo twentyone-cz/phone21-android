@@ -37,7 +37,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
 | `app/src/main/java/org/linphone/LinphoneApplication.kt` | jazyk aplikace = čeština; zápis pádů do deníku | brand/diagnostika |
 | `app/src/main/java/org/linphone/telecom/TelecomManager.kt` | tel: URI identita hovoru (TwentyOneCar) | auto |
-| `app/src/main/java/org/linphone/ui/main/MainActivity.kt` | ACTION_SENDTO → konverzace; migrace kontaktů v loadContacts | sms/kontakty |
+| `app/src/main/java/org/linphone/ui/main/MainActivity.kt` | ACTION_SENDTO → konverzace; migrace kontaktů v loadContacts; log odkazu bez klíče | sms/kontakty/provisioning |
 | `app/src/main/java/org/linphone/utils/PhoneNumberUtils.kt` | labelToType zveřejněn | kontakty |
 | `app/src/main/AndroidManifest.xml` | `<queries>` na synchronizační aplikaci, oprávnění pro běh na pozadí | kontakty/baterie |
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactNewOrEditViewModel.kt` | uložení kontaktu do systémového adresáře | kontakty |
@@ -51,7 +51,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/drawable/assistant_logo.xml`, `welcome_linphone_logo.xml` | vlastní grafika | brand |
 | `app/src/main/java/org/linphone/ui/assistant/AssistantActivity.kt` | cesta po oprávněních na náš úvod, zpět na úvodu | onboarding |
 | `app/src/main/java/org/linphone/ui/assistant/fragment/PermissionsFragment.kt`, `QrCodeScannerFragment.kt` | žádost o oprávnění Místní síť | onboarding |
-| `app/src/main/java/org/linphone/ui/assistant/viewmodel/QrCodeViewModel.kt` | stažení konfigurace vlastním kódem | provisioning |
+| `app/src/main/java/org/linphone/ui/assistant/viewmodel/QrCodeViewModel.kt` | stažení konfigurace vlastním kódem; log odkazu bez klíče | provisioning |
 | `app/src/main/java/org/linphone/ui/assistant/viewmodel/ThirdPartySipAccountLoginViewModel.kt` | ruční účet bez připravené sítě | onboarding |
 | `app/src/main/java/org/linphone/ui/call/CallActivity.kt` | senzor přiblížení v `onPause` jen bez hovoru | hovory |
 | `app/src/main/java/org/linphone/ui/main/settings/fragment/SettingsFragment.kt`, `res/layout/settings_fragment.xml` | řádky Konexe a Diagnostika | vpn/diagnostika |
@@ -143,6 +143,21 @@ se z klonu vrátí zpátky (`TunnelReadinessManager.onConfiguring`).
 v1.102.2 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.102.2`,
 dlouhá verze `1.102.2-t6cac91817`). Koordinátor headscale 0.29.1 vyžaduje
 klienta ≥ 1.80 — splněno.
+
+### QR na dálku: klíč do sítě v odkazu (21p.37)
+
+Ovládání otevřené přes privátní síť dává do QR odkaz na konfiguraci
+v privátní síti a za něj `#k=<klíč>`, jednorázový klíč telefonu do sítě
+(stejný druh klíče jako `ts_authkey`, `request_network_key()`).
+
+    linphone-config:http://<adresa v síti>:8091/p/<token>#k=<klíč>
+
+Appka (`TwentyOneProvisioning`): klíč oddělí (`splitJoinKey`, tvar
+`[A-Za-z0-9_-]{20,200}`), a když tunel neběží, přihlásí telefon
+(`TsConsentActivity`) a konfiguraci stáhne až tunelem. Přihlášený telefon
+klíč nepoužije. Klíč se nezapisuje do logu (`redact`). Chyby: P21-E18
+(do sítě se nepřipojil), P21-E19 (miniserver přes síť neodpovídá).
+Konfigurace stažená z takového odkazu `ts_authkey` nenese.
 
 ## Kontakty: cíl zápisu (21p.31)
 

@@ -245,6 +245,12 @@ object TsManager {
 
     fun isStarted(): Boolean = app != null
 
+    /** Uzel je přihlášený a rozhraní tunelu postavené. */
+    fun isTunnelUp(): Boolean = currentState == State.RUNNING && vpnActiveNow
+
+    /** Uzel je v síti přihlášený (rozhraní ještě nemusí stát). */
+    fun isLoggedIn(): Boolean = currentState == State.RUNNING
+
     /**
      * Přihlásí uzel proti koordinátorovi. Klíč je jednorázový (preauth) —
      * bez něj se použije interaktivní přihlášení v prohlížeči.
