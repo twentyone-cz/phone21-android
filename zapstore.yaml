@@ -4,11 +4,20 @@ match: '^phone21-release-.*\.apk$'
 name: Phone21
 summary: Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver doma.
 description: |
-  Phone21 je aplikace k miniserveru Phone21. Tvoje telefonní číslo (SIM v modemu
-  u tebe doma) máš v telefonu kdekoli na světě: hovory, SMS i kontakty, přes
-  šifrovanou privátní síť. Bez roamingu, bez smluv navíc, platba Lightningem.
+  Phone21 je aplikace k miniserveru Phone21. Tvoje telefonní číslo máš
+  v telefonu kdekoli na světě: SIM zůstává doma v miniserveru, hovory i SMS
+  jdou přes šifrovanou privátní síť.
 
-  Aplikaci nastavíš jedním QR kódem z ovládání miniserveru.
+  - **Všude za domácí ceny.** Voláš a píšeš ze své SIM doma, takže platíš
+    jako doma. Žádný předražený roaming, telefonu stačí jakékoli připojení
+    k internetu.
+  - **Číslo se nedá sledovat podle pohybu telefonu.** Operátor vidí tvou SIM
+    pořád doma, ať jsi kdekoli. A přesto jsi na svém čísle dostupný.
+  - Otevřený kód (GPL-3.0), bez služeb Google, bez reklam a sledovačů.
+    Kredity do privátní sítě platíš bitcoinem přes Lightning.
+  - Nastavení jedním QR kódem z ovládání miniserveru. Ztracený telefon
+    stejně nahradíš i na dálku.
+
   Návod: https://phone.twentyone.cz/instalace
 
   Oprávnění k SMS: Phone21 může být výchozí aplikací pro SMS (volba „SMS do
@@ -16,6 +25,28 @@ description: |
   zobrazí přes Bluetooth. Jako výchozí SMS aplikace zároveň přijímá SMS, které
   přijdou na SIM přímo v telefonu: uloží je do systému a ukáže upozornění.
   Uložené SMS v telefonu nečte.
+
+  **English**
+
+  Phone21 puts your own phone number on your Android phone, wherever you are.
+  The SIM stays home in your miniserver; calls and SMS travel end-to-end
+  encrypted over a private network.
+
+  - **Home prices everywhere.** You call and text from your own SIM at home,
+    so you pay domestic rates. No overpriced roaming — any internet
+    connection will do.
+  - **Your number can't be tracked by where you go.** The mobile network sees
+    your SIM at home, wherever you are — and you're still reachable on it.
+  - Open source (GPL-3.0), no Google services, no ads, no trackers. Private
+    network credits are paid with bitcoin over Lightning.
+  - One QR code from the miniserver sets everything up; a lost phone is
+    replaced remotely the same way.
+
+  SMS permissions: Phone21 can be the default SMS app ("SMS in the car"), so
+  messages for your number are stored in the system SMS store, where the car
+  reads them over Bluetooth. As the default SMS app it also receives SMS sent
+  to a SIM inside the phone, stores them and shows a notification. It does
+  not read your stored SMS.
 license: GPL-3.0-or-later
 website: https://phone.twentyone.cz
 tags: [telephony, privacy, bitcoin]
