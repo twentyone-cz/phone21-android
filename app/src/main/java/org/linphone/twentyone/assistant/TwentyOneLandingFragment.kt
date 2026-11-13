@@ -17,6 +17,18 @@ import org.linphone.R
 
 class TwentyOneLandingFragment : Fragment() {
 
+    // oprávnění Místní síť se vyžádá před otevřením skeneru, ne přes kameru
+    private val localNetPermission = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        org.linphone.core.tools.Log.i("[Landing] ACCESS_LOCAL_NETWORK granted [$granted]")
+        if (isAdded) openScanner()
+    }
+
+    private fun openScanner() {
+        findNavController().navigate(R.id.action_twentyOneLanding_to_qrCodeScanner)
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -29,7 +41,13 @@ class TwentyOneLandingFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         view.findViewById<Button>(R.id.twentyone_scan_qr).setOnClickListener {
-            findNavController().navigate(R.id.action_twentyOneLanding_to_qrCodeScanner)
+            if (org.linphone.compatibility.Compatibility
+                    .isAccessLocalNetworkPermissionGranted(requireContext())
+            ) {
+                openScanner()
+            } else {
+                localNetPermission.launch(android.Manifest.permission.ACCESS_LOCAL_NETWORK)
+            }
         }
         view.findViewById<Button>(R.id.twentyone_manual).setOnClickListener {
             findNavController().navigate(R.id.action_twentyOneLanding_to_thirdPartySipAccountLogin)
