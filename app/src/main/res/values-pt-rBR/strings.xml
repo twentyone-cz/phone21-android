@@ -203,7 +203,6 @@
     <string name="help_troubleshooting_share_logs">Compartilhar logs</string>
     <string name="help_troubleshooting_app_version_title">Versão do aplicativo</string>
     <string name="help_troubleshooting_sdk_version_title">Versão do SDK</string>
-    <string name="help_troubleshooting_firebase_project_title">ID do projeto Firebase</string>
     <string name="help_troubleshooting_share_logs_dialog_title">Compartilhar link de logs de depuração usando…</string>
     <string name="help_troubleshooting_debug_logs_cleaned_toast_message">Logs de depuração foram limpos</string>
     <string name="help_troubleshooting_show_config_file">Mostrar configuração</string>

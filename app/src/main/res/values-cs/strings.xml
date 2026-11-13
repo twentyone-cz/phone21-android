@@ -258,7 +258,6 @@
     <string name="help_troubleshooting_app_version_title">Verze aplikace</string>
     <string name="help_troubleshooting_sdk_version_title">Verze SDK</string>
     <string name="help_troubleshooting_clean_logs">Vyčistit logy</string>
-    <string name="help_troubleshooting_firebase_project_title">ID Firebase projektu</string>
     <string name="help_troubleshooting_share_logs_dialog_title">Sdílet odkaz na ladící logy pomocí…</string>
     <string name="help_troubleshooting_debug_logs_upload_error_toast_message">Chyba při nahrávání ladících logů</string>
     <string name="help_troubleshooting_show_config_file">Zobrazit konfiguraci</string>

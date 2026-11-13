@@ -157,7 +157,6 @@
     <string name="help_troubleshooting_share_logs">Zdieľať záznamy</string>
     <string name="help_troubleshooting_app_version_title">Verzia aplikácie</string>
     <string name="help_troubleshooting_sdk_version_title">Verzia SDK</string>
-    <string name="help_troubleshooting_firebase_project_title">ID Firebase project</string>
     <string name="help_troubleshooting_share_logs_dialog_title">Zdieľať odkaz na ladiace záznamy pomocou…</string>
     <string name="help_troubleshooting_debug_logs_cleaned_toast_message">Ladiace záznamy boli vyčistené</string>
     <string name="help_troubleshooting_show_config_file">Zobraziť konfiguráciu</string>

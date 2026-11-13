@@ -162,7 +162,7 @@
                             android:layout_width="32dp"
                             android:layout_height="32dp"
                             android:layout_marginStart="16dp"
-                            android:src="@drawable/google_play"
+                            android:src="@drawable/info"
                             android:contentDescription="@null"
                             app:tint="?attr/color_main1_500"
                             app:layout_constraintStart_toStartOf="parent"
@@ -254,7 +254,9 @@
                             app:layout_constraintHorizontal_chainStyle="packed"
                             app:layout_constraintHorizontal_bias="0"
                             app:layout_constrainedWidth="true"
+                            android:layout_marginBottom="16dp"
                             app:layout_constraintTop_toBottomOf="@id/sdk_version_title"
+                            app:layout_constraintBottom_toBottomOf="parent"
                             app:layout_constraintStart_toEndOf="@id/sdk_version_icon"
                             app:layout_constraintEnd_toStartOf="@id/sdk_version_copy_icon" />
 
@@ -272,48 +274,6 @@
                             app:layout_constraintBottom_toBottomOf="@id/sdk_version_subtitle"
                             app:layout_constraintStart_toEndOf="@id/sdk_version_subtitle"
                             app:layout_constraintEnd_toEndOf="parent"/>
-
-                        <ImageView
-                            android:id="@+id/firebase_project_icon"
-                            android:layout_width="32dp"
-                            android:layout_height="32dp"
-                            android:layout_marginStart="16dp"
-                            android:src="@drawable/firebase"
-                            android:contentDescription="@null"
-                            app:tint="?attr/color_main1_500"
-                            app:layout_constraintStart_toStartOf="parent"
-                            app:layout_constraintEnd_toStartOf="@id/firebase_project_title"
-                            app:layout_constraintTop_toTopOf="@id/firebase_project_title"
-                            app:layout_constraintBottom_toBottomOf="@id/firebase_project_title" />
-
-                        <androidx.appcompat.widget.AppCompatTextView
-                            style="@style/header_style"
-                            android:id="@+id/firebase_project_title"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="16dp"
-                            android:layout_marginEnd="16dp"
-                            android:layout_marginTop="20dp"
-                            android:text="@string/help_troubleshooting_firebase_project_title"
-                            app:layout_constraintTop_toBottomOf="@id/sdk_version_subtitle"
-                            app:layout_constraintStart_toEndOf="@id/firebase_project_icon"
-                            app:layout_constraintEnd_toEndOf="parent"/>
-
-                        <androidx.appcompat.widget.AppCompatTextView
-                            style="@style/default_text_style"
-                            android:id="@+id/firebase_project_subtitle"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="16dp"
-                            android:layout_marginEnd="16dp"
-                            android:layout_marginBottom="16dp"
-                            android:text="@{viewModel.firebaseProjectId, default=`linphone-android-8a563`}"
-                            android:textSize="14sp"
-                            android:textColor="?attr/color_main2_600"
-                            app:layout_constraintTop_toBottomOf="@id/firebase_project_title"
-                            app:layout_constraintBottom_toBottomOf="parent"
-                            app:layout_constraintStart_toEndOf="@id/firebase_project_icon"
-                            app:layout_constraintEnd_toEndOf="parent" />
 
                     </androidx.constraintlayout.widget.ConstraintLayout>
 

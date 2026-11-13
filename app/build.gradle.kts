@@ -1,3 +1,8 @@
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import com.android.build.gradle.internal.tasks.factory.dependsOn
 import com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsExtension
 import com.google.firebase.crashlytics.buildtools.gradle.CrashlyticsPlugin
@@ -95,9 +100,56 @@ configurations {
     implementation { isCanBeResolved = true }
 }
 
+// fork: SDK z Maven repozitáře přebalené bez push modulu Firebase — z classes.jar
+// se vyřadí org.linphone.core.tools.firebase.* a PushNotificationUtils (náhrada
+// je v app/src/main/java/org/linphone/core/tools), knihovny jen pro arm64-v8a
+val linphoneSdkAar: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val linphoneSdkNoPush = tasks.register("linphoneSdkNoPush") {
+    val output = layout.buildDirectory.file("linphone-sdk-nopush/linphone-sdk-android-nopush.aar")
+    inputs.files(linphoneSdkAar)
+    outputs.file(output)
+    doLast {
+        val dropped = Regex("^org/linphone/core/tools/(firebase/.*|PushNotificationUtils.*\\.class)$")
+        val dst = output.get().asFile
+        dst.parentFile.mkdirs()
+        ZipFile(linphoneSdkAar.singleFile).use { aar ->
+            ZipOutputStream(dst.outputStream()).use { out ->
+                for (entry in aar.entries()) {
+                    val name = entry.name
+                    if (name.startsWith("jni/") && !name.startsWith("jni/arm64-v8a/")) continue
+                    out.putNextEntry(ZipEntry(name))
+                    if (name == "classes.jar") {
+                        val jar = ByteArrayOutputStream()
+                        ZipOutputStream(jar).use { jarOut ->
+                            ZipInputStream(aar.getInputStream(entry)).use { jarIn ->
+                                var e = jarIn.nextEntry
+                                while (e != null) {
+                                    if (!dropped.matches(e.name)) {
+                                        jarOut.putNextEntry(ZipEntry(e.name))
+                                        jarIn.copyTo(jarOut)
+                                        jarOut.closeEntry()
+                                    }
+                                    e = jarIn.nextEntry
+                                }
+                            }
+                        }
+                        out.write(jar.toByteArray())
+                    } else if (!entry.isDirectory) {
+                        aar.getInputStream(entry).use { it.copyTo(out) }
+                    }
+                    out.closeEntry()
+                }
+            }
+        }
+    }
+}
+
 tasks.register("linphoneSdkSource") {
     doLast {
-        configurations.implementation.get().incoming.resolutionResult.allComponents.forEach {
+        linphoneSdkAar.incoming.resolutionResult.allComponents.forEach {
             if (it.id.displayName.contains("linphone-sdk-android")) {
                 println("Linphone SDK used is ${it.moduleVersion?.version}")
             }
@@ -270,13 +322,12 @@ dependencies {
     // To be able to parse native crash tombstone and print them with SDK logs the next time the app will start
     implementation(libs.google.protobuf)
 
-    // fork: bez google-services.json se Firebase do APK nebalí (jen pro překlad)
+    // fork: bez google-services.json se Firebase do APK nebalí
     if (firebaseCloudMessagingAvailable) {
         implementation(platform(libs.google.firebase.bom))
         implementation(libs.google.firebase.messaging)
     } else {
         compileOnly(platform(libs.google.firebase.bom))
-        compileOnly(libs.google.firebase.messaging)
     }
     if (crashlyticsAvailable) {
         implementation(libs.google.firebase.crashlytics)
@@ -296,7 +347,9 @@ dependencies {
     // https://github.com/openid/AppAuth-Android/blob/master/LICENSE Apache v2.0
     implementation(libs.openid.appauth)
 
-    implementation(libs.linphone)
+    // fork: SDK přebalené bez push modulu Firebase (úloha linphoneSdkNoPush)
+    linphoneSdkAar(libs.linphone)
+    implementation(files(linphoneSdkNoPush))
 
     // https://github.com/tailscale/tailscale-android/blob/main/LICENSE BSD-3-Clause
     // Sestaveno mimo tento repozitář, postup v docs/tunnel-aar.md

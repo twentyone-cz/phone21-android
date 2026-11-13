@@ -161,7 +161,6 @@
     <string name="help_troubleshooting_share_logs">Compartir registros</string>
     <string name="help_troubleshooting_app_version_title">Versión de la aplicación</string>
     <string name="help_troubleshooting_sdk_version_title">Versión SDK</string>
-    <string name="help_troubleshooting_firebase_project_title">ID del proyecto de Firebase</string>
     <string name="help_troubleshooting_share_logs_dialog_title">Compartir enlaces de registros de depuración usando…</string>
     <string name="help_about_contribute_translations_title">Contribuir a la traducción de &appName;</string>
     <string name="help_error_checking_version_toast_message">Se produjo un error al buscar actualizaciones</string>

@@ -23,7 +23,6 @@ import androidx.annotation.UiThread
 import androidx.annotation.WorkerThread
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import com.google.firebase.FirebaseApp
 import kotlinx.coroutines.launch
 import org.linphone.BuildConfig
 import org.linphone.LinphoneApplication.Companion.coreContext
@@ -54,7 +53,6 @@ class HelpViewModel
 
     val sdkVersion = MutableLiveData<String>()
 
-    val firebaseProjectId = MutableLiveData<String>()
 
     val checkUpdateAvailable = MutableLiveData<Boolean>()
 
@@ -152,14 +150,6 @@ class HelpViewModel
 
         sdkVersion.value = coreContext.sdkVersion
         logsUploadInProgress.value = false
-
-        try {
-            firebaseProjectId.value = FirebaseApp.getInstance().options.projectId
-        } catch (e: Throwable) {
-            // fork: Firebase v APK není (NoClassDefFoundError)
-            Log.e("$TAG Failed to get FirebaseApp instance: $e")
-            firebaseProjectId.value = "unknown"
-        }
 
         versionClickCount = if (corePreferences.showDeveloperSettings) {
             Log.i("$TAG Developer settings are already enabled")
