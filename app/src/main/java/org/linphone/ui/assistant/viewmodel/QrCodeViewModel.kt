@@ -74,12 +74,16 @@ class QrCodeViewModel
         @WorkerThread
         override fun onQrcodeFound(core: Core, result: String?) {
             Log.i("$TAG QR Code found: [${TwentyOneProvisioning.redact(result.orEmpty())}]")
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-QR", "QR nalezen (%s)".format(
+                    if (result == null) "prázdný" else "%d znaků".format(result.length)))
             if (result == null) {
                 showRedToast(R.string.assistant_qr_code_invalid_toast, R.drawable.warning_circle)
             } else {
                 val url = LinphoneUtils.getRemoteProvisioningUrlFromUri(result)
                 if (url == null) {
-                    Log.e("$TAG The content of the QR Code [$result] doesn't seem to be a valid web URL")
+                    Log.e("$TAG The content of the QR Code [${TwentyOneProvisioning.redact(result)}] doesn't seem to be a valid web URL")
+                    org.linphone.twentyone.TwentyOneDiag.log("P21-QR", "QR není odkaz na konfiguraci")
                     showRedToast(R.string.assistant_qr_code_invalid_toast, R.drawable.warning_circle)
                     return
                 }
@@ -104,6 +108,8 @@ class QrCodeViewModel
             val coreGlobalState = core.globalState
             if (coreGlobalState != GlobalState.On) {
                 Log.e("$TAG Core isn't ON (current state is [$coreGlobalState]), video preview won't work!")
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-QR", "skener otevřen, jádro ještě neběží (stav=%s)".format(coreGlobalState))
             }
         }
     }
