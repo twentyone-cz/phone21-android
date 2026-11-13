@@ -214,6 +214,10 @@ object TsManager {
     @Volatile
     private var domainMatches: Boolean? = null
 
+    /** Zrcadlo endpointVerified pro čtenáře mimo hlavní vlákno. */
+    @Volatile
+    private var verifiedNow = false
+
     val prefs: TsPreferences
         get() = preferences ?: TsPreferences(appContext).also { preferences = it }
 
@@ -291,6 +295,7 @@ object TsManager {
                     "P21-E8", "nečitelné předvolby tunelu: %s".format(e.message ?: ""))
                 return@execute
             }
+            updateEndpointFromPrefs(fullPrefs)
             fullPrefs.put("WantRunning", true)
             // Do startu nesmí jít staré ID výstupního uzlu: po přihlášení
             // k jiné síti by ukazovalo na neexistující uzel a jádro by
@@ -541,8 +546,7 @@ object TsManager {
                 loggedInNow = false
                 loggedIn.postValue(false)
             }
-            endpointMatches = sameEndpoint(prefsObject.optString("ControlURL", ""), prefs.controlUrl)
-            publishVerification()
+            updateEndpointFromPrefs(prefsObject)
             val storedId = prefsObject.optString("ExitNodeID", "")
             val storedIp = prefsObject.optString("ExitNodeIP", "")
             storedExitNodeId = storedId
@@ -843,17 +847,29 @@ object TsManager {
         return null
     }
 
+    /** Adresa koordinátora z předvoleb jádra (notifikace, odpověď na PATCH,
+     *  pravidelné čtení). */
+    private fun updateEndpointFromPrefs(prefsObject: JSONObject) {
+        endpointMatches = sameEndpoint(prefsObject.optString("ControlURL", ""), prefs.controlUrl)
+        publishVerification()
+    }
+
+    @Synchronized
     private fun publishVerification() {
         val verified = endpointMatches && domainMatches != false
-        if (endpointVerified.value != verified) {
-            Log.i("$TAG Endpoint verification is now [$verified]")
-            if (!verified) {
-                org.linphone.twentyone.TwentyOneDiag.log(
-                    "P21-E9", "síť neprošla ověřením (endpoint=%s doména=%s)"
-                        .format(endpointMatches, domainMatches))
-            }
-            endpointVerified.postValue(verified)
+        if (verified == verifiedNow) return
+        verifiedNow = verified
+        Log.i("$TAG Endpoint verification is now [$verified]")
+        if (verified) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-NET", "síť ověřena (endpoint=%s doména=%s)"
+                    .format(endpointMatches, domainMatches))
+        } else {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E9", "síť neprošla ověřením (endpoint=%s doména=%s)"
+                    .format(endpointMatches, domainMatches))
         }
+        endpointVerified.postValue(verified)
     }
 
     /**
@@ -1241,6 +1257,13 @@ object TsManager {
 
     fun refreshStatus() {
         worker.execute {
+            callLocalApi("GET", "prefs", null)?.let {
+                try {
+                    updateEndpointFromPrefs(JSONObject(String(it, Charsets.UTF_8)))
+                } catch (e: Exception) {
+                    Log.e("$TAG Failed to parse tunnel prefs: $e")
+                }
+            }
             val body = callLocalApi("GET", "status", null) ?: return@execute
             try {
                 onStatus(JSONObject(String(body, Charsets.UTF_8)))
