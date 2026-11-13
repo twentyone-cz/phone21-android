@@ -13,6 +13,15 @@ import org.linphone.core.tools.Log
 class TunnelReadinessManager {
     companion object {
         private const val TAG = "[Tunnel Readiness]"
+        private const val RECONCILE_MS = 30_000L
+    }
+
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val reconcile = object : Runnable {
+        override fun run() {
+            evaluate(null, reconcile = true)
+            mainHandler.postDelayed(this, RECONCILE_MS)
+        }
     }
 
     private var core: Core? = null
@@ -67,6 +76,7 @@ class TunnelReadinessManager {
         // Skipped: odebrání proběhlo, aplikace ne.
         if (status == ConfiguringState.Successful) {
             org.linphone.twentyone.TwentyOneProvisioning.forgetRemovedAuthInfo()
+            coreContext.postOnMainThread { evaluate("po konfiguraci") }
         } else {
             org.linphone.twentyone.TwentyOneProvisioning.restoreAuthInfo(core)
             org.linphone.twentyone.TwentyOneDiag.log(
@@ -182,6 +192,9 @@ class TunnelReadinessManager {
             TsManager.endpointVerified.observeForever(endpointObserver)
             TsManager.vpnActive.observeForever(vpnObserver)
             TsManager.networkPaused.observeForever(pausedObserver)
+            evaluate("po startu jádra")
+            mainHandler.removeCallbacks(reconcile)
+            mainHandler.postDelayed(reconcile, RECONCILE_MS)
         }
         applyState(false)
     }
@@ -195,6 +208,7 @@ class TunnelReadinessManager {
             TsManager.endpointVerified.removeObserver(endpointObserver)
             TsManager.vpnActive.removeObserver(vpnObserver)
             TsManager.networkPaused.removeObserver(pausedObserver)
+            mainHandler.removeCallbacks(reconcile)
         }
         this.core = null
     }
@@ -218,7 +232,9 @@ class TunnelReadinessManager {
         TsManager.startService()
     }
 
-    private fun evaluate() {
+    /** [forced] = důvod vynuceného vyhodnocení (zapíše se do deníku i beze
+     *  změny), [reconcile] = pravidelná kontrola registrace účtů. */
+    private fun evaluate(forced: String? = null, reconcile: Boolean = false) {
         val state = TsManager.state.value
         val loggedIn = TsManager.loggedIn.value == true
         val verified = TsManager.endpointVerified.value == true
@@ -236,6 +252,22 @@ class TunnelReadinessManager {
         // co spadlé rozhraní: ústředna není odkud dosažitelná. Po návratu
         // protějšků se příznak zhasne a registrace se zapne zpátky sama.
         val available = verified && (state == TsManager.State.RUNNING) && vpnUp && !paused
+        val facts = "stav=%s přihlášení=%s ověření=%s rozhraní=%s pozastaveno=%s".format(
+            state, loggedIn, verified, vpnUp, paused)
+        if (reconcile) {
+            ready = available
+            coreContext.postOnCoreThread { reconcileAccounts(available, facts) }
+            return
+        }
+        if (forced != null) {
+            ready = available
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-NET", "%s: síť %s (%s)".format(
+                    forced, if (available) "připravena" else "nepřipravena", facts)
+            )
+            coreContext.postOnCoreThread { applyState(available) }
+            return
+        }
         if (available == ready) return
         ready = available
         Log.i("$TAG Network readiness is now [$available]")
@@ -250,6 +282,18 @@ class TunnelReadinessManager {
         coreContext.postOnCoreThread {
             applyState(available)
         }
+    }
+
+    /** Pravidelná kontrola: registrace účtů musí odpovídat stavu sítě. */
+    @WorkerThread
+    private fun reconcileAccounts(available: Boolean, facts: String) {
+        val core = this.core ?: return
+        if (core.accountList.none { it.params.isRegisterEnabled != available }) return
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-NET", "registrace nesouhlasila se stavem sítě — srovnávám na %s (%s)"
+                .format(if (available) "zapnuto" else "vypnuto", facts)
+        )
+        applyState(available)
     }
 
     @WorkerThread
