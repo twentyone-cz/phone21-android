@@ -630,7 +630,8 @@ class CoreContext
                     else -> android.util.Log.d(domain, message)
                 }
             }
-            if (crashlyticsAvailable && crashlyticsEnabled) {
+            // fork: BuildConfig konstanta — bez Crashlytics R8 větev i odkaz vyřadí
+            if (BuildConfig.CRASHLYTICS_ENABLED && crashlyticsAvailable && crashlyticsEnabled) {
                 FirebaseCrashlytics.getInstance().log("[$domain] [${level.name}] $message")
             }
         }

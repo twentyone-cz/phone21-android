@@ -106,7 +106,6 @@
     <string name="help_troubleshooting_share_logs">ແບ່ງປັນລັອກ</string>
     <string name="help_troubleshooting_app_version_title">ເວີຊັນແອັບຯ</string>
     <string name="help_troubleshooting_sdk_version_title">ເວີຊັນ SDK</string>
-    <string name="help_troubleshooting_firebase_project_title">ID ໂຄງການ Firebase</string>
     <string name="help_troubleshooting_share_logs_dialog_title">ແບ່ງປັນລິ້ງລັອກດີບັກຜ່ານ…</string>
     <string name="help_troubleshooting_debug_logs_cleaned_toast_message">ລ້າງລັອກດີບັກແລ້ວ</string>
     <string name="help_troubleshooting_debug_logs_upload_error_toast_message">ອັບໂຫຼດລັອກດີບັກຫຼົ້ມເຫຼວ</string>

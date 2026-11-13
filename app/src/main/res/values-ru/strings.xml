@@ -826,7 +826,6 @@
     <string name="help_dialog_update_available_message">Доступна новая версия %s. Хотите обновить?</string>
     <string name="help_troubleshooting_app_version_title">Версия приложения</string>
     <string name="help_troubleshooting_sdk_version_title">Версия SDK</string>
-    <string name="help_troubleshooting_firebase_project_title">ID проекта Firebase</string>
     <string name="settings_security_enable_vfs_dialog_confirmation_message">После активации вам придется перезапустить приложение.\nПосле этого все данные приложения будут зашифрованы и доступны только через него.\n\nБудьте осторожны, это невозможно отменить!</string>
     <string name="settings_security_prevent_screenshots_title">Предотвратить запись интерфейса</string>
     <string name="settings_calls_echo_canceller_title">Использовать программное подавление эха</string>

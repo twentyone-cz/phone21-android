@@ -43,10 +43,14 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactNewOrEditViewModel.kt` | uložení kontaktu do systémového adresáře | kontakty |
 | `app/src/main/java/org/linphone/ui/main/contacts/fragment/NewContactFragment.kt`, `EditContactFragment.kt` | WRITE_CONTACTS launcher + observery | kontakty |
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactViewModel.kt`, `ContactsListViewModel.kt` | mazání nativního kontaktu i ze systému | kontakty |
-| `app/build.gradle.kts` | Firebase messaging jen `compileOnly`, když chybí `google-services.json` | bez Google |
-| `app/src/main/AndroidManifest.xml` | služba FirebaseMessaging `tools:node="remove"` | bez Google |
+| `app/build.gradle.kts` | Firebase messaging jen s `google-services.json`; SDK přebalené bez push modulu (úloha `linphoneSdkNoPush`) | bez Google |
+| `app/src/main/AndroidManifest.xml` | bez služby FirebaseMessaging a bez meta-data Android Auto | bez Google |
 | `app/proguard-rules.pro` | `-dontwarn` pro com.google.firebase a com.google.android.gms | bez Google |
-| `app/src/main/java/org/linphone/ui/main/help/viewmodel/HelpViewModel.kt` | `catch (Throwable)` u FirebaseApp | bez Google |
+| `app/src/main/java/org/linphone/ui/main/help/viewmodel/HelpViewModel.kt`, `res/layout/help_debug_fragment.xml` | bez řádku Firebase project ID; ikona verze `info` | bez Google |
+| `app/src/main/res/values*/strings.xml` | odstraněn `help_troubleshooting_firebase_project_title` (12 souborů) | bez Google |
+| `app/src/main/res/drawable/firebase.xml`, `google_play.xml`, `res/xml/automotive_app_desc.xml` | SMAZÁNY | bez Google |
+| `app/src/main/java/org/linphone/core/CoreContext.kt` | podmínka Crashlytics s `BuildConfig.CRASHLYTICS_ENABLED` | bez Google |
+| `app/src/main/java/org/linphone/core/tools/PushNotificationUtils.java` | NOVÝ: náhrada třídy SDK (rozhraní SDK 5.5.13) | bez Google |
 | `gradle/gradle-daemon-jvm.properties` | SMAZÁN (build systémovým JDK) | build |
 | `app/src/main/res/drawable/assistant_logo.xml`, `welcome_linphone_logo.xml` | vlastní grafika | brand |
 | `app/src/main/java/org/linphone/ui/assistant/AssistantActivity.kt` | cesta po oprávněních na náš úvod, zpět na úvodu | onboarding |

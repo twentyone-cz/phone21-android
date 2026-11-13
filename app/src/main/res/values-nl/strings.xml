@@ -121,7 +121,6 @@
     <string name="help_troubleshooting_share_logs">Logs delen</string>
     <string name="help_troubleshooting_app_version_title">App-versie</string>
     <string name="help_troubleshooting_sdk_version_title">SDK-versie</string>
-    <string name="help_troubleshooting_firebase_project_title">Firebase-project-ID</string>
     <string name="help_troubleshooting_debug_logs_cleaned_toast_message">Debuglogs zijn opgeschoond</string>
     <string name="help_troubleshooting_debug_logs_upload_error_toast_message">Uploaden van debuglogs mislukt</string>
     <string name="help_troubleshooting_show_config_file">Configuratie weergeven</string>

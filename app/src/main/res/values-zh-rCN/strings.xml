@@ -40,7 +40,6 @@
     <string name="car_favorites_contacts_title">收藏夹</string>
     <string name="content_description_show_call_statistics">显示通话统计信息</string>
     <string name="content_description_chat_bubble_delivery_status">点击查看送达状态</string>
-    <string name="help_troubleshooting_firebase_project_title">Firebase 项目ID</string>
     <string name="settings_network_use_wifi_only">仅使用Wi-Fi网络</string>
     <string name="manage_account_choose_mode_apply_label">应用</string>
     <string name="authentication_id">认证ID</string>
