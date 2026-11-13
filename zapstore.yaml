@@ -19,3 +19,4 @@ description: |
 license: GPL-3.0-or-later
 website: https://phone.twentyone.cz
 tags: [telephony, privacy, bitcoin]
+metadata_sources: [github]
