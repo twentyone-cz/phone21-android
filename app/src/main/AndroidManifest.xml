@@ -23,7 +23,6 @@
     <!-- SMS do auta: role výchozí SMS aplikace — zrcadlení zpráv do
          systémového úložiště SMS, odkud si je auto čte přes Bluetooth -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
-    <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_MMS" />
     <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />

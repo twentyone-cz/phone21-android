@@ -210,6 +210,8 @@
     <string name="twentyone_car_log_switch">Historie hovorů do auta</string>
     <string name="twentyone_car_log_hint">Ukládá hovory i do historie telefonu, odkud si je přečte autorádio přes Bluetooth.</string>
     <string name="twentyone_car_sms_title">SMS do auta</string>
+    <string name="twentyone_sim_sms_channel">SMS na SIM v telefonu</string>
+    <string name="twentyone_sim_sms_title">SMS na SIM v telefonu: %1$s</string>
     <string name="twentyone_car_sms_title_active">SMS do auta (zapnuto)</string>
     <string name="twentyone_car_sms_unavailable">Tenhle telefon roli výchozí aplikace pro SMS nenabízí.</string>
     <string name="twentyone_car_sms_already">Zrcadlení zpráv pro auto už je zapnuté.</string>

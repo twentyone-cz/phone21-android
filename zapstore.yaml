@@ -10,6 +10,12 @@ description: |
 
   Aplikaci nastavíš jedním QR kódem z ovládání miniserveru.
   Návod: https://phone.twentyone.cz/instalace
+
+  Oprávnění k SMS: Phone21 může být výchozí aplikací pro SMS (volba „SMS do
+  auta“). Zprávy z tvého čísla pak ukládá do systémových SMS, odkud je auto
+  zobrazí přes Bluetooth. Jako výchozí SMS aplikace zároveň přijímá SMS, které
+  přijdou na SIM přímo v telefonu: uloží je do systému a ukáže upozornění.
+  Uložené SMS v telefonu nečte.
 license: GPL-3.0-or-later
 website: https://phone.twentyone.cz
 tags: [telephony, privacy, bitcoin]
