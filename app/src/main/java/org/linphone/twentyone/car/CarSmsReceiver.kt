@@ -1,8 +1,7 @@
 /*
- * fork: příjem skutečné SMS ze sítě (SMS_DELIVER chodí jen výchozí SMS
- * aplikaci). Telefon SIM nemá, ale role nás dělá zodpovědnými: kdyby SMS
- * přišla, uloží se do systémového úložiště, odkud ji uvidí auto i každá
- * budoucí SMS aplikace. (P21-CAR)
+ * fork: příjem SMS přijaté na SIM v telefonu (SMS_DELIVER chodí jen výchozí
+ * SMS aplikaci): uloží se do systémového úložiště a ukáže se upozornění.
+ * (P21-CAR)
  */
 package org.linphone.twentyone.car
 
@@ -14,6 +13,9 @@ import android.provider.Telephony
 import org.linphone.twentyone.TwentyOneDiag
 
 class CarSmsReceiver : BroadcastReceiver() {
+    companion object {
+        private const val SIM_SMS_CHANNEL = "twentyone_sim_sms"
+    }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.SMS_DELIVER_ACTION) return
@@ -35,6 +37,7 @@ class CarSmsReceiver : BroadcastReceiver() {
                 put(Telephony.Sms.SEEN, 0)
             }
             val uri = context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
+            notifySimSms(context, number, body)
             if (uri != null) {
                 TwentyOneDiag.log("P21-CAR", "SMS ze sítě uložena (${body.length} zn.)")
             } else {
@@ -48,11 +51,48 @@ class CarSmsReceiver : BroadcastReceiver() {
             // zpráva se nesmí ztratit — tělo jde do zálohy v datech aplikace,
             // do deníku NE (deník se kopíruje pro podporu)
             saveFallback(context, number, body)
+            notifySimSms(context, number, body)
             TwentyOneDiag.log(
                 "P21-CAR",
                 "SMS ze sítě se neuložila (${e.javaClass.simpleName}, ${body.length} zn.) — " +
                     "záloha v datech aplikace"
             )
+        }
+    }
+
+    /** Upozornění na SMS přijatou na SIM v telefonu; klepnutí otevře
+     *  systémovou aplikaci pro zprávy. */
+    private fun notifySimSms(context: Context, number: String, body: String) {
+        try {
+            val manager = context.getSystemService(android.app.NotificationManager::class.java)
+            val name = context.getString(org.linphone.R.string.twentyone_sim_sms_channel)
+            manager.createNotificationChannel(
+                android.app.NotificationChannel(
+                    SIM_SMS_CHANNEL, name, android.app.NotificationManager.IMPORTANCE_HIGH
+                )
+            )
+            val open = Intent.makeMainSelectorActivity(
+                Intent.ACTION_MAIN, Intent.CATEGORY_APP_MESSAGING
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val pending = android.app.PendingIntent.getActivity(
+                context, 0, open,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = androidx.core.app.NotificationCompat.Builder(context, SIM_SMS_CHANNEL)
+                .setSmallIcon(org.linphone.R.drawable.linphone_notification)
+                .setContentTitle(
+                    context.getString(org.linphone.R.string.twentyone_sim_sms_title, number)
+                )
+                .setContentText(body)
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(body))
+                .setCategory(androidx.core.app.NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .build()
+            manager.notify((System.currentTimeMillis() and 0x7fffffff).toInt(), notification)
+        } catch (e: Exception) {
+            TwentyOneDiag.log("P21-CAR", "upozornění na SMS ze SIM selhalo: ${e.javaClass.simpleName}")
         }
     }
 
