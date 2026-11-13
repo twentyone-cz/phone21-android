@@ -28,6 +28,8 @@ object TsNotifications {
     }
 
     fun buildStatusNotification(context: Context): Notification {
+        // kanál se mohl mezitím smazat (první start jádra po instalaci maže všechny)
+        createChannel(context)
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
@@ -53,6 +55,7 @@ object TsNotifications {
      *  vypnout nemůže — aspoň na to nahlas upozorní a odvede uživatele
      *  přímo do nastavení VPN. */
     fun notifyLockdownWarning(context: Context) {
+        createChannel(context)
         val intent = Intent(android.provider.Settings.ACTION_VPN_SETTINGS).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
