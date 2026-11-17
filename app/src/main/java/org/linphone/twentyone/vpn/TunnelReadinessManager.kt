@@ -178,11 +178,37 @@ class TunnelReadinessManager {
         }
     }
 
+    /**
+     * Širokopásmový kodek G.722 (16 kHz) zapnout jednou po instalaci.
+     * Miniserver ho od 0.9.44 preferuje a modem hraje 16 kHz, jenže SDK ho
+     * má ve výchozím stavu vypnutý — hovor pak jel v 8 kHz (PCMA) a zněl
+     * „jak ze sudu" (ověřeno 2026-11-17: po ručním zapnutí lepší na obou
+     * stranách). Jen jednou: kdo si ho později vědomě vypne, tomu ho appka
+     * znovu nezapne. Takt 8000 je správně — G.722 v RTP hlásí 8 kHz, přestože
+     * vzorkuje 16 kHz.
+     */
+    private fun ensureWidebandCodec(core: Core) {
+        try {
+            val cfg = core.config
+            if (cfg.getBool("twentyone", "g722_default_applied", false)) return
+            val g722 = core.audioPayloadTypes.firstOrNull { it.mimeType.equals("G722", ignoreCase = true) }
+            if (g722 != null && !g722.enabled()) {
+                g722.enable(true)
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-CFG", "širokopásmový kodek G.722 zapnut")
+            }
+            cfg.setBool("twentyone", "g722_default_applied", true)
+        } catch (e: Exception) {
+            Log.w("$TAG Failed to enable G.722: $e")
+        }
+    }
+
     @WorkerThread
     fun onCoreStarted(core: Core) {
         this.core = core
         core.addListener(coreListener)
         ensureInternationalPrefix(core)
+        ensureWidebandCodec(core)
         coreContext.postOnMainThread {
             // nový start jádra začíná od nepřipravené sítě
             ready = false
