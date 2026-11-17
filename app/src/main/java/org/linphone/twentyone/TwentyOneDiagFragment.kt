@@ -8,6 +8,7 @@ package org.linphone.twentyone
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -15,8 +16,19 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.linphone.LinphoneApplication.Companion.coreContext
 import org.linphone.R
+import org.linphone.core.tools.Log
 import org.linphone.twentyone.vpn.TsManager
 
 class TwentyOneDiagFragment : Fragment() {
@@ -24,6 +36,17 @@ class TwentyOneDiagFragment : Fragment() {
     private lateinit var logView: TextView
     private lateinit var netView: TextView
     private var pingResult: String = ""
+
+    // Podrobný log knihovny (průběh hovorů, SIP) se ukládá do souboru, který
+    // si uživatel sám vybere — nic se nenahrává na cizí server. Zabalený log
+    // vzniká v interním úložišti aplikace a sem se jen zkopíruje.
+    private var pendingLogPath: String? = null
+    private val saveGzLog = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/gzip")
+    ) { uri -> onLogTargetChosen(uri) }
+    private val saveTextLog = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri -> onLogTargetChosen(uri) }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -92,7 +115,58 @@ class TwentyOneDiagFragment : Fragment() {
             TwentyOneDiag.clear()
             refresh()
         }
+        view.findViewById<Button>(R.id.diag_save_log).setOnClickListener { button ->
+            button.isEnabled = false
+            coreContext.postOnCoreThread { core ->
+                val path = core.compressLogCollection()
+                button.post {
+                    button.isEnabled = true
+                    if (!isAdded) return@post
+                    if (path.isNullOrEmpty() || !File(path).isFile) {
+                        Log.e("[Diagnostika] Zabalení logu selhalo: [$path]")
+                        toast(R.string.twentyone_diag_save_log_failed)
+                        return@post
+                    }
+                    pendingLogPath = path
+                    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                    if (path.endsWith(".gz")) {
+                        saveGzLog.launch("phone21-log-$stamp.gz")
+                    } else {
+                        saveTextLog.launch("phone21-log-$stamp.txt")
+                    }
+                }
+            }
+        }
         refresh()
+    }
+
+    private fun onLogTargetChosen(uri: Uri?) {
+        val source = pendingLogPath
+        pendingLogPath = null
+        if (uri == null || source == null) return
+        val resolver = requireContext().applicationContext.contentResolver
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    val out = resolver.openOutputStream(uri, "w")
+                        ?: return@withContext false
+                    out.use { o -> File(source).inputStream().use { it.copyTo(o) } }
+                    true
+                } catch (e: Exception) {
+                    Log.e("[Diagnostika] Uložení logu selhalo: $e")
+                    false
+                }
+            }
+            toast(
+                if (ok) R.string.twentyone_diag_save_log_done
+                else R.string.twentyone_diag_save_log_failed
+            )
+        }
+    }
+
+    private fun toast(res: Int) {
+        if (!isAdded) return
+        Toast.makeText(requireContext(), res, Toast.LENGTH_LONG).show()
     }
 
     /**

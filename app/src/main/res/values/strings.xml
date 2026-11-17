@@ -206,6 +206,9 @@
     <string name="twentyone_diag_clear">Vymazat</string>
     <string name="twentyone_diag_copied">Zkopírováno do schránky.</string>
     <string name="twentyone_diag_empty">Zatím žádné chyby. Dobré znamení.</string>
+    <string name="twentyone_diag_save_log">Uložit podrobný log do souboru</string>
+    <string name="twentyone_diag_save_log_done">Log je uložený. Obsahuje i čísla a průběh hovorů — dej ho jen tomu, komu věříš.</string>
+    <string name="twentyone_diag_save_log_failed">Log se nepodařilo uložit.</string>
     <string name="twentyone_tunnel_diag_link">Diagnostika (deník chyb)</string>
     <string name="twentyone_car_log_switch">Historie hovorů do auta</string>
     <string name="twentyone_car_log_hint">Ukládá hovory i do historie telefonu, odkud si je přečte autorádio přes Bluetooth.</string>

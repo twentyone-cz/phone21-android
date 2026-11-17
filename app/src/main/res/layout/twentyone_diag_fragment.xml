@@ -87,6 +87,13 @@
             android:textColor="?attr/color_main2_600" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/diag_save_log"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/twentyone_diag_save_log" />
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
