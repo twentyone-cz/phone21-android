@@ -235,7 +235,9 @@ class TunnelReadinessManager {
     /** [forced] = důvod vynuceného vyhodnocení (zapíše se do deníku i beze
      *  změny), [reconcile] = pravidelná kontrola registrace účtů. */
     private fun evaluate(forced: String? = null, reconcile: Boolean = false) {
-        val state = TsManager.state.value
+        // Skutečný stav jádra, ne zobrazovaný: ten přestavba tunelu přepíše na
+        // STOPPING a jádro ho už nevrátí (viz TsManager.backendState).
+        val state = TsManager.backendState()
         val loggedIn = TsManager.loggedIn.value == true
         val verified = TsManager.endpointVerified.value == true
         val vpnUp = TsManager.vpnActive.value == true

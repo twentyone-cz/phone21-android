@@ -256,6 +256,15 @@ object TsManager {
     fun isLoggedIn(): Boolean = currentState == State.RUNNING
 
     /**
+     * Skutečný stav jádra tunelu (z jeho notifikací). Na rozdíl od [state]
+     * ho nepřepíše zavírání služby: při přestavbě tunelu se do [state] pošle
+     * STOPPING, ale jádro běží dál a nový stav už nepošle — podle [state] by
+     * registrace u ústředny zůstala vypnutá, i když tunel znovu jede
+     * (výpadek 2026-11-16, P21-NET „stav=STOPPING … registrace se vypíná").
+     */
+    fun backendState(): State = currentState
+
+    /**
      * Přihlásí uzel proti koordinátorovi. Klíč je jednorázový (preauth) —
      * bez něj se použije interaktivní přihlášení v prohlížeči.
      */
@@ -469,6 +478,13 @@ object TsManager {
         // SYNCHRONNĚ před postValue: čtenáři mimo hlavní vlákno (přestavba
         // tunelu) se rozhodují podle vpnActiveNow.
         vpnActiveNow = active
+        // Rozhraní je zpátky: zobrazovaný stav srovnat se skutečným, jinak by
+        // po přestavbě visel na STOPPING z onServiceClosing(). Musí odejít
+        // PŘED vpnActive — posluchači připravenosti čtou oba a postValue
+        // doručuje v pořadí odeslání.
+        if (active && state.value != currentState) {
+            state.postValue(currentState)
+        }
         vpnActive.postValue(active)
     }
 
