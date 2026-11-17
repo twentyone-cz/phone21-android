@@ -144,9 +144,9 @@ v `TwentyOneProvisioning`: před aplikací konfigurace se odeberou přihlašovac
 se z klonu vrátí zpátky (`TunnelReadinessManager.onConfiguring`).
 
 **Klient sítě:** `app/libs/libtailscale.aar` je postavené z `tailscale.com`
-v1.102.2 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.102.2`,
-dlouhá verze `1.102.2-t6cac91817`). Koordinátor headscale 0.29.1 vyžaduje
-klienta ≥ 1.80 — splněno.
+v1.104.7 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.104.7`,
+dlouhá verze `1.104.7-tfb3b9b296-g226f029a3`). Koordinátor headscale 0.29.7
+vyžaduje klienta ≥ 1.80, jeho peer relay klienta ≥ 1.86 — splněno.
 
 ### QR na dálku: klíč do sítě v odkazu (21p.37)
 
