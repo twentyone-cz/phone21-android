@@ -617,7 +617,11 @@ object TsManager {
         val lastHandshake: String,
         val rx: Long,
         val tx: Long
-    )
+    ) {
+        /** přenosový uzel koordinátoru (peer relay): je v mapě každého
+         *  zákazníka s plnými pravidly, bránou ale není nikdy */
+        val isRelay: Boolean get() = "tag:relay" in tags
+    }
 
     /** Podklady pro obrazovku Diagnostika (co o síti ví jádro tunelu). */
     data class NetDiag(
@@ -977,13 +981,21 @@ object TsManager {
      *    text na obrazovce, výstupní uzel se z ní NENASAZUJE;
      * 4) víc kandidátů nebo žádný → nic; běžící uzel se NESUNDÁVÁ.
      *
+     * Přenosový uzel koordinátoru ([NetPeer.isRelay]) se mezi kandidáty
+     * nepočítá vůbec.
+     *
      * Adresa slouží jen k identifikaci a měření; do předvoleb jádra jde vždy
      * stabilní identifikátor.
      */
     fun gatewayPeer(diag: NetDiag?): NetPeer? = findGateway(diag).first
 
     private fun findGateway(diag: NetDiag?): Pair<NetPeer?, GatewayState> {
-        val peers = diag?.peers.orEmpty()
+        // Bez vynechání by přenosový uzel rozbil záchranu 3): brána + uzel
+        // = dva protějšky → nic, a v síti bez brány by se za bránu vydával
+        // sám. Odříznutí se tím nemění — o něm rozhoduje prázdná mapa
+        // (updatePausedState), ne tahle funkce, a odříznutý zákazník
+        // přenosový uzel v mapě nemá.
+        val peers = diag?.peers.orEmpty().filterNot { it.isRelay }
         if (peers.isEmpty()) return null to GatewayState.ABSENT
         val wanted = prefs.gatewayAddress
         if (wanted.isNotEmpty()) {
