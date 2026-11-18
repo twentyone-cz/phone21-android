@@ -2,6 +2,10 @@
  * fork: obrazovka deníku chyb (P21-S2). Chybová hláška na obrazovce zmizí —
  * tady se dá dohledat zpětně, s kódem, časem a detaily, a jedním klepnutím
  * zkopírovat pro nahlášení.
+ *
+ * Síťová část ukazuje i režim tunelu (systémová VPN / tunel uvnitř appky)
+ * a relé vnitřního tunelu (porty, šifrování hlasu, hovory, zahozené
+ * pakety — jen počty, nikdy token ani klíče).
  */
 package org.linphone.twentyone
 
@@ -29,7 +33,11 @@ import kotlinx.coroutines.withContext
 import org.linphone.LinphoneApplication.Companion.coreContext
 import org.linphone.R
 import org.linphone.core.tools.Log
+import org.json.JSONObject
 import org.linphone.twentyone.vpn.TsManager
+import org.linphone.twentyone.vpn.TsModeController
+import org.linphone.twentyone.vpn.TsPreferences
+import org.linphone.twentyone.vpn.TsRelay
 
 class TwentyOneDiagFragment : Fragment() {
 
@@ -76,6 +84,19 @@ class TwentyOneDiagFragment : Fragment() {
             renderNet(TsManager.netDiag.value)
         }
         TsManager.gatewayState.observe(viewLifecycleOwner) {
+            renderNet(TsManager.netDiag.value)
+        }
+        // režim a relé (vnitřní tunel)
+        TsManager.mode.observe(viewLifecycleOwner) {
+            renderNet(TsManager.netDiag.value)
+        }
+        TsManager.transportUp.observe(viewLifecycleOwner) {
+            renderNet(TsManager.netDiag.value)
+        }
+        TsRelay.relayInfo.observe(viewLifecycleOwner) {
+            renderNet(TsManager.netDiag.value)
+        }
+        TsModeController.systemBlock.observe(viewLifecycleOwner) {
             renderNet(TsManager.netDiag.value)
         }
         renderNet(TsManager.netDiag.value)
@@ -144,13 +165,24 @@ class TwentyOneDiagFragment : Fragment() {
         val source = pendingLogPath
         pendingLogPath = null
         if (uri == null || source == null) return
-        val resolver = requireContext().applicationContext.contentResolver
+        val appContext = requireContext().applicationContext
+        val resolver = appContext.contentResolver
         viewLifecycleOwner.lifecycleScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 try {
                     val out = resolver.openOutputStream(uri, "w")
                         ?: return@withContext false
-                    out.use { o -> File(source).inputStream().use { it.copyTo(o) } }
+                    // Soubor odchází z telefonu: bez soukromých klíčů, tokenů
+                    // a klíčů šifrování hlasu (viz TwentyOneLogScrub).
+                    val secrets = TsRelay.secretsForScrub() +
+                        TsPreferences(appContext).accessToken
+                    val scrubbed = out.use { o ->
+                        TwentyOneLogScrub.copy(File(source), o, source.endsWith(".gz"), secrets)
+                    }
+                    Log.i(
+                        "[Diagnostika] Log uložen, odstraněno: klíčů ${scrubbed.keys}, " +
+                            "tokenů ${scrubbed.tokens}, řádků s klíči hlasu ${scrubbed.srtp}"
+                    )
                     true
                 } catch (e: Exception) {
                     Log.e("[Diagnostika] Uložení logu selhalo: $e")
@@ -194,14 +226,96 @@ class TwentyOneDiagFragment : Fragment() {
         }
     }
 
+    /** Řádky o režimu tunelu a relé vnitřního tunelu (bez tokenu). */
+    private fun modeLines(): String {
+        val sb = StringBuilder()
+        val mode = TsModeController.modeInUse()
+        sb.append("režim: ").append(
+            when (mode) {
+                TsModeController.Mode.SYSTEM -> "systémová VPN"
+                TsModeController.Mode.INTERNAL -> "tunel uvnitř appky (bez VPN)"
+                TsModeController.Mode.OFF -> "vypnuto"
+            }
+        )
+        if (TsModeController.isSwitching()) sb.append(", přepíná se")
+        sb.append(", cesta k miniserveru ")
+            .append(if (TsManager.isTransportUp()) "stojí" else "nestojí").append("\n")
+        val block = TsModeController.systemBlockNow()
+        if (block != TsModeController.SystemBlock.NONE) {
+            sb.append("  zvolený stupeň chce systémovou VPN: ").append(
+                when (block) {
+                    TsModeController.SystemBlock.NO_CONSENT -> "chybí souhlas"
+                    TsModeController.SystemBlock.OTHER_VPN -> "místo drží jiná VPN"
+                    TsModeController.SystemBlock.SLOT_LOST -> "Phone21 o místo přišlo"
+                    TsModeController.SystemBlock.NONE -> ""
+                }
+            ).append("\n")
+        }
+        if (mode != TsModeController.Mode.INTERNAL) return sb.toString()
+
+        val info = TsRelay.currentInfo()
+        if (info == null || !TsRelay.isUp()) {
+            val err = TsRelay.status()?.error.orEmpty()
+            sb.append("relé: neběží")
+            if (err.isNotEmpty()) sb.append(" — ").append(err)
+            sb.append(" [P21-E22]\n")
+            return sb.toString()
+        }
+        val stats = try {
+            JSONObject(TsRelay.statsJson())
+        } catch (_: Exception) {
+            JSONObject()
+        }
+        val media = stats.optJSONObject("media") ?: JSONObject()
+        val counters = stats.optJSONObject("counters") ?: JSONObject()
+        fun m(key: String) = media.optLong(key, 0L)
+        fun c(key: String) = counters.optLong(key, 0L)
+        sb.append("relé: signalizace 127.0.0.1:").append(info.sipPort)
+            .append(", web ").append(info.httpPort)
+            .append(", hlas ").append(if (info.clientSrtp) "šifrovaný" else "NEšifrovaný")
+            .append(", volací knihovna ")
+            .append(
+                if (stats.optBoolean("clientConnected", false)) {
+                    "připojena"
+                } else {
+                    "nepřipojena (registrace přes relé: P21-E25 v deníku)"
+                }
+            )
+            .append(", běží ").append(stats.optLong("uptimeSec", 0L) / 60).append(" min\n")
+        sb.append("  hovory ").append(m("calls")).append(", proudy ").append(m("streams"))
+            .append(", pakety k miniserveru ").append(m("packetsToUpstream"))
+            .append(", k telefonu ").append(m("packetsToClient")).append("\n")
+        sb.append("  zahozeno: cizí odesílatel v telefonu ").append(m("dropForeignClient"))
+            .append(", cizí odesílatel ze sítě ").append(m("dropForeignNetwork"))
+            .append(", bez cíle ").append(m("dropNoDestination"))
+            .append(", chyba zápisu ").append(m("writeErrors")).append("\n")
+        if (info.clientSrtp) {
+            sb.append("  šifrování hlasu: neověřeno ").append(m("srtpAuthFail"))
+                .append(", opakované ").append(m("srtpReplay"))
+                .append(", bez klíče ").append(m("srtpNoKey") + m("srtpNoKeyToClient"))
+                .append("\n")
+        }
+        val rejected = c("client.rejected")
+        val forbidden = c("http.forbidden_token")
+        if (rejected > 0 || forbidden > 0) {
+            sb.append("  cizí klient na 127.0.0.1: bez certifikátu ").append(rejected)
+                .append(", bez tokenu ").append(forbidden).append(" [P21-E23]\n")
+        }
+        val upErr = c("http.upstream_error") + c("http.rejected_target")
+        sb.append("  web: požadavků ").append(c("http.requests"))
+        if (upErr > 0) sb.append(", nedoručeno ").append(upErr).append(" [P21-E24]")
+        sb.append("\n")
+        return sb.toString()
+    }
+
     private fun renderNet(diag: TsManager.NetDiag?) {
         if (diag == null) {
             // Žádný status zatím nedorazil — o pozastavení sítě (a už vůbec ne
             // o penězích v účtu) se z toho nedá usuzovat nic.
-            netView.text = emptyNetText(statusSeen = false)
+            netView.text = modeLines() + emptyNetText(statusSeen = false)
             return
         }
-        val sb = StringBuilder()
+        val sb = StringBuilder(modeLines())
         sb.append("vlastní endpointy: ").append(diag.endpoints.size)
             .append(" (veřejné ").append(diag.publicEndpoints.size).append(")\n")
         diag.endpoints.forEach { sb.append("  ").append(it).append("\n") }
