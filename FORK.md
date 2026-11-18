@@ -56,6 +56,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/java/org/linphone/ui/assistant/AssistantActivity.kt` | cesta po oprávněních na náš úvod, zpět na úvodu | onboarding |
 | `app/src/main/java/org/linphone/ui/assistant/fragment/PermissionsFragment.kt`, `QrCodeScannerFragment.kt` | žádost o oprávnění Místní síť | onboarding |
 | `app/src/main/java/org/linphone/ui/assistant/viewmodel/QrCodeViewModel.kt` | stažení konfigurace vlastním kódem; log odkazu bez klíče | provisioning |
+| `app/src/main/java/org/linphone/ui/main/settings/viewmodel/AccountSettingsViewModel.kt` | po uložení `TsSipTransport.reapply` | vpn |
 | `app/src/main/java/org/linphone/ui/main/settings/viewmodel/SettingsViewModel.kt` | log adresy vzdálené konfigurace bez tokenu; ruční vzdálená konfigurace: webová adresa přes `TwentyOneProvisioning.fetchAndApply`, adresa v privátní síti se ukládá jen pod systémovou VPN (`mayStoreConfigUri`), `dropPrivateConfigUri` před startem jádra | provisioning |
 | `app/src/main/java/org/linphone/ui/assistant/viewmodel/ThirdPartySipAccountLoginViewModel.kt` | ruční účet bez připravené sítě | onboarding |
 | `app/src/main/java/org/linphone/ui/call/CallActivity.kt` | senzor přiblížení v `onPause` jen bez hovoru | hovory |
