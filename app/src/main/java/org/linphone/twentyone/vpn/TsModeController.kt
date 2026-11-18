@@ -20,7 +20,11 @@
  * Systémové místo se nikdy nebere potichu: chybí-li souhlas, drží-li místo
  * jiná VPN, nebo o něj Phone21 přišlo, jedou hovory dál vnitřním tunelem
  * a appka se zeptá (výzva s tlačítkem do TsConsentActivity,
- * [needsSystemConsent] pro obrazovku).
+ * [needsSystemConsent] pro obrazovku). Všechny tři důvody drží, dokud
+ * uživatel nedá pokyn (souhlas) nebo nezmění stupeň — jiná VPN, která na
+ * chvíli zmizí (přepojení), místo neuvolní. VpnService.prepare() se bez
+ * pokynu volá jen tam, kde 21p.45: jádro tunelu běží, síť je ověřená a jiná
+ * VPN jistě není vidět (neznámý stav sítě = místo nebrat).
  *
  * Knihovna tunelu má vnitřní režim vyžádaný vždy, když uživatel tunel chce
  * (i pod systémovou VPN, která má přednost): když VPN odebere systém nebo
@@ -103,6 +107,23 @@ object TsModeController {
     @Volatile
     private var approvedAt = 0L
 
+    /** Souhlas uživatele, se kterým se přepnutí odložilo na konec hovoru:
+     *  60 s by během delšího hovoru vypršelo a jiná VPN by byla vypnutá
+     *  zbytečně (prepare() v UI ji už vypnulo). Platí jen proti ztracenému
+     *  místu — jinou VPN, kterou uživatel během hovoru zapnul, nebere. */
+    @Volatile
+    private var approvalHeld = false
+
+    /** Souhlas s VPN chybí (prepare() chtělo dialog, nebo ho uživatel
+     *  odmítl): drží se do pokynu uživatele, ať se na něj appka neptá
+     *  dokola. */
+    @Volatile
+    private var noConsentHold = false
+
+    /** Zrcadlo TsPreferences.otherVpnHold (null = ještě nenačteno). */
+    @Volatile
+    private var otherVpnHoldNow: Boolean? = null
+
     /** Uživatel právě chce tunel zapnout (Připojit, souhlas): systémová
      *  služba se má spustit, i když režim už platí. */
     @Volatile
@@ -144,6 +165,7 @@ object TsModeController {
         val p = TsPreferences(ctx)
         val inUse = parseMode(p.modeInUse)
         modeInUseNow = inUse
+        otherVpnHoldNow = p.otherVpnHold
         TsManager.mode.postValue(inUse)
         p.raw.registerOnSharedPreferenceChangeListener(prefsListener)
         // Výzva z minulého procesu: jestli pořád platí, rozhodne první
@@ -196,6 +218,20 @@ object TsModeController {
     fun approveSystem() {
         approvedAt = android.os.SystemClock.elapsedRealtime()
         startRequested = true
+        // pokyn uživatele ruší všechno, kvůli čemu se místo nebralo
+        noConsentHold = false
+        setOtherVpnHold(false)
+    }
+
+    /**
+     * Souhlas s VPN neprošel (systémový dialog odmítnut) nebo chybí
+     * (automatický start, prepare() chce dialog). Tunel tím nekončí:
+     * hovory jedou vnitřním tunelem s výzvou „Zapnout přístup“, dokud
+     * uživatel souhlas nedá.
+     */
+    fun onConsentMissing(reason: String) {
+        noConsentHold = true
+        reconcile(reason)
     }
 
     /** Phone21 přišlo o systémové místo (onRevoke, establish selhal, jiná
@@ -204,8 +240,52 @@ object TsModeController {
         // Souhlas z UI už neplatí: jinak by si appka místo hned vzala
         // zpátky a s jinou VPN by se o něj přetahovala.
         approvedAt = 0L
+        approvalHeld = false
         startRequested = false
         reconcile("ztráta místa pro VPN", forced = true)
+    }
+
+    private fun isApprovedNow(): Boolean {
+        val at = approvedAt
+        return at != 0L && android.os.SystemClock.elapsedRealtime() - at < APPROVAL_VALID_MS
+    }
+
+    private fun otherVpnHold(): Boolean {
+        otherVpnHoldNow?.let { return it }
+        val v = try {
+            TsPreferences(context()).otherVpnHold
+        } catch (_: Exception) {
+            false
+        }
+        otherVpnHoldNow = v
+        return v
+    }
+
+    private fun setOtherVpnHold(hold: Boolean) {
+        if (otherVpnHold() == hold) return
+        otherVpnHoldNow = hold
+        try {
+            TsPreferences(context()).otherVpnHold = hold
+        } catch (e: Exception) {
+            Log.e("$TAG Failed to persist other VPN hold: $e")
+        }
+        if (hold) {
+            TwentyOneDiag.log(
+                "P21-TUN", "místo pro VPN drží jiná VPN — Phone21 si ho nevezme, dokud uživatel nedá pokyn")
+        }
+    }
+
+    /**
+     * Drží místo jiná VPN? null = nejde říct (žádná aktivní síť). Před
+     * Androidem 11 se v systémovém režimu dobíhající vlastní rozhraní nedá
+     * odlišit od cizího — tam jinou VPN pozná připravenost (dvě pozorování,
+     * pak ztracené místo), tady se nehádá.
+     */
+    private fun otherVpnSeen(ctx: Context, from: Mode): Boolean? {
+        if (from == Mode.SYSTEM && android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+            return null
+        }
+        return TsManager.otherVpnState(ctx)
     }
 
     /** Nový start jádra: účet podle režimu, posluchač hovorů, srovnání. */
@@ -249,6 +329,13 @@ object TsModeController {
         val ctx = context()
         val from = modeInUse()
         val desired = desired()
+        if (desired != Mode.SYSTEM) {
+            // Stupeň bez systémové VPN nebo vypnuto: důvody, proč se místo
+            // nebralo, i odložený souhlas končí (příště se uživatel zeptá znovu).
+            approvalHeld = false
+            noConsentHold = false
+            setOtherVpnHold(false)
+        }
         var (target, block) = decide(desired, from, ctx)
 
         // Vypnutí se neodkládá: službu a žádost už zastavil TsManager.stopService
@@ -260,29 +347,60 @@ object TsModeController {
                     "přepnutí %s → %s odloženo na konec hovoru (%s)".format(
                         label(from), label(target), reason))
             }
+            // souhlas uživatele nesmí během hovoru vypršet (viz approvalHeld)
+            if (target == Mode.SYSTEM && isApprovedNow()) approvalHeld = true
             deferredForCall = true
             publishBlock(ctx, block)
             ensurePath(from)
             return
         }
         deferredForCall = false
+        if (approvalHeld) {
+            // Odložený souhlas se teď použije: běžná lhůta znovu od
+            // skutečného přepnutí (krok mezi startem služby a postavením
+            // rozhraní by jinak viděl ztracené místo bez souhlasu).
+            approvalHeld = false
+            if (target == Mode.SYSTEM) approvedAt = android.os.SystemClock.elapsedRealtime()
+        }
 
         // VpnService.prepare() NENÍ dotaz: se souhlasem rovnou přidělí místo
         // (a cizí VPN vypne). Proto až tady — po kontrole jiné VPN,
-        // ztraceného místa a hovoru — a jen když se systémová služba opravdu
-        // má spustit.
+        // ztraceného místa a hovoru — a jen když se systémová služba hned
+        // spustí: na pokyn uživatele, nebo bez něj jen za podmínek z 21p.45
+        // (jádro běží, síť ověřená, jiná VPN jistě není vidět).
+        // false = souhlas se teď nezjišťoval (prepare se nevolalo), „bez
+        // výzvy“ je jen prozatímní — značku výzvy z minulého procesu nechat
+        var settled = true
         if (target == Mode.SYSTEM && !TsVpnService.isRunning()) {
-            val consent = try {
-                VpnService.prepare(ctx)
-            } catch (e: Exception) {
-                null
-            }
-            if (consent != null) {
-                target = Mode.INTERNAL
-                block = SystemBlock.NO_CONSENT
+            val userAsked = startRequested || isApprovedNow()
+            val auto = from != Mode.SYSTEM &&
+                TsManager.backendState() == TsManager.State.RUNNING &&
+                TsManager.isEndpointVerified() &&
+                otherVpnSeen(ctx, from) == false
+            if (userAsked || auto) {
+                val consent = try {
+                    VpnService.prepare(ctx)
+                } catch (e: Exception) {
+                    null
+                }
+                if (consent != null) {
+                    target = Mode.INTERNAL
+                    block = SystemBlock.NO_CONSENT
+                    noConsentHold = true
+                }
+            } else {
+                settled = false
+                // Teď by se nic nespustilo (jádro neběží, síť neověřená),
+                // nebo nejde říct, jestli místo nedrží jiná VPN: místo
+                // nebrat. Hovory jedou vnitřním tunelem; znovu se srovná,
+                // až jádro poběží a síť bude ověřená (připravenost).
+                // Systémový režim bez pokynu zůstává: službu spustí
+                // připravenost (maybeStartSystem) se stejnými podmínkami
+                // a kontrolou souhlasu.
+                if (from != Mode.SYSTEM) target = Mode.INTERNAL
             }
         }
-        publishBlock(ctx, block)
+        publishBlock(ctx, block, settled)
         if (target != Mode.SYSTEM) startRequested = false
 
         // Vnitřní režim místo pro VPN nepotřebuje: ztracené místo se ruší
@@ -305,10 +423,17 @@ object TsModeController {
         if (from == Mode.SYSTEM && TsVpnService.isRunning() && !TsManager.isSlotLost()) {
             return Mode.SYSTEM to SystemBlock.NONE
         }
-        val approved = android.os.SystemClock.elapsedRealtime() - approvedAt < APPROVAL_VALID_MS &&
-            approvedAt != 0L
-        if (!approved && TsManager.isSlotLost()) return Mode.INTERNAL to SystemBlock.SLOT_LOST
-        if (!approved && TsManager.otherVpnActive(ctx)) return Mode.INTERNAL to SystemBlock.OTHER_VPN
+        // Čerstvý pokyn uživatele (souhlas v UI už místo vzal) platí proti
+        // všemu; souhlas odložený přes hovor jen proti ztracenému místu.
+        if (isApprovedNow()) return Mode.SYSTEM to SystemBlock.NONE
+        if (!approvalHeld && TsManager.isSlotLost()) return Mode.INTERNAL to SystemBlock.SLOT_LOST
+        // Jiná VPN drží místo lepivě: krátké zmizení (přepojení, výměna
+        // serveru) ho neuvolní — vzít ho smí jen pokyn uživatele.
+        if (otherVpnHold() || otherVpnSeen(ctx, from) == true) {
+            setOtherVpnHold(true)
+            return Mode.INTERNAL to SystemBlock.OTHER_VPN
+        }
+        if (noConsentHold) return Mode.INTERNAL to SystemBlock.NO_CONSENT
         return Mode.SYSTEM to SystemBlock.NONE
     }
 
@@ -454,8 +579,18 @@ object TsModeController {
     }
 
     /** Výzva „zvolený stupeň potřebuje místo pro VPN“ — nikdy potichu. */
-    private fun publishBlock(ctx: Context, block: SystemBlock) {
-        if (block == blockNow) return
+    private fun publishBlock(ctx: Context, block: SystemBlock, settled: Boolean = true) {
+        if (block == blockNow) {
+            // Nový proces začíná s NONE: značka výzvy z minulého procesu, která
+            // už neplatí, by jinak příští skutečnou výzvu ztlumila. Jen po
+            // skutečném rozhodnutí — prozatímní „bez výzvy“ (souhlas se
+            // ještě nezjišťoval) by tichý návrat téže výzvy rozbilo.
+            if (block == SystemBlock.NONE && settled) {
+                val p = TsPreferences(ctx)
+                if (p.systemBlockNotified.isNotEmpty()) p.systemBlockNotified = ""
+            }
+            return
+        }
         val old = blockNow
         blockNow = block
         needsSystemConsent.postValue(block != SystemBlock.NONE)
