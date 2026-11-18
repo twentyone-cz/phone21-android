@@ -25,7 +25,14 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             app:constraint_referenced_ids="no_media_encryption_icon, no_media_encryption_label"
-            android:visibility="@{!viewModel.fullScreenMode &amp;&amp; !viewModel.pipMode &amp;&amp; !viewModel.waitingForEncryptionInfo &amp;&amp; !viewModel.isMediaEncrypted ? View.VISIBLE : View.GONE, default=gone}" />
+            android:visibility="@{!viewModel.fullScreenMode &amp;&amp; !viewModel.pipMode &amp;&amp; !viewModel.waitingForEncryptionInfo &amp;&amp; !viewModel.isMediaEncrypted &amp;&amp; !viewModel.isViaPrivateNetwork ? View.VISIBLE : View.GONE, default=gone}" />
+
+        <!-- fork: hlas šifruje tunel privátní sítě až do miniserveru -->
+        <androidx.constraintlayout.widget.Group
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:constraint_referenced_ids="private_network_icon, private_network_label"
+            android:visibility="@{!viewModel.fullScreenMode &amp;&amp; !viewModel.pipMode &amp;&amp; !viewModel.waitingForEncryptionInfo &amp;&amp; !viewModel.isMediaEncrypted &amp;&amp; viewModel.isViaPrivateNetwork ? View.VISIBLE : View.GONE, default=gone}" />
 
         <androidx.constraintlayout.widget.Group
             android:layout_width="wrap_content"
@@ -92,6 +99,33 @@
             android:maxLines="1"
             android:ellipsize="end"
             app:layout_constraintStart_toEndOf="@id/no_media_encryption_icon"
+            app:layout_constraintTop_toBottomOf="@id/wait_for_encryption_info_label"/>
+
+        <ImageView
+            android:id="@+id/private_network_icon"
+            android:layout_width="@dimen/small_icon_size"
+            android:layout_height="0dp"
+            android:adjustViewBounds="true"
+            android:paddingTop="3dp"
+            android:contentDescription="@null"
+            android:src="@drawable/lock_simple"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="@id/private_network_label"
+            app:layout_constraintBottom_toBottomOf="@id/private_network_label"
+            app:tint="@color/blue_info_500" />
+
+        <androidx.appcompat.widget.AppCompatTextView
+            style="@style/default_text_style"
+            android:id="@+id/private_network_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="5dp"
+            android:text="@string/twentyone_call_private_network"
+            android:textSize="12sp"
+            android:textColor="@color/blue_info_500"
+            android:maxLines="1"
+            android:ellipsize="end"
+            app:layout_constraintStart_toEndOf="@id/private_network_icon"
             app:layout_constraintTop_toBottomOf="@id/wait_for_encryption_info_label"/>
 
         <ImageView
