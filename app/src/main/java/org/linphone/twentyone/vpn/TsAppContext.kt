@@ -23,6 +23,23 @@ class TsAppContext(private val context: Context) : libtailscale.AppContext {
     companion object {
         private const val TAG = "[Tunnel Context]"
         private const val PREFS_FILE = "twentyone_tunnel"
+
+        /** Odmítnuté vázání socketu se do deníku píše jednou za proces. */
+        @Volatile
+        private var bindRefusalLogged = false
+
+        /** Šifrované předvolby (klíč v Keystore) — pro tajné hodnoty
+         *  (stav jádra tunelu, identity relé). */
+        fun openEncrypted(context: Context, file: String): android.content.SharedPreferences {
+            val key = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+            return EncryptedSharedPreferences.create(
+                context,
+                file,
+                key,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
     }
 
     @Volatile
@@ -31,16 +48,7 @@ class TsAppContext(private val context: Context) : libtailscale.AppContext {
     @Volatile
     var platformDnsConfig: String = ""
 
-    private val prefs by lazy {
-        val key = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        EncryptedSharedPreferences.create(
-            context,
-            PREFS_FILE,
-            key,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    }
+    private val prefs by lazy { openEncrypted(context, PREFS_FILE) }
 
     override fun log(tag: String, logLine: String) {
         Log.i("$TAG [$tag] $logLine")
@@ -154,6 +162,19 @@ class TsAppContext(private val context: Context) : libtailscale.AppContext {
     override fun hardwareAttestationKeyLoad(id: String) = throw UnsupportedOperationException()
 
     override fun bindSocketToNetwork(fd: Int): Boolean {
+        // Bez systémové VPN by vázání na síť bez VPN znamenalo obejít VPN,
+        // kterou uživatel v telefonu má (vnitřní tunel smí jen výchozí sítí
+        // appky). Knihovna ve vnitřním režimu vázat nemá; tohle je pojistka.
+        if (!TsVpnService.isRunning() &&
+            TsModeController.modeInUse() != TsModeController.Mode.SYSTEM
+        ) {
+            if (!bindRefusalLogged) {
+                bindRefusalLogged = true
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "pokus o vázání socketu mimo VPN ve vnitřním režimu odmítnut")
+            }
+            return false
+        }
         // Záložní volba sítě nesmí sáhnout po tunelu samotném: při běžícím
         // tunelu je activeNetwork typicky právě on a řídicí sokety jádra
         // by se zacyklily do vlastního rozhraní.

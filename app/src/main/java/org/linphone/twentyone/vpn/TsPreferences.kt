@@ -20,7 +20,21 @@ class TsPreferences(context: Context) {
         private const val KEY_SLOT_LOST_REASON = "slot_lost_reason"
         private const val KEY_SLOT_LOST_AT = "slot_lost_at"
         private const val KEY_SLOT_LOST_DISMISSED_BOOT = "slot_lost_dismissed_boot"
+        const val KEY_MODE_IN_USE = "mode_in_use"
+        private const val KEY_WANT_RUNNING = "want_running"
+        private const val KEY_RELAY_SIP_PORT = "relay_sip_port"
+        private const val KEY_RELAY_HTTP_PORT = "relay_http_port"
+        private const val KEY_RELAY_PRIVATE_SIP_PORT = "relay_private_sip_port"
+        private const val KEY_RELAY_CLIENT_SRTP = "relay_client_srtp"
+        private const val KEY_SYSTEM_BLOCK_NOTIFIED = "system_block_notified"
+
+        /** Klíče, jejichž změna mění požadovaný režim tunelu (TsModeController). */
+        val MODE_KEYS = setOf(KEY_TUNNEL_ACCESS, KEY_CONTACTS_SYNC)
     }
+
+    /** Soubor předvoleb pro posluchače změn (TsModeController). */
+    val raw: android.content.SharedPreferences
+        get() = prefs
 
     /**
      * Co všechno smí do tunelu. Výchozí stupeň (jen Phone21) není volba —
@@ -150,4 +164,75 @@ class TsPreferences(context: Context) {
             .remove(KEY_SLOT_LOST_DISMISSED_BOOT)
             .commit()
     }
+
+    /**
+     * Režim, pro který jsou OPRAVDU nastavené služby a účet ve volací
+     * knihovně (TsModeController.Mode jménem). Bez záznamu (instalace
+     * z verze před vnitřním tunelem) platí SYSTEM: tehdy jiný nebyl.
+     * Zapisuje se synchronně — nový proces podle něj hned po startu ví,
+     * co má uklidit.
+     */
+    var modeInUse: String
+        get() = prefs.getString(KEY_MODE_IN_USE, null) ?: "SYSTEM"
+        set(value) {
+            prefs.edit().putString(KEY_MODE_IN_USE, value).commit()
+        }
+
+    /**
+     * Zrcadlo WantRunning z jádra tunelu. Nový proces se musí rozhodnout
+     * hned (vnitřní tunel startuje ještě před první notifikací jádra);
+     * null = verze před vnitřním tunelem, zrcadlo ještě nikdo nezapsal.
+     */
+    var wantRunning: Boolean?
+        get() = if (prefs.contains(KEY_WANT_RUNNING)) prefs.getBoolean(KEY_WANT_RUNNING, false) else null
+        set(value) {
+            if (value == null) {
+                prefs.edit().remove(KEY_WANT_RUNNING).commit()
+            } else {
+                prefs.edit().putBoolean(KEY_WANT_RUNNING, value).commit()
+            }
+        }
+
+    /**
+     * Port relé pro šifrovanou signalizaci na 127.0.0.1 (0 = zatím žádný).
+     * Předává se relé jako přání při každém startu a stejný port je v trase
+     * účtu — trasa tak platí i před startem relé (zavřená cesta).
+     */
+    var relaySipPort: Int
+        get() = prefs.getInt(KEY_RELAY_SIP_PORT, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_RELAY_SIP_PORT, value).apply()
+        }
+
+    /** Port webového relé na 127.0.0.1 (0 = libovolný). Token se NEUKLÁDÁ. */
+    var relayHttpPort: Int
+        get() = prefs.getInt(KEY_RELAY_HTTP_PORT, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_RELAY_HTTP_PORT, value).apply()
+        }
+
+    /** Port relé na adrese telefonu v privátní síti (registrace u ústředny
+     *  na něm zůstane platná i po restartu relé). 0 = libovolný. */
+    var relayPrivateSipPort: Int
+        get() = prefs.getInt(KEY_RELAY_PRIVATE_SIP_PORT, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_RELAY_PRIVATE_SIP_PORT, value).apply()
+        }
+
+    /** Chtělo poslední relé šifrovaný hlas (clientSrtp)? Do příchodu
+     *  odpovědi nového relé se podle toho nastavuje volací knihovna. */
+    var relayClientSrtp: Boolean
+        get() = prefs.getBoolean(KEY_RELAY_CLIENT_SRTP, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_RELAY_CLIENT_SRTP, value).apply()
+        }
+
+    /** Důvod, kvůli kterému naposled vyšla výzva „zapnout přístup“
+     *  (TsModeController.SystemBlock jménem); stejný důvod se po restartu
+     *  procesu ohlásí potichu. */
+    var systemBlockNotified: String
+        get() = prefs.getString(KEY_SYSTEM_BLOCK_NOTIFIED, "").orEmpty()
+        set(value) {
+            prefs.edit().putString(KEY_SYSTEM_BLOCK_NOTIFIED, value).apply()
+        }
 }
