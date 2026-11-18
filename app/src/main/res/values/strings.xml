@@ -258,6 +258,7 @@
     <string name="twentyone_access_sync_pulled">Volba přístupu převzata z miniserveru.</string>
     <string name="twentyone_access_refused">Bez souhlasu s VPN zůstává „Jen hovory“ — hovory jdou dál. Vyšší přístup potřebuje VPN, protože dává síť i ostatním aplikacím.</string>
     <string name="twentyone_system_access_refused">Bez souhlasu s VPN jdou dál jen hovory; přístup ostatních aplikací na miniserver zůstává vypnutý.</string>
+    <string name="twentyone_call_ended_vpn_lost">Hovor ukončen: VPN převzala jiná aplikace nebo ji vypnul systém a hovor by dál šel mimo šifrovaný tunel. Zavolej znovu — hovory teď jdou tunelem uvnitř aplikace.</string>
     <!-- fork: kam se ukládají nové kontakty -->
     <string name="twentyone_contacts_title">Kontakty</string>
     <string name="twentyone_contacts_target_label">Nové kontakty ukládat do: %s</string>
