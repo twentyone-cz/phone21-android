@@ -722,7 +722,21 @@ class TwentyOneTunnelFragment : Fragment() {
             TsManager.login(TsManager.prefs.controlUrl, null)
             return
         }
-        confirmOtherVpn { doWebLogin() }
+        confirmOtherVpn(onCancel = { takeoverDeclined(webLogin = true) }) { doWebLogin() }
+    }
+
+    /**
+     * Uživatel převzetí místa od jiné VPN nepotvrdil. Tunel přesto běží:
+     * hovory jedou vnitřním tunelem s výzvou „Zapnout přístup“ (stejně jako
+     * po odmítnutém systémovém dialogu), místo pro VPN se nebere.
+     */
+    private fun takeoverDeclined(webLogin: Boolean) {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "převzetí místa nepotvrzeno — hovory pojedou vnitřním tunelem, přístup čeká na souhlas")
+        TsManager.startService(userInitiated = false)
+        if (webLogin || needsNewCode() || TsManager.loggedIn.value != true) {
+            TsManager.login(TsManager.prefs.controlUrl, null)
+        }
     }
 
     private fun doWebLogin() {
@@ -756,7 +770,7 @@ class TwentyOneTunnelFragment : Fragment() {
         }
         // Ztracené místo pro VPN se tu NEruší: zruší ho až služba, když
         // rozhraní opravdu stojí.
-        confirmOtherVpn { doConnect() }
+        confirmOtherVpn(onCancel = { takeoverDeclined(webLogin = false) }) { doConnect() }
     }
 
     private fun doConnect() {
