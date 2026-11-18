@@ -36,7 +36,7 @@ port=443
 [misc]
 log_collection_upload_server_url=
 file_transfer_server_url=
-version_check_url_root=https://download.linphone.org/releases
+version_check_url_root=
 max_calls=10
 history_max_size=100
 conference_layout=1

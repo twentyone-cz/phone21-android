@@ -29,10 +29,10 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/mipmap*`, splash drawables | ikony | brand |
 | `app/src/main/res/navigation/assistant_nav_graph.xml` | startDestination | onboarding |
 | `app/src/main/assets/linphonerc_factory` | [ui]/[app] klíče | onboarding |
-| `app/src/main/assets/linphonerc_default` | vyprázdněné servery upstreamu | onboarding |
+| `app/src/main/assets/linphonerc_default` | vyprázdněné servery upstreamu (logy, soubory, kontrola aktualizací) | onboarding |
 | `app/src/main/AndroidManifest.xml` | SMS role, ConnectionService, VpnService | telecom/sms/vpn |
 | `app/src/main/res/navigation/main_nav_graph.xml` | cíl obrazovky tunelu | vpn |
-| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager; úklid v `onConfiguringStatus` | sync/vpn/provisioning |
+| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager; úklid v `onConfiguringStatus`; migrace nedoplňuje server pro nahrání logů a při startu se mažou servery upstreamu (`TwentyOneUpstreamServers`) | sync/vpn/provisioning/soukromí |
 | `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (postup je v interních poznámkách) | vpn |
 | `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
 | `app/src/main/java/org/linphone/LinphoneApplication.kt` | jazyk aplikace = čeština; zápis pádů do deníku | brand/diagnostika |
