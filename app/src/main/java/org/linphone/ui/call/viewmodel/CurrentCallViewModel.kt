@@ -1063,8 +1063,7 @@ class CurrentCallViewModel
             }
         }
         isViaPrivateNetwork.postValue(
-            currentCall.currentParams.mediaEncryption == MediaEncryption.None &&
-                org.linphone.twentyone.TwentyOneCallPrivacy.viaPrivateNetwork(currentCall)
+            org.linphone.twentyone.TwentyOneCallPrivacy.showsPrivateNetworkLabel(currentCall)
         )
         waitingForEncryptionInfo.postValue(false)
         callMediaEncryptionModel.update(currentCall)
@@ -1085,9 +1084,7 @@ class CurrentCallViewModel
 
         val state = call.state
         if (LinphoneUtils.isCallOutgoing(state) || LinphoneUtils.isCallIncoming(state)) {
-            if (call.currentParams.mediaEncryption == MediaEncryption.None &&
-                !org.linphone.twentyone.TwentyOneCallPrivacy.viaPrivateNetwork(call)
-            ) {
+            if (org.linphone.twentyone.TwentyOneCallPrivacy.waitsForEncryption(call)) {
                 waitingForEncryptionInfo.postValue(true)
                 isMediaEncrypted.postValue(false)
             } else {
