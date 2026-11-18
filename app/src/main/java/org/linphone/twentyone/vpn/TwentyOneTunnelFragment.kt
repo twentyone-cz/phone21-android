@@ -1119,6 +1119,8 @@ class TwentyOneTunnelFragment : Fragment() {
         val sync = TsServerAccess.syncState(TsManager.prefs)
         val writing = sync == TsServerAccess.SyncState.WRITING
         for (button in accessButtons.values) button.isEnabled = !writing
+        // text voleb má pevnou barvu (bez stavu „vypnuto“) — zašednout celou skupinu
+        accessGroup.alpha = if (writing) 0.5f else 1f
         accessSyncRow.visibility =
             if (sync == TsServerAccess.SyncState.SYNCED) View.GONE else View.VISIBLE
         accessSyncProgress.visibility = if (writing) View.VISIBLE else View.GONE
