@@ -41,7 +41,7 @@ class TwentyOneConfigLinkActivity : AppCompatActivity() {
          */
         @UiThread
         fun ask(activity: Activity, url: String) {
-            if (!isWeb(url)) {
+            if (!TwentyOneProvisioning.isWebUrl(url)) {
                 Log.w("$TAG Config link does not point to a web address, ignoring it")
                 TwentyOneDiag.log("P21-CFG", "odkaz s konfigurací zvenku nemíří na web — nepoužit")
                 return
@@ -63,9 +63,6 @@ class TwentyOneConfigLinkActivity : AppCompatActivity() {
                 }
             }
         }
-
-        private fun isWeb(url: String): Boolean =
-            url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
 
         /** Adresa pro dialog a deník: hostitel (cizí písma jako xn--…)
          *  a port, nikdy cesta (nese jednorázový token). */

@@ -19,6 +19,12 @@
  * přijde až po potvrzení adresy (TwentyOneConfigLinkActivity); skener
  * v appce a ruční adresa v nastavení se neptají. Relé smí na miniserver
  * z odkazu jen po dobu stažení (TsRelay.allowQrHost/clearQrHost).
+ *
+ * Ruční „vzdálená konfigurace“ v Pokročilém nastavení: webovou adresu
+ * stahuje taky tenhle kód. Adresu uloženou ve volací knihovně (config-uri)
+ * si knihovna stahuje sama při každém startu jádra výchozí sítí — do
+ * privátní sítě tedy jen pod naší systémovou VPN; jinak se neuloží a před
+ * startem jádra se smaže ([dropPrivateConfigUri]).
  */
 package org.linphone.twentyone
 
@@ -53,6 +59,77 @@ object TwentyOneProvisioning {
      *  do logů (oba otevírají účet, dokud platí). */
     fun redact(url: String): String =
         url.replace(pathTokenRegex, "$1…").replace(joinKeyParamRegex, "$1…")
+
+    /** Webová adresa (http/https) — tu stahuje appka sama. */
+    fun isWebUrl(url: String): Boolean =
+        url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
+
+    /** Míří adresa konfigurace do privátní sítě? Číselná adresa (nic se
+     *  nepřekládá), i bez schématu; file:// ne. */
+    fun pointsIntoPrivateNetwork(uri: String): Boolean {
+        val u = uri.trim()
+        if (u.isEmpty() || u.startsWith("file:", ignoreCase = true)) return false
+        val withScheme = if (u.contains("://")) u else "http://" + u.removePrefix("//")
+        val host = try {
+            android.net.Uri.parse(withScheme).host
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        return TwentyOneCallPrivacy.isPrivateNetworkAddress(host.removePrefix("[").removeSuffix("]"))
+    }
+
+    /** Hostitel a port adresy pro deník — nikdy cesta (nese token). */
+    private fun hostPort(uri: String): String = try {
+        val u = android.net.Uri.parse(if (uri.contains("://")) uri else "http://$uri")
+        val h = u.host.orEmpty().ifEmpty { "?" }
+        if (u.port > 0) "$h:${u.port}" else h
+    } catch (_: Exception) {
+        "?"
+    }
+
+    /** Smí volací knihovna sama na adresu v privátní síti? Jen když ji
+     *  vezme rozhraní naší systémové VPN, které opravdu stojí. */
+    private fun libraryReachesPrivateNetwork(): Boolean =
+        TsModeController.modeInUse() == TsModeController.Mode.SYSTEM &&
+            org.linphone.twentyone.vpn.TsManager.isSystemVpnUp()
+
+    /**
+     * Smí se [uri] uložit jako adresa konfigurace volací knihovny? Adresa
+     * v privátní síti jen pod naší systémovou VPN; odmítnutí zapíše do
+     * deníku (bez cesty). Vlákno jádra.
+     */
+    @androidx.annotation.WorkerThread
+    fun mayStoreConfigUri(uri: String): Boolean {
+        if (!pointsIntoPrivateNetwork(uri) || libraryReachesPrivateNetwork()) return true
+        Log.w("$TAG Not storing provisioning URI [${redact(uri)}]: private network outside the system VPN")
+        TwentyOneDiag.log(
+            "P21-CFG",
+            "adresa konfigurace v nastavení (%s) míří do privátní sítě mimo systémovou VPN — neuložena, stáhne ji jen tlačítko stažení"
+                .format(hostPort(uri))
+        )
+        return false
+    }
+
+    /**
+     * Pojistka před každým startem jádra: uložená adresa konfigurace
+     * v privátní síti mimo naši systémovou VPN by se stáhla výchozí sítí
+     * (jinou VPN nebo k operátorovi) nešifrovaně, i s jednorázovým tokenem.
+     * Smazat ji, jeden zápis do deníku bez cesty. Vlákno jádra, před
+     * core.start() — konfigurace se stahuje uvnitř startu.
+     */
+    @androidx.annotation.WorkerThread
+    fun dropPrivateConfigUri(core: org.linphone.core.Core) {
+        val uri = core.provisioningUri
+        if (uri.isNullOrEmpty() || !pointsIntoPrivateNetwork(uri)) return
+        if (libraryReachesPrivateNetwork()) return
+        core.provisioningUri = null
+        Log.w("$TAG Dropped provisioning URI [${redact(uri)}]: private network outside the system VPN")
+        TwentyOneDiag.log(
+            "P21-CFG",
+            "uložená adresa konfigurace (%s) míří do privátní sítě mimo systémovou VPN — smazána před startem jádra"
+                .format(hostPort(uri))
+        )
+    }
 
     /** Odkaz bez části za # a klíč do sítě z ní (prázdný, když tam není). */
     internal fun splitJoinKey(url: String): Pair<String, String> {
