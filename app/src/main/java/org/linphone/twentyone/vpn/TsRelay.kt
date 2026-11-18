@@ -131,6 +131,11 @@ object TsRelay {
     @Volatile
     private var runningTargets: String? = null
 
+    /** Cíle webového relé, se kterými současné relé běží (TsHttp čeká,
+     *  až mezi nimi bude ten svůj). */
+    @Volatile
+    private var runningHttpHosts: Set<String> = emptySet()
+
     // jen na vlákně [exec]
     private var lastError = ""
     private var errorSince = 0L
@@ -226,6 +231,35 @@ object TsRelay {
         if (!TwentyOneCallPrivacy.isPrivateNetworkAddress(h)) return
         if (extraHttpHosts.add(h)) poke()
     }
+
+    /**
+     * Webové relé, které smí na [host] (adresa v privátní síti): cíl doplní
+     * a počká nejvýš [waitMs], až relé běží a cíl převzalo (restart relé
+     * s novým cílem se během hovoru odkládá). null = relé neběží nebo na
+     * cíl zatím nesmí. Jen z pracovního vlákna — spí. Token nikam neukládat
+     * ani nelogovat.
+     */
+    @androidx.annotation.WorkerThread
+    fun httpEndpointFor(host: String, waitMs: Long): Pair<Int, String>? {
+        val h = host.trim().removePrefix("[").removeSuffix("]")
+        addHttpHost(h)
+        val deadline = android.os.SystemClock.elapsedRealtime() + waitMs
+        while (true) {
+            val ep = httpEndpoint()
+            if (ep != null && h in runningHttpHosts) return ep
+            if (android.os.SystemClock.elapsedRealtime() >= deadline) return null
+            poke()
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                return null
+            }
+        }
+    }
+
+    /** Tajné hodnoty v paměti, které se nesmí dostat do uloženého logu
+     *  (TwentyOneLogScrub je v něm nahradí). */
+    fun secretsForScrub(): List<String> = listOfNotNull(token)
 
     /** Statistika relé (jen počty, bez osobních údajů); "{}" = neběží. */
     fun statsJson(): String = try {
@@ -387,9 +421,11 @@ object TsRelay {
         }
         val upstream = upstreamHost() ?: return
         val p = TsPreferences(context())
+        // jednou: co dostane relé, to se zapamatuje jako povolené cíle
+        val hosts = httpHosts()
         val cfg = JSONObject()
             .put("upstreamSip", "$upstream:$UPSTREAM_SIP_PORT")
-            .put("httpHosts", JSONArray(httpHosts().toList()))
+            .put("httpHosts", JSONArray(hosts.toList()))
             .put("serverCertPem", id.serverCertPem)
             .put("serverKeyPem", id.serverKeyPem)
             .put("clientCertPem", id.clientCertPem)
@@ -431,6 +467,7 @@ object TsRelay {
         token = o.optString("httpToken", "").ifEmpty { null }
         info = newInfo
         runningTargets = targets
+        runningHttpHosts = hosts
         retryMs = 0L
         lastRejected = 0L
         lastForbidden = 0L
@@ -467,6 +504,7 @@ object TsRelay {
             info = null
             token = null
             runningTargets = null
+            runningHttpHosts = emptySet()
             publish(false)
         }
     }
