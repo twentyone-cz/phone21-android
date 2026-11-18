@@ -209,6 +209,9 @@ object TsManager {
     @Volatile
     private var transportUpNow = false
 
+    /** Zámek pro updateTransport (volá se z několika vláken). */
+    private val transportLock = Any()
+
     /** Jádro tunelu bere síť (DNS, rozhraní) z výchozí sítě appky, ne ze
      *  sítě bez VPN — ve vnitřním režimu tak jede přes jinou VPN. */
     @Volatile
@@ -787,8 +790,11 @@ object TsManager {
         startForeground(TsVpnService::class.java, TsVpnService.ACTION_START, "službu tunelu")
 
     /** Spustí službu vnitřního tunelu (volá TsModeController). */
-    fun startTunnelServiceNow(): Boolean =
-        startForeground(TsTunnelService::class.java, TsTunnelService.ACTION_START, "službu vnitřního tunelu")
+    fun startTunnelServiceNow(): Boolean {
+        val ok = startForeground(TsTunnelService::class.java, TsTunnelService.ACTION_START, "službu vnitřního tunelu")
+        if (ok) TsTunnelService.markStartPending()
+        return ok
+    }
 
     private fun startForeground(cls: Class<*>, action: String, what: String): Boolean {
         val intent = Intent(appContext, cls).apply { this.action = action }
@@ -821,9 +827,12 @@ object TsManager {
         if (TsVpnService.isRunning()) sendToService(TsVpnService::class.java, TsVpnService.ACTION_HANDOVER)
     }
 
-    /** Přepnutí na systémovou VPN: služba vnitřního tunelu jen zhasne. */
+    /** Přepnutí na systémovou VPN: služba vnitřního tunelu jen zhasne.
+     *  I službě, jejíž start ještě nedoběhl (systém pokyn doručí po STARTu). */
     fun handOverTunnelService() {
-        if (TsTunnelService.isRunning()) sendToService(TsTunnelService::class.java, TsTunnelService.ACTION_HANDOVER)
+        if (TsTunnelService.isRunning() || TsTunnelService.isStartPending()) {
+            sendToService(TsTunnelService::class.java, TsTunnelService.ACTION_HANDOVER)
+        }
     }
 
     /**
@@ -835,7 +844,9 @@ object TsManager {
         setWantRunning(false)
         TsRelay.stopInternal()
         if (TsVpnService.isRunning()) sendToService(TsVpnService::class.java, TsVpnService.ACTION_STOP)
-        if (TsTunnelService.isRunning()) sendToService(TsTunnelService::class.java, TsTunnelService.ACTION_STOP)
+        if (TsTunnelService.isRunning() || TsTunnelService.isStartPending()) {
+            sendToService(TsTunnelService::class.java, TsTunnelService.ACTION_STOP)
+        }
         TsModeController.reconcile("vypnutí")
     }
 
@@ -946,17 +957,23 @@ object TsManager {
      *  skutečným PŘED ohlášením cesty (posluchači čtou oba; po přestavbě by
      *  jinak visel na STOPPING z onServiceClosing). */
     private fun updateTransport() {
-        val up = when (TsModeController.modeInUse()) {
-            TsModeController.Mode.SYSTEM -> vpnActiveNow
-            TsModeController.Mode.INTERNAL -> TsRelay.isUp()
-            TsModeController.Mode.OFF -> false
+        // Volá se z vlákna relé, jádra, hlavního i knihovny tunelu: bez
+        // zámku by volající se zastaralým čtením mohl přepsat čerstvé
+        // „cesta stojí“ (relé pak už nic nehlásí, registrace by zůstala
+        // vypnutá). Pod zámkem počítá vždy ten poslední ze stavu, jaký je.
+        synchronized(transportLock) {
+            val up = when (TsModeController.modeInUse()) {
+                TsModeController.Mode.SYSTEM -> vpnActiveNow
+                TsModeController.Mode.INTERNAL -> TsRelay.isUp()
+                TsModeController.Mode.OFF -> false
+            }
+            if (up && state.value != currentState) {
+                state.postValue(currentState)
+            }
+            if (up == transportUpNow) return
+            transportUpNow = up
+            transportUp.postValue(up)
         }
-        if (up && state.value != currentState) {
-            state.postValue(currentState)
-        }
-        if (up == transportUpNow) return
-        transportUpNow = up
-        transportUp.postValue(up)
     }
 
     fun onServiceClosing() {
