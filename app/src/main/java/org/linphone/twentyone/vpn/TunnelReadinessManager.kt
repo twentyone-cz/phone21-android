@@ -123,6 +123,8 @@ class TunnelReadinessManager {
             if (!gateway.equals(prefs.gatewayAddress, ignoreCase = true)) {
                 // jiná brána než minule → poslední známý identifikátor neplatí
                 prefs.gatewayStableId = ""
+                // a nezapsaný stupeň patřil jinému miniserveru
+                prefs.accessPushPending = ""
             }
             prefs.gatewayAddress = gateway
             org.linphone.twentyone.TwentyOneDiag.log(

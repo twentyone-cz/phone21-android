@@ -259,7 +259,7 @@
     <string name="twentyone_access_internet_paused">Vše přes miniserver: dočasně vypnuto, spojení jde přes přenosový uzel.</string>
     <string name="twentyone_access_sync_no_token">Na miniserveru se volba nezměnila — načti do telefonu znovu QR kód z ovládání (záložka Telefon), pak to půjde i odsud.</string>
     <string name="twentyone_access_sync_unauthorized">Miniserver změnu odmítl — po změně hesla telefonu načti nový QR kód z ovládání.</string>
-    <string name="twentyone_access_sync_failed">Miniserver teď není dosažitelný — volba zatím platí jen v telefonu. Zkus ji přepnout znovu, až bude síť připojená.</string>
+    <string name="twentyone_access_sync_failed">Miniserver teď není dosažitelný — volba zatím platí jen v telefonu. Na miniserver se zapíše sama, jakmile bude spojení stát.</string>
     <string name="twentyone_access_sync_pulled">Volba přístupu převzata z miniserveru.</string>
     <string name="twentyone_access_refused">Bez souhlasu s VPN zůstává „Jen hovory“ — hovory jdou dál. Vyšší přístup potřebuje VPN, protože dává síť i ostatním aplikacím.</string>
     <string name="twentyone_system_access_refused">Bez souhlasu s VPN jdou dál jen hovory; přístup ostatních aplikací na miniserver zůstává vypnutý.</string>

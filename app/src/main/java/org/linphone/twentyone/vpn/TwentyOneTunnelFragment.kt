@@ -1137,9 +1137,17 @@ class TwentyOneTunnelFragment : Fragment() {
      */
     private fun pullAccess() {
         if (askingAccess || pending != null) return
+        // Volba z telefonu na miniserver ještě nedošla: miniserver drží
+        // starší stupeň a převzetí by novější volbu z telefonu přepsalo.
+        // Místo čtení ji zkusit zapsat znovu.
+        if (TsServerAccess.hasPending(TsManager.prefs)) {
+            TsServerAccess.retryPending(TsManager.prefs)
+            return
+        }
         TsServerAccess.pull(TsManager.prefs) { result, level ->
             if (result != TsServerAccess.Result.OK || level == null || !isAdded) return@pull
             if (askingAccess || pending != null) return@pull
+            if (TsServerAccess.hasPending(TsManager.prefs)) return@pull
             if (level != TsManager.prefs.tunnelAccess) {
                 requestAccess(level, fromServer = true)
             }
