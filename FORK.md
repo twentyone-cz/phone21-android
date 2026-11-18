@@ -62,6 +62,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/xml/data_extraction_rules.xml` | záloha aplikace vypnuta | bezpečnost |
 | `app/src/main/AndroidManifest.xml` | cleartext HTTP, `allowBackup=false` | provisioning/bezpečnost |
 | `app/src/main/AndroidManifest.xml` | TsConsentActivity bez přestavby při otočení (`configChanges`), přijímač odmetení upozornění „Hovory nechodí“ | vpn |
+| `app/src/main/AndroidManifest.xml` | služba `TsTunnelService` (vnitřní tunel; popředí `specialUse` s podtypem, `exported=false`, `stopWithTask=false`) | vpn |
 | `app/src/main/java/org/linphone/ui/call/viewmodel/CurrentCallViewModel.kt`, `res/layout/call_media_encryption_info.xml` | štítek „Šifrováno do miniserveru“ u hovoru přes privátní síť (`TwentyOneCallPrivacy`) | hovory |
 | `app/src/main/res/values/strings.xml` | vlastní texty `twentyone_*` (obrazovky, upozornění a hlášky forku) | vpn/sms/diagnostika/hovory |
 
@@ -148,7 +149,11 @@ se z klonu vrátí zpátky (`TunnelReadinessManager.onConfiguring`).
 
 **Klient sítě:** `app/libs/libtailscale.aar` je postavené z `tailscale.com`
 v1.104.7 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.104.7`,
-dlouhá verze `1.104.7-tfb3b9b296-g226f029a3`). Koordinátor headscale 0.29.7
+dlouhá verze `1.104.7-tfb3b9b296-gcdd6a9da2`; do 21p.45 `-g226f029a3`).
+Od vnitřního tunelu nese vlastní záplatu (vnitřní režim bez systémové VPN
+a relé na 127.0.0.1); appka volá `requestInternal`, `stopInternal`,
+`internalStatus`, `startRelay`, `stopRelay`, `relayStats`,
+`generateRelayIdentity` (`vpn/TsRelay.kt`). Koordinátor headscale 0.29.7
 vyžaduje klienta ≥ 1.80, jeho peer relay klienta ≥ 1.86 — splněno.
 
 ### QR na dálku: klíč do sítě v odkazu (21p.37)
@@ -189,6 +194,20 @@ vybrané brány — je to ZÁZNAM do deníku P21-TUN, ne záloha, ze které by s
 nasazovat; při změně `gateway_address` se maže, ať se nikdy nepřenese do jiné
 sítě). Klíč `tunnel_scope` zůstává jen kvůli migraci, mrtvý enum `TunnelScope`
 je od 21p.34 pryč.
+
+Režim tunelu (`vpn/TsModeController.kt`): prefs `twentyone_tunnel_settings`
+navíc `mode_in_use` (OFF/INTERNAL/SYSTEM — pro co jsou nastavené služby
+a účet; bez záznamu SYSTEM), `want_running` (zrcadlo WantRunning jádra
+tunelu), `relay_sip_port`, `relay_http_port`, `relay_private_sip_port`,
+`relay_client_srtp` (porty a šifrování hlasu posledního relé; token se
+neukládá), `system_block_notified` (poslední důvod výzvy „zapnout
+přístup“). Šifrované prefs `twentyone_relay`: `p21relay-identity`
+(certifikáty a klíče relé a volací knihovny). V `linphonerc` sekce
+`[twentyone]` klíč `internal_media` (šifrování hlasu zapnul vnitřní režim)
+a ve vnitřním režimu `[rtp] bind_address=127.0.0.1`, transporty UDP 0,
+TCP 0, TLS -2, šifrování hlasu SRTP povinné (`[sip] srtp_crypto_suites`
+jen `AES_CM_128_HMAC_SHA1_80`), trasa účtu na `127.0.0.1` a vlastní
+politika NAT účtu — systémový režim je vrací.
 
 Prefs `twentyone_battery`: `asked` — dialog o běhu na pozadí se nabízí
 jednou po nastavení účtu, stav je pak vidět na Konexi.
