@@ -16,6 +16,7 @@ class TsPreferences(context: Context) {
         private const val KEY_GATEWAY_ADDRESS = "gateway_address"
         private const val KEY_GATEWAY_STABLE_ID = "gateway_stable_id"
         private const val KEY_ACCESS_TOKEN = "access_token"
+        private const val KEY_ACCESS_PUSH_PENDING = "access_push_pending"
         private const val KEY_SLOT_LOST = "slot_lost"
         private const val KEY_SLOT_LOST_REASON = "slot_lost_reason"
         private const val KEY_SLOT_LOST_AT = "slot_lost_at"
@@ -121,6 +122,20 @@ class TsPreferences(context: Context) {
         get() = prefs.getString(KEY_ACCESS_TOKEN, "").orEmpty()
         set(value) {
             prefs.edit().putString(KEY_ACCESS_TOKEN, value).commit()
+        }
+
+    /**
+     * Stupeň změněný v telefonu, který se ještě nepodařilo zapsat na
+     * miniserver (jméno [TunnelAccess], "" = nic nečeká). Dokud čeká,
+     * telefon stupeň z miniserveru nepřebírá (starší volba ze serveru by
+     * přepsala novější z telefonu) a zápis se zkouší znovu, jakmile cesta
+     * k miniserveru stojí (TsServerAccess). Synchronně: musí přežít zabití
+     * procesu hned po změně.
+     */
+    var accessPushPending: String
+        get() = prefs.getString(KEY_ACCESS_PUSH_PENDING, "").orEmpty()
+        set(value) {
+            prefs.edit().putString(KEY_ACCESS_PUSH_PENDING, value).commit()
         }
 
     /**
