@@ -272,6 +272,7 @@ class TwentyOneDiagFragment : Fragment() {
         fun c(key: String) = counters.optLong(key, 0L)
         sb.append("relé: signalizace 127.0.0.1:").append(info.sipPort)
             .append(", web ").append(info.httpPort)
+            .append(if (info.httpTls) " šifrovaný" else " NEšifrovaný (nepoužit)")
             .append(", hlas ").append(if (info.clientSrtp) "šifrovaný" else "NEšifrovaný")
             .append(", volací knihovna ")
             .append(
@@ -297,9 +298,11 @@ class TwentyOneDiagFragment : Fragment() {
         }
         val rejected = c("client.rejected")
         val forbidden = c("http.forbidden_token")
-        if (rejected > 0 || forbidden > 0) {
+        val tlsFailed = c("http.tls_failed")
+        if (rejected > 0 || forbidden > 0 || tlsFailed > 0) {
             sb.append("  cizí klient na 127.0.0.1: bez certifikátu ").append(rejected)
-                .append(", bez tokenu ").append(forbidden).append(" [P21-E23]\n")
+                .append(", bez tokenu ").append(forbidden)
+                .append(", web bez šifrování ").append(tlsFailed).append(" [P21-E23]\n")
         }
         val upErr = c("http.upstream_error") + c("http.rejected_target")
         sb.append("  web: požadavků ").append(c("http.requests"))
