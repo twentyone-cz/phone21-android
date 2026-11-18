@@ -1066,6 +1066,11 @@ class SettingsViewModel
         coreContext.postOnCoreThread { core ->
             val newProvisioningUri = remoteProvisioningUrl.value.orEmpty().trim()
             if (newProvisioningUri != core.provisioningUri) {
+                // fork: adresu v privátní síti by volací knihovna stáhla
+                // výchozí sítí — uložit jen pod naší systémovou VPN
+                if (!org.linphone.twentyone.TwentyOneProvisioning.mayStoreConfigUri(newProvisioningUri)) {
+                    return@postOnCoreThread
+                }
                 Log.i("$TAG Updating remote provisioning URI to [${org.linphone.twentyone.TwentyOneProvisioning.redact(newProvisioningUri)}]")
                 if (newProvisioningUri.isEmpty()) {
                     core.provisioningUri = null
@@ -1078,12 +1083,27 @@ class SettingsViewModel
 
     @UiThread
     fun downloadAndApplyRemoteProvisioning() {
+        // fork: webovou adresu stáhne appka sama (do privátní sítě jen
+        // tunelem, ve vnitřním režimu přes relé), ne volací knihovna;
+        // odkaz je jednorázový, v poli nezůstává
+        val webUrl = remoteProvisioningUrl.value.orEmpty().trim()
+        if (org.linphone.twentyone.TwentyOneProvisioning.isWebUrl(webUrl)) {
+            remoteProvisioningUrl.value = ""
+            org.linphone.twentyone.TwentyOneProvisioning.fetchAndApply(webUrl) { reason ->
+                coreContext.showFormattedRedToastEvent.postValue(
+                    Event(Pair(reason, R.drawable.warning_circle))
+                )
+            }
+            return
+        }
         Log.i("$TAG Updating remote provisioning URI now and then download/apply it")
         updateRemoteProvisioningUrl()
         coreContext.postOnCoreThread {
             Log.i("$TAG Restarting the Core to apply configuration changes")
             coreContext.core.stop()
             Log.i("$TAG Core has been stopped, restarting it")
+            // fork: pojistka před startem jádra (adresa v privátní síti)
+            org.linphone.twentyone.TwentyOneProvisioning.dropPrivateConfigUri(coreContext.core)
             coreContext.core.start()
             Log.i("$TAG Core has been restarted")
         }

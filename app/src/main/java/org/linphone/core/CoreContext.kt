@@ -730,6 +730,8 @@ class CoreContext
 
         computeUserAgent()
         Log.i("$TAG Core has been configured with user-agent [${core.userAgent}], starting it")
+        // fork: pojistka — adresa konfigurace v privátní síti mimo systémovou VPN pryč
+        org.linphone.twentyone.TwentyOneProvisioning.dropPrivateConfigUri(core)
         core.start()
     }
 
