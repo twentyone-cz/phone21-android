@@ -537,9 +537,10 @@ object TsModeController {
     @WorkerThread
     private fun privateNetworkCalls(core: Core): List<Call> = core.calls.filter { call ->
         val account = call.params.account ?: core.defaultAccount
-        val server = account?.params?.serverAddress?.domain
+        // i účet, jehož adresa serveru míří na relé (vnitřní režim)
+        val server = account?.let { TsSipTransport.miniserverHost(it) }
         val remote = call.remoteAddress.domain
-        (server != null && TwentyOneCallPrivacy.isPrivateNetworkAddress(server)) ||
+        server != null ||
             (remote != null && TwentyOneCallPrivacy.isPrivateNetworkAddress(remote))
     }
 

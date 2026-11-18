@@ -29,8 +29,10 @@ object TwentyOneCallPrivacy {
     @WorkerThread
     fun viaPrivateNetwork(call: Call): Boolean {
         val account = accountOf(call) ?: return false
-        val host = account.params.serverAddress?.domain ?: return false
-        return isPrivateNetworkAddress(host) && TsManager.isTunnelUp()
+        // ve vnitřním režimu míří adresa serveru na relé — miniserver je
+        // v účtu uložený zvlášť
+        org.linphone.twentyone.vpn.TsSipTransport.miniserverHost(account) ?: return false
+        return TsManager.isTunnelUp()
     }
 
     /**

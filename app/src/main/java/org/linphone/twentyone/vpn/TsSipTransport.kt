@@ -18,7 +18,14 @@
  * smaže a uložený stav [applied] by to neviděl).
  *
  * Stojí na chování volací knihovny 5.5.13 (rozbor v interní dokumentaci):
- * klientský certifikát a připnutý certifikát relé (setTlsCert/setTlsKey,
+ * REGISTER jde VŽDY na adresu serveru účtu a trasu účtu ignoruje
+ * (SalRegisterOp::sendRegister přepíše trasu adresou serveru) — ve
+ * vnitřním režimu proto míří na relé i adresa serveru, ne jen trasa;
+ * původní adresa miniserveru se uloží do účtu ([SERVER_PARAM]) a vrací se
+ * v systémovém režimu. Bez toho REGISTER mířil na UDP miniserveru, které
+ * je ve vnitřním režimu vypnuté, a knihovna hlásila „Registration failed“,
+ * aniž co odeslala (test 21p.45-test1, 2026-11-18).
+ * Klientský certifikát a připnutý certifikát relé (setTlsCert/setTlsKey,
  * setRootCaData) se neukládají — po každém startu jádra znovu; připnutí
  * nahrazuje kořenové certifikáty pro VŠECHNA šifrovaná spojení knihovny;
  * samotná změna trasy registraci nezopakuje; TLS -2 = jen klient bez
@@ -46,6 +53,10 @@ object TsSipTransport {
     private const val SRTP_SUITE = "AES_CM_128_HMAC_SHA1_80"
 
     private const val MARK_SECTION = "twentyone"
+
+    /** Vlastní parametr účtu: původní adresa serveru (miniserver v privátní
+     *  síti), dokud adresa serveru míří na relé. Ukládá se s účtem. */
+    private const val SERVER_PARAM = "twentyone_server"
 
     /** Značka „šifrování hlasu zapnul vnitřní režim“ — vrací se jen to, co
      *  jsme sami nastavili. */
@@ -146,16 +157,33 @@ object TsSipTransport {
         }
     }
 
-    private fun isPrivate(account: Account): Boolean {
-        val host = account.params.serverAddress?.domain ?: return false
-        return TwentyOneCallPrivacy.isPrivateNetworkAddress(host)
+    /**
+     * Miniserver účtu v privátní síti: doména adresy serveru, nebo — když
+     * adresa serveru míří na relé — doména uložené původní adresy. null =
+     * účet mimo privátní síť.
+     */
+    fun miniserverHost(account: Account): String? {
+        val params = account.params
+        val host = params.serverAddress?.domain ?: return null
+        if (TwentyOneCallPrivacy.isPrivateNetworkAddress(host)) return host
+        if (host != RELAY_HOST) return null
+        return savedServer(params)?.domain
+            ?.takeIf { TwentyOneCallPrivacy.isPrivateNetworkAddress(it) }
     }
 
-    /** Ústředna pro relé: doména výchozího účtu, jinak prvního v privátní síti. */
+    private fun savedServer(params: org.linphone.core.AccountParams): org.linphone.core.Address? {
+        val saved = params.getCustomParam(SERVER_PARAM)
+        if (saved.isNullOrEmpty()) return null
+        return Factory.instance().createAddress(saved)
+    }
+
+    private fun isPrivate(account: Account): Boolean = miniserverHost(account) != null
+
+    /** Ústředna pro relé: miniserver výchozího účtu, jinak prvního v privátní síti. */
     private fun rememberTargets(core: Core) {
         val def = core.defaultAccount?.takeIf { isPrivate(it) }
         val acc = def ?: core.accountList.firstOrNull { isPrivate(it) }
-        TsRelay.setSipHost(acc?.params?.serverAddress?.domain)
+        TsRelay.setSipHost(acc?.let { miniserverHost(it) })
     }
 
     private fun isOurNatPolicy(np: NatPolicy?): Boolean =
@@ -174,23 +202,34 @@ object TsSipTransport {
         var changed = false
         var reRegister = false
 
-        // 1) trasa na relé, bez obchozí proxy, vlastní politika NAT bez
-        //    STUN/ICE/TURN (kandidáti by do SDP přinesli adresy wifi,
-        //    mobilních dat i cizí VPN a STUN by šel na cizí server)
+        // 1) adresa serveru i trasa na relé (REGISTER jde na adresu serveru,
+        //    ostatní žádosti trasou), vlastní politika NAT bez STUN/ICE/TURN
+        //    (kandidáti by do SDP přinesli adresy wifi, mobilních dat i cizí
+        //    VPN a STUN by šel na cizí server). Relé adresu 127.0.0.1
+        //    v cíli žádosti přepíše na miniserver.
+        val server = Factory.instance().createAddress("sip:$RELAY_HOST:$port;transport=tls")
         val route = Factory.instance().createAddress("sip:$RELAY_HOST:$port;transport=tls;lr")
-        if (route == null) {
+        if (server == null || route == null) {
             Log.e("$TAG Cannot build relay route")
             return false
         }
         for (account in private) {
             val params = account.params
+            val current = params.serverAddress
+            val sameServer = current?.asStringUriOnly() == server.asStringUriOnly()
             val routes = params.routesAddresses
             val sameRoute = routes.size == 1 && routes[0].asStringUriOnly() == route.asStringUriOnly()
             val natOk = isOurNatPolicy(params.natPolicy)
-            if (sameRoute && natOk && !params.isOutboundProxyEnabled) continue
+            if (sameServer && sameRoute && natOk) continue
             val copy = params.clone()
-            copy.isOutboundProxyEnabled = false
-            if (!sameRoute) copy.setRoutesAddresses(arrayOf(route))
+            // původní adresu uložit, dokud ještě míří na miniserver (po
+            // nové konfiguraci z QR ji znovu přepíše aktuální)
+            if (current != null && current.domain != RELAY_HOST) {
+                copy.addCustomParam(SERVER_PARAM, current.asStringUriOnly())
+            }
+            // nejdřív server (při zapnuté obchozí proxy přepíše i trasu), pak trasa
+            if (!sameServer) copy.serverAddress = server
+            if (!sameRoute || !sameServer) copy.setRoutesAddresses(arrayOf(route))
             if (!natOk) {
                 copy.natPolicy = core.createNatPolicy().apply {
                     isStunEnabled = false
@@ -202,7 +241,7 @@ object TsSipTransport {
             }
             // Samotná změna trasy registraci nezopakuje a obnova by šla
             // původní cestou — vypnout a nechat připravenost zapnout znovu.
-            if (!sameRoute && copy.isRegisterEnabled) {
+            if ((!sameRoute || !sameServer) && copy.isRegisterEnabled) {
                 copy.isRegisterEnabled = false
                 reRegister = true
             }
@@ -294,11 +333,16 @@ object TsSipTransport {
         var reRegister = false
         for (account in core.accountList.filter { isPrivate(it) }) {
             val params = account.params
+            val relayServer = params.serverAddress?.domain == RELAY_HOST
             val relayRoute = params.routesAddresses.any { it.domain == RELAY_HOST }
             val ours = isOurNatPolicy(params.natPolicy)
-            if (!relayRoute && !ours) continue
+            if (!relayServer && !relayRoute && !ours) continue
             val copy = params.clone()
-            if (relayRoute) {
+            // původní adresa miniserveru zpátky (isPrivate zaručuje, že je
+            // uložená), pak trasa pryč — server se zapnutou obchozí proxy
+            // by trasu nastavil znovu
+            if (relayServer) savedServer(params)?.let { copy.serverAddress = it }
+            if (relayServer || relayRoute) {
                 copy.setRoutesAddresses(arrayOf<org.linphone.core.Address>())
                 if (copy.isRegisterEnabled) {
                     copy.isRegisterEnabled = false
