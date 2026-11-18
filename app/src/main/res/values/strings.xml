@@ -223,6 +223,10 @@
     <string name="twentyone_system_access_blocked_no_consent">Zvolený přístup (miniserver, síť nebo synchronizace kontaktů) potřebuje souhlas s VPN. Hovory jdou dál i bez něj.</string>
     <string name="twentyone_system_access_blocked_slot_lost">Zvolený přístup (miniserver, síť nebo synchronizace kontaktů) jede přes VPN a o tu Phone21 přišlo — vypnul ji systém nebo jiná aplikace. Hovory jdou dál i bez ní.</string>
     <string name="twentyone_system_access_blocked_action">Zapnout přístup</string>
+    <string name="twentyone_config_link_title">Nastavit telefon podle odkazu?</string>
+    <string name="twentyone_config_link_message">Odkaz chce stáhnout nastavení z adresy %1$s. Nastavení přepíše účet a heslo i připojení k privátní síti. Pokračuj, jen když jsi kód nebo odkaz sám otevřel z ovládání svého miniserveru.</string>
+    <string name="twentyone_config_link_confirm">Nastavit</string>
+    <string name="twentyone_config_link_cancel">Zrušit</string>
     <string name="twentyone_qr_join_other_vpn">[P21-E18] Telefon se do privátní sítě nepřipojil, protože v telefonu běží VPN jiné aplikace a Android dovolí jen jednu. Vypni ji, nebo při dalším pokusu potvrď její vypnutí, a naskenuj QR znovu.</string>
     <string name="twentyone_screen_landing" translatable="false">obrazovka P21-U1</string>
     <string name="twentyone_screen_tunnel" translatable="false">obrazovka P21-S1</string>

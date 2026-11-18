@@ -96,32 +96,6 @@ class MainActivity : GenericActivity() {
 
     private lateinit var binding: MainActivityBinding
 
-    private var twentyOnePendingProvisioningUrl: String? = null
-
-    private val twentyOneLocalNetPermission = registerForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        val url = twentyOnePendingProvisioningUrl
-        twentyOnePendingProvisioningUrl = null
-        Log.i("$TAG ACCESS_LOCAL_NETWORK granted [$granted]")
-        if (!granted) {
-            org.linphone.twentyone.TwentyOneDiag.log(
-                "P21-E11", "žádost o Místní síť zamítnuta bez dialogu (deep link)")
-            org.linphone.twentyone.TwentyOneDiag.openAppSettings(this)
-        }
-        if (url != null && granted) {
-            twentyOneFetchProvisioning(url)
-        }
-    }
-
-    private fun twentyOneFetchProvisioning(url: String) {
-        TwentyOneProvisioning.fetchAndApply(url) { reason ->
-            coreContext.showFormattedRedToastEvent.postValue(
-                Event(Pair(reason, R.drawable.warning_circle))
-            )
-        }
-    }
-
     private lateinit var viewModel: MainViewModel
 
     private lateinit var sharedViewModel: SharedMainViewModel
@@ -880,17 +854,9 @@ class MainActivity : GenericActivity() {
             return
         }
 
-        if (!org.linphone.compatibility.Compatibility
-                .isAccessLocalNetworkPermissionGranted(this)
-        ) {
-            // bez „Místní síť" Android spojení na miniserver tiše zahodí
-            twentyOnePendingProvisioningUrl = url
-            twentyOneLocalNetPermission.launch(
-                android.Manifest.permission.ACCESS_LOCAL_NETWORK
-            )
-            return
-        }
-        twentyOneFetchProvisioning(url)
+        // fork: odkaz zvenku až po potvrzení s adresou (oprávnění Místní
+        // síť a stažení tamtéž)
+        org.linphone.twentyone.TwentyOneConfigLinkActivity.ask(this, url)
     }
 
     private fun showAuthenticationRequestedDialog(identity: String) {

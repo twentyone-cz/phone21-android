@@ -37,7 +37,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
 | `app/src/main/java/org/linphone/LinphoneApplication.kt` | jazyk aplikace = čeština; zápis pádů do deníku | brand/diagnostika |
 | `app/src/main/java/org/linphone/telecom/TelecomManager.kt` | tel: URI identita hovoru (TwentyOneCar) | auto |
-| `app/src/main/java/org/linphone/ui/main/MainActivity.kt` | ACTION_SENDTO → konverzace; migrace kontaktů v loadContacts; log záměru i odkazu bez klíče a bez tokenu v cestě | sms/kontakty/provisioning |
+| `app/src/main/java/org/linphone/ui/main/MainActivity.kt` | ACTION_SENDTO → konverzace; migrace kontaktů v loadContacts; log záměru i odkazu bez klíče a bez tokenu v cestě; odkaz s konfigurací přes `TwentyOneConfigLinkActivity` (potvrzení) | sms/kontakty/provisioning |
 | `app/src/main/java/org/linphone/utils/PhoneNumberUtils.kt` | labelToType zveřejněn | kontakty |
 | `app/src/main/AndroidManifest.xml` | `<queries>` na synchronizační aplikaci, oprávnění pro běh na pozadí | kontakty/baterie |
 | `app/src/main/java/org/linphone/ui/main/contacts/viewmodel/ContactNewOrEditViewModel.kt` | uložení kontaktu do systémového adresáře | kontakty |
@@ -64,6 +64,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/AndroidManifest.xml` | cleartext HTTP, `allowBackup=false` | provisioning/bezpečnost |
 | `app/src/main/AndroidManifest.xml` | TsConsentActivity bez přestavby při otočení (`configChanges`), přijímač odmetení upozornění „Hovory nechodí“ | vpn |
 | `app/src/main/AndroidManifest.xml` | služba `TsTunnelService` (vnitřní tunel; popředí `specialUse` s podtypem, `exported=false`, `stopWithTask=false`) | vpn |
+| `app/src/main/AndroidManifest.xml` | aktivita `TwentyOneConfigLinkActivity` (potvrzení odkazu s konfigurací, `exported=false`, průhledná) | provisioning |
 | `app/src/main/java/org/linphone/ui/call/viewmodel/CurrentCallViewModel.kt`, `res/layout/call_media_encryption_info.xml` | štítek „Šifrováno do miniserveru“ u hovoru přes privátní síť i při šifrování hlasu k relé; rozhodnutí a čekání na šifrování v `TwentyOneCallPrivacy` (`showsPrivateNetworkLabel`, `waitsForEncryption`), obecný štítek šifrování se při něm skrývá | hovory |
 | `app/src/main/res/values/strings.xml` | vlastní texty `twentyone_*` (obrazovky, upozornění a hlášky forku) | vpn/sms/diagnostika/hovory |
 

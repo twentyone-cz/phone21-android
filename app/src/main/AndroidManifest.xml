@@ -242,6 +242,14 @@
             android:theme="@style/TwentyOneTranslucent"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
 
+        <!-- Potvrzení odkazu s konfigurací zvenku (linphone-config:) -->
+        <activity
+            android:name="org.linphone.twentyone.TwentyOneConfigLinkActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/TwentyOneTranslucent"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
+
         <receiver
             android:name="org.linphone.twentyone.vpn.TsSlotLostDismissReceiver"
             android:exported="false" />
