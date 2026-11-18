@@ -63,7 +63,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/AndroidManifest.xml` | cleartext HTTP, `allowBackup=false` | provisioning/bezpečnost |
 | `app/src/main/AndroidManifest.xml` | TsConsentActivity bez přestavby při otočení (`configChanges`), přijímač odmetení upozornění „Hovory nechodí“ | vpn |
 | `app/src/main/AndroidManifest.xml` | služba `TsTunnelService` (vnitřní tunel; popředí `specialUse` s podtypem, `exported=false`, `stopWithTask=false`) | vpn |
-| `app/src/main/java/org/linphone/ui/call/viewmodel/CurrentCallViewModel.kt`, `res/layout/call_media_encryption_info.xml` | štítek „Šifrováno do miniserveru“ u hovoru přes privátní síť (`TwentyOneCallPrivacy`) | hovory |
+| `app/src/main/java/org/linphone/ui/call/viewmodel/CurrentCallViewModel.kt`, `res/layout/call_media_encryption_info.xml` | štítek „Šifrováno do miniserveru“ u hovoru přes privátní síť i při šifrování hlasu k relé; rozhodnutí a čekání na šifrování v `TwentyOneCallPrivacy` (`showsPrivateNetworkLabel`, `waitsForEncryption`), obecný štítek šifrování se při něm skrývá | hovory |
 | `app/src/main/res/values/strings.xml` | vlastní texty `twentyone_*` (obrazovky, upozornění a hlášky forku) | vpn/sms/diagnostika/hovory |
 
 Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
@@ -153,7 +153,10 @@ dlouhá verze `1.104.7-tfb3b9b296-gcdd6a9da2`; do 21p.45 `-g226f029a3`).
 Od vnitřního tunelu nese vlastní záplatu (vnitřní režim bez systémové VPN
 a relé na 127.0.0.1); appka volá `requestInternal`, `stopInternal`,
 `internalStatus`, `startRelay`, `stopRelay`, `relayStats`,
-`generateRelayIdentity` (`vpn/TsRelay.kt`). Koordinátor headscale 0.29.7
+`generateRelayIdentity` (`vpn/TsRelay.kt`). HTTP na adresy privátní sítě
+jde jen přes `vpn/TsHttp.kt` (ve vnitřním režimu webové relé
+`http://127.0.0.1:<port>/<cíl>:<port><cesta>` s hlavičkou
+`X-Phone21-Relay`, bez proxy a bez přesměrování). Koordinátor headscale 0.29.7
 vyžaduje klienta ≥ 1.80, jeho peer relay klienta ≥ 1.86 — splněno.
 
 ### QR na dálku: klíč do sítě v odkazu (21p.37)
