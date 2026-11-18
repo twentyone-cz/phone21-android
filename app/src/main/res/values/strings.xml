@@ -187,7 +187,7 @@
     <string name="twentyone_tunnel_web_login">Připojit přes Moji síť</string>
     <!-- fork: co appka ví o miniserveru v síti (tři stavy + nerozhodnuto) -->
     <string name="twentyone_tunnel_gateway_absent">Miniserver v síti není vidět.</string>
-    <string name="twentyone_tunnel_gateway_no_exit">Miniserver je v síti, ale provoz ven zatím nepouští. Obvykle se to do půl minuty nastaví samo; když ne, zkontroluj v ovládání miniserveru (záložka Síť), že je zvolené „vše přes miniserver“.</string>
+    <string name="twentyone_tunnel_gateway_no_exit">Miniserver je v síti, ale provoz ven zatím nepouští. Obvykle se to do půl minuty nastaví samo; když ne, zkontroluj v ovládání miniserveru (záložka Síť), že ukazuje „vše přes miniserver“ — když ne, zvol to tady znovu.</string>
     <string name="twentyone_tunnel_gateway_ready">Provoz ven vede přes miniserver.</string>
     <string name="twentyone_tunnel_gateway_ambiguous">V síti se jako miniserver tváří víc zařízení, nejde poznat které. Zatím platí to poslední známé.</string>
     <string name="twentyone_tunnel_connect">Připojit</string>
@@ -252,15 +252,17 @@
     <string name="twentyone_car_sms_hint">Zprávy si auto čte z úložiště SMS telefonu — Phone21 se proto musí stát výchozí aplikací pro SMS. Odpovídat z auta nejde, jen číst.</string>
     <!-- fork: co všechno smí do tunelu -->
     <string name="twentyone_access_title">Přístup přes privátní síť</string>
+    <string name="twentyone_access_app_only">Jen hovory</string>
+    <string name="twentyone_access_app_only_hint">Do privátní sítě smí jen Phone21 — hovory a kontakty. Místo pro VPN zůstává volné, jiná VPN může běžet vedle.</string>
     <string name="twentyone_access_server">Přístup na miniserver</string>
     <string name="twentyone_access_server_hint">Do privátní sítě smí i ostatní aplikace v telefonu — prohlížeč, peněženka, synchronizace — a dosáhnou na všechny služby miniserveru. Tunelem jde jen provoz na miniserver, zbytek internetu ne. Stejnou volbu ukazuje i ovládání miniserveru.</string>
     <string name="twentyone_access_internet">Vše přes miniserver</string>
     <string name="twentyone_access_internet_hint">Všechen provoz telefonu půjde ven přes miniserver; miniserver se nastaví sám. Spojení musí být přímé — přes přenosový uzel se to samo vypne.</string>
     <string name="twentyone_access_internet_paused">Vše přes miniserver: dočasně vypnuto, spojení jde přes přenosový uzel.</string>
-    <string name="twentyone_access_sync_no_token">Na miniserveru se volba nezměnila — načti do telefonu znovu QR kód z ovládání (záložka Telefon), pak to půjde i odsud.</string>
+    <string name="twentyone_access_sync_no_token">Na miniserveru se volba zatím nezměnila — načti do telefonu znovu QR kód z ovládání (záložka Telefon), pak se tam zapíše sama.</string>
     <string name="twentyone_access_sync_unauthorized">Miniserver změnu odmítl — po změně hesla telefonu načti nový QR kód z ovládání.</string>
-    <string name="twentyone_access_sync_failed">Miniserver teď není dosažitelný — volba zatím platí jen v telefonu. Na miniserver se zapíše sama, jakmile bude spojení stát.</string>
-    <string name="twentyone_access_sync_pulled">Volba přístupu převzata z miniserveru.</string>
+    <string name="twentyone_access_sync_writing">Zapisuji volbu na miniserver…</string>
+    <string name="twentyone_access_sync_pending">Miniserver volbu zatím nepotvrdil — zapíše se tam sama, až bude spojení stát.</string>
     <string name="twentyone_access_refused">Bez souhlasu s VPN zůstává „Jen hovory“ — hovory jdou dál. Vyšší přístup potřebuje VPN, protože dává síť i ostatním aplikacím.</string>
     <string name="twentyone_system_access_refused">Bez souhlasu s VPN jdou dál jen hovory; přístup ostatních aplikací na miniserver zůstává vypnutý.</string>
     <string name="twentyone_call_ended_vpn_lost">Hovor ukončen: VPN převzala jiná aplikace nebo ji vypnul systém a hovor by dál šel mimo šifrovaný tunel. Zavolej znovu — hovory teď jdou tunelem uvnitř aplikace.</string>
