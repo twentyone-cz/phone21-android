@@ -5,6 +5,11 @@
  * Předloha pro práci s knihovnou: tailscale-android App.kt / Notifier.kt /
  * localapi Client.kt (BSD-3-Clause). Zde bez kotlinx.serialization —
  * odpovědi se čtou org.json, aby fork nepotřeboval další gradle plugin.
+ *
+ * Tunel jede ve dvou režimech (TsModeController): vnitřní („jen hovory“,
+ * bez systémové VPN, relé TsRelay) a systémový (TsVpnService). Kdo se ptá
+ * „běží tunel?“, dostane odpověď podle režimu ([isTunnelUp], [transportUp]);
+ * [vpnActive] znamená jen „stojí naše systémové rozhraní“.
  */
 package org.linphone.twentyone.vpn
 
@@ -189,7 +194,44 @@ object TsManager {
     private val reconcileRetryPending = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val state = MutableLiveData(State.NO_STATE)
+
+    /** Naše SYSTÉMOVÉ rozhraní stojí (logika místa pro VPN, jiná VPN pod
+     *  Androidem 11). Na „běží cesta k miniserveru?“ je [transportUp]. */
     val vpnActive = MutableLiveData(false)
+
+    /** Režim, pro který jsou nastavené služby a účet (TsModeController). */
+    val mode = MutableLiveData(TsModeController.Mode.OFF)
+
+    /** Cesta k miniserveru stojí podle režimu: systémové rozhraní, nebo
+     *  vnitřní tunel s běžícím relé. */
+    val transportUp = MutableLiveData(false)
+
+    @Volatile
+    private var transportUpNow = false
+
+    /** Jádro tunelu bere síť (DNS, rozhraní) z výchozí sítě appky, ne ze
+     *  sítě bez VPN — ve vnitřním režimu tak jede přes jinou VPN. */
+    @Volatile
+    private var internalNetSource = false
+
+    @Volatile
+    private var systemNetLinkProps: LinkProperties? = null
+
+    @Volatile
+    private var appNetLinkProps: LinkProperties? = null
+
+    @Volatile
+    private var appNetIsVpn: Boolean? = null
+
+    /** Zrcadlo WantRunning je známé (uložené z minula, nebo už přišla
+     *  notifikace jádra). */
+    @Volatile
+    private var wantRunningKnownNow = false
+
+    /** Instalace z verze, kde odebrání místa pro VPN zapsalo
+     *  WantRunning=false — první notifikace jádra tunel zapne zpátky. */
+    @Volatile
+    private var legacySlotLost = false
     val browseToUrl = MutableLiveData<String?>(null)
     val loggedIn = MutableLiveData(false)
     val directConnection = MutableLiveData(false)
@@ -258,14 +300,34 @@ object TsManager {
     fun ensureStarted(context: Context) {
         if (app != null) return
         appContext = context.applicationContext
-        preferences = TsPreferences(appContext)
+        val p = TsPreferences(appContext)
+        preferences = p
+        // Zrcadlo WantRunning: nový proces se rozhoduje hned, ne až po první
+        // notifikaci jádra (vnitřní tunel startuje dřív).
+        val mirror = p.wantRunning
+        wantRunningNow = mirror ?: false
+        wantRunningKnownNow = mirror != null
+        TsModeController.init(appContext)
+        TsRelay.init(appContext)
         // ztracené místo pro VPN musí přežít zabití procesu: bez tohohle
         // by si ho nový proces vzal zpátky sám (a vypnul cizí VPN)
-        slotLostNow = preferences?.slotLost == true
+        slotLostNow = p.slotLost
         slotLost.postValue(slotLostNow)
-        // výstrahu mohl smazat restart telefonu, aktualizace appky nebo
-        // násilné zastavení (viz remindSlotLost)
-        if (slotLostNow) remindSlotLost(appContext)
+        if (slotLostNow) {
+            // předchozí verze při odebrání místa zapsala WantRunning=false
+            if (mirror == null) legacySlotLost = true
+            if (TsModeController.desiredAccessMode(appContext) == TsModeController.Mode.INTERNAL) {
+                // vnitřní tunel místo pro VPN nepotřebuje
+                releaseSlotLost(appContext, "vnitřní tunel místo pro VPN nepotřebuje")
+            } else if (mirror == false) {
+                // uživatel tunel vypnul a místo je pryč: hovory opravdu
+                // nechodí. Výstrahu mohl smazat restart telefonu,
+                // aktualizace appky nebo násilné zastavení (remindSlotLost).
+                // Když tunel chce, jedou hovory vnitřním tunelem a výzvu
+                // ukáže TsModeController.
+                remindSlotLost(appContext)
+            }
+        }
 
         val ctx = TsAppContext(appContext)
         tsAppContext = ctx
@@ -284,13 +346,35 @@ object TsManager {
             if (currentState == State.RUNNING) {
                 refreshStatus()
             }
+            // stav vnitřního tunelu a relé (jen když má relé běžet)
+            TsRelay.poke()
         }, STATUS_POLL_SECONDS, STATUS_POLL_SECONDS, TimeUnit.SECONDS)
+
+        // srovnat režim (vnitřní / systémový) s požadovaným
+        TsModeController.reconcile("start tunelu")
     }
 
     fun isStarted(): Boolean = app != null
 
-    /** Uzel je přihlášený a rozhraní tunelu postavené. */
-    fun isTunnelUp(): Boolean = currentState == State.RUNNING && vpnActiveNow
+    /**
+     * Uzel je přihlášený a cesta k miniserveru stojí — podle režimu:
+     * systémové rozhraní, nebo vnitřní tunel s běžícím relé.
+     */
+    fun isTunnelUp(): Boolean = when (TsModeController.modeInUse()) {
+        TsModeController.Mode.SYSTEM -> isSystemVpnUp()
+        TsModeController.Mode.INTERNAL -> currentState == State.RUNNING && TsRelay.isUp()
+        TsModeController.Mode.OFF -> false
+    }
+
+    /** Uzel je přihlášený a stojí naše SYSTÉMOVÉ rozhraní (původní význam
+     *  isTunnelUp; třeba záloha stažení přes wifi smí jen pod ním). */
+    fun isSystemVpnUp(): Boolean = currentState == State.RUNNING && vpnActiveNow
+
+    /** Cesta podle režimu stojí (bez ohledu na stav jádra), viz [transportUp]. */
+    fun isTransportUp(): Boolean = transportUpNow
+
+    /** Ví appka, jestli uživatel tunel chce? (Viz TsModeController.) */
+    fun wantRunningKnown(): Boolean = wantRunningKnownNow
 
     /** Uzel je v síti přihlášený (rozhraní ještě nemusí stát). */
     fun isLoggedIn(): Boolean = currentState == State.RUNNING
@@ -312,7 +396,7 @@ object TsManager {
      * stojícím rozhraní, třeba při přechodu wifi → mobilní data).
      *
      * Výjimka z „nikdy jako podmínka“: automatický start
-     * (TunnelReadinessManager.maybeStartService) si podle ní místo NEVEZME —
+     * (TunnelReadinessManager.maybeStartSystem) si podle ní místo NEVEZME —
      * to je bezpečný směr, pokyn uživatele nikdy neblokuje.
      */
     fun otherVpnActive(context: Context): Boolean = otherVpnState(context) == true
@@ -363,12 +447,41 @@ object TsManager {
             if (!wasLost) {
                 slotLostOtherVpn = null
                 vpnGoneReposted = false
-                TsNotifications.notifySlotLost(ctx, silent = false)
-                // za pár sekund už jiná VPN stojí: znění výstrahy a deník
-                // srovnat se skutečností (tiše, bez dalšího pípnutí)
-                android.os.Handler(android.os.Looper.getMainLooper())
-                    .postDelayed({ refreshSlotLostAlert(ctx) }, SLOT_LOST_RECHECK_MS)
+                if (!TsModeController.keepsCallsWithoutSystemVpn()) {
+                    TsNotifications.notifySlotLost(ctx, silent = false)
+                    // za pár sekund už jiná VPN stojí: znění výstrahy a deník
+                    // srovnat se skutečností (tiše, bez dalšího pípnutí)
+                    android.os.Handler(android.os.Looper.getMainLooper())
+                        .postDelayed({ refreshSlotLostAlert(ctx) }, SLOT_LOST_RECHECK_MS)
+                }
+                // Jinak hovory jedou dál vnitřním tunelem a výzvu „zapnout
+                // přístup“ ukáže TsModeController (výstraha „Hovory nechodí“
+                // by lhala).
             }
+        }
+        // přepnout hned, i během hovoru — systémová cesta už neexistuje
+        TsModeController.onSlotLost()
+    }
+
+    /**
+     * Ztracené místo pro VPN zrušit bez rozhraní: vnitřní tunel ho
+     * nepotřebuje, takže výstraha i obrazovka by tvrdily, že hovory
+     * nechodí, a přitom chodí.
+     */
+    fun releaseSlotLost(context: Context, why: String) {
+        synchronized(slotLock) {
+            if (!slotLostNow) return
+            val ctx = context.applicationContext
+            slotLostNow = false
+            slotLostOtherVpn = null
+            try {
+                (preferences ?: TsPreferences(ctx)).clearSlotLost()
+            } catch (e: Exception) {
+                Log.e("$TAG Failed to clear lost VPN slot: $e")
+            }
+            slotLost.postValue(false)
+            TsNotifications.cancelSlotLost(ctx)
+            org.linphone.twentyone.TwentyOneDiag.log("P21-TUN", "ztracené místo pro VPN zrušeno: %s".format(why))
         }
     }
 
@@ -467,7 +580,31 @@ object TsManager {
     private fun noteWantRunning(prefsObject: JSONObject) {
         if (wantRunningPendingSeq != 0) return
         if (!prefsObject.has("WantRunning")) return
-        wantRunningNow = prefsObject.optBoolean("WantRunning", wantRunningNow)
+        val value = prefsObject.optBoolean("WantRunning", wantRunningNow)
+        val changed = value != wantRunningNow || !wantRunningKnownNow
+        wantRunningNow = value
+        wantRunningKnownNow = true
+        if (legacySlotLost) {
+            legacySlotLost = false
+            if (!value) {
+                // Předchozí verze při odebrání místa pro VPN tunel vypnula;
+                // teď hovory jedou i bez systémové VPN.
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN",
+                    "po aktualizaci: tunel zapínám zpátky — vypnulo ho odebrání místa pro VPN, hovory teď jedou i bez něj")
+                setWantRunning(true)
+                TsModeController.reconcile("po aktualizaci")
+                return
+            }
+        }
+        if (changed) {
+            try {
+                preferences?.wantRunning = value
+            } catch (e: Exception) {
+                Log.e("$TAG Failed to persist WantRunning mirror: $e")
+            }
+            TsModeController.reconcile("WantRunning=%s".format(value))
+        }
     }
 
     /**
@@ -607,8 +744,14 @@ object TsManager {
     fun setWantRunning(wantRunning: Boolean) {
         // SYNCHRONNĚ a jako první: PATCH níž běží asynchronně a hned po
         // onRevoke se podle tohohle rozhoduje, jestli si tunel smí vzít
-        // místo pro VPN zpátky (TunnelReadinessManager.maybeStartService).
+        // místo pro VPN zpátky (TunnelReadinessManager.maybeStartSystem).
         wantRunningNow = wantRunning
+        wantRunningKnownNow = true
+        try {
+            preferences?.wantRunning = wantRunning
+        } catch (e: Exception) {
+            Log.e("$TAG Failed to persist WantRunning mirror: $e")
+        }
         val seq = wantRunningSeq.incrementAndGet()
         wantRunningPendingSeq = seq
         worker.execute {
@@ -620,34 +763,87 @@ object TsManager {
         }
     }
 
-    fun startService() {
-        val intent = Intent(appContext, TsVpnService::class.java).apply {
-            action = TsVpnService.ACTION_START
-        }
-        try {
+    /**
+     * Zapnout tunel (Připojit, souhlas z QR, „Zapnout Phone21“). Kterou
+     * službu, rozhodne TsModeController podle stupně. [userInitiated] =
+     * pokyn uživatele, který prošel souhlasem s VPN (prepare už vrátil OK):
+     * systémové místo se pak smí vzít i přes ztracené místo nebo viditelnou
+     * jinou VPN.
+     */
+    fun startService(userInitiated: Boolean = true) {
+        setWantRunning(true)
+        if (userInitiated) TsModeController.approveSystem()
+        TsModeController.reconcile(if (userInitiated) "zapnutí uživatelem" else "zapnutí")
+    }
+
+    /** Spustí službu systémové VPN (volá TsModeController a připravenost).
+     *  false = systém start nedovolil (zapsáno jako P21-E17). */
+    fun startVpnServiceNow(): Boolean =
+        startForeground(TsVpnService::class.java, TsVpnService.ACTION_START, "službu tunelu")
+
+    /** Spustí službu vnitřního tunelu (volá TsModeController). */
+    fun startTunnelServiceNow(): Boolean =
+        startForeground(TsTunnelService::class.java, TsTunnelService.ACTION_START, "službu vnitřního tunelu")
+
+    private fun startForeground(cls: Class<*>, action: String, what: String): Boolean {
+        val intent = Intent(appContext, cls).apply { this.action = action }
+        return try {
             appContext.startForegroundService(intent)
+            true
         } catch (e: Exception) {
-            Log.e("$TAG Failed to start tunnel service: $e")
+            // typicky ForegroundServiceStartNotAllowedException: start ze
+            // zadu bez výjimky z optimalizace baterie
+            Log.e("$TAG Failed to start [$what]: $e")
             org.linphone.twentyone.TwentyOneDiag.log(
                 "P21-E17",
-                "službu tunelu nejde nastartovat: %s %s".format(
-                    e.javaClass.simpleName, e.message ?: "")
+                "%s nejde nastartovat: %s %s".format(what, e.javaClass.simpleName, e.message ?: "")
             )
+            false
         }
     }
 
-    fun stopService() {
-        val intent = Intent(appContext, TsVpnService::class.java).apply {
-            action = TsVpnService.ACTION_STOP
-        }
+    private fun sendToService(cls: Class<*>, action: String) {
+        val intent = Intent(appContext, cls).apply { this.action = action }
         try {
             appContext.startService(intent)
         } catch (e: Exception) {
-            Log.e("$TAG Failed to stop tunnel service: $e")
+            Log.e("$TAG Failed to send [$action]: $e")
         }
     }
 
+    /** Přepnutí na vnitřní tunel: služba VPN se zavře bez WantRunning=false. */
+    fun handOverVpnService() {
+        if (TsVpnService.isRunning()) sendToService(TsVpnService::class.java, TsVpnService.ACTION_HANDOVER)
+    }
+
+    /** Přepnutí na systémovou VPN: služba vnitřního tunelu jen zhasne. */
+    fun handOverTunnelService() {
+        if (TsTunnelService.isRunning()) sendToService(TsTunnelService::class.java, TsTunnelService.ACTION_HANDOVER)
+    }
+
+    /**
+     * Vypnout tunel (Odpojit, odhlášení): WantRunning=false, žádost
+     * o vnitřní režim pryč (dřív, než se služba odpojí — jinak by knihovna
+     * tunel převzala do vnitřního režimu) a STOP jen službě, která běží.
+     */
+    fun stopService() {
+        setWantRunning(false)
+        TsRelay.stopInternal()
+        if (TsVpnService.isRunning()) sendToService(TsVpnService::class.java, TsVpnService.ACTION_STOP)
+        if (TsTunnelService.isRunning()) sendToService(TsTunnelService::class.java, TsTunnelService.ACTION_STOP)
+        TsModeController.reconcile("vypnutí")
+    }
+
+    /** Přestavba systémového rozhraní (změna stupně SERVER↔INTERNET,
+     *  trasa přes uzel). Vnitřní režim nic nepřestavuje — přechody mezi
+     *  režimy dělá TsModeController. */
     fun restartService() {
+        if (TsModeController.modeInUse() != TsModeController.Mode.SYSTEM ||
+            TsModeController.desired() != TsModeController.Mode.SYSTEM
+        ) {
+            Log.i("$TAG Not rebuilding, system VPN is not the mode in use")
+            return
+        }
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-TUN", "přestavba tunelu, přístup=%s".format(prefs.tunnelAccess))
         val intent = Intent(appContext, TsVpnService::class.java).apply {
@@ -662,7 +858,7 @@ object TsManager {
         // instanci (close + reset příznaku) končil dvojím odpojením Go
         // strany a tunel po přestavbě zůstal dole.
         android.os.Handler(android.os.Looper.getMainLooper())
-            .postDelayed({ startService() }, 1200)
+            .postDelayed({ startVpnServiceNow() }, 1200)
     }
 
     /**
@@ -709,6 +905,41 @@ object TsManager {
             state.postValue(currentState)
         }
         vpnActive.postValue(active)
+        updateTransport()
+    }
+
+    /** Relé vnitřního tunelu naběhlo nebo spadlo (TsRelay). */
+    fun onInternalStatus(up: Boolean) {
+        Log.i("$TAG Internal tunnel relay up: $up")
+        updateTransport()
+    }
+
+    /** TsModeController dokončil přepnutí režimu. */
+    fun onModeChanged(newMode: TsModeController.Mode) {
+        mode.postValue(newMode)
+        useNetworkSourceFor(newMode)
+        updateTransport()
+        // výstupní uzel jen v systémovém režimu (desiredExitNodeId)
+        if (::appContext.isInitialized) {
+            worker.execute { reconcileExitNode(storedExitNodeId, storedExitNodeIp) }
+        }
+    }
+
+    /** Cesta podle režimu → [transportUp]. Zobrazovaný stav se srovná se
+     *  skutečným PŘED ohlášením cesty (posluchači čtou oba; po přestavbě by
+     *  jinak visel na STOPPING z onServiceClosing). */
+    private fun updateTransport() {
+        val up = when (TsModeController.modeInUse()) {
+            TsModeController.Mode.SYSTEM -> vpnActiveNow
+            TsModeController.Mode.INTERNAL -> TsRelay.isUp()
+            TsModeController.Mode.OFF -> false
+        }
+        if (up && state.value != currentState) {
+            state.postValue(currentState)
+        }
+        if (up == transportUpNow) return
+        transportUpNow = up
+        transportUp.postValue(up)
     }
 
     fun onServiceClosing() {
@@ -740,6 +971,7 @@ object TsManager {
             Log.i("$TAG Backend state is now [$newState]")
             currentState = newState
             state.postValue(newState)
+            TsRelay.poke()
             if (newState == State.RUNNING || newState == State.STARTING) {
                 browseToUrl.postValue(null)
             }
@@ -804,6 +1036,8 @@ object TsManager {
             notify.has("SelfChange")
         ) {
             scheduleStatusRefresh()
+            // nová adresa v síti = nové rozhraní vnitřního tunelu
+            if (notify.has("SelfChange")) TsRelay.poke()
         }
         if (notify.has("InitialStatus")) {
             onStatus(notify.getJSONObject("InitialStatus"))
@@ -1470,6 +1704,8 @@ object TsManager {
      */
     private fun desiredExitNodeId(): String? {
         if (networkPausedNow) return ""
+        // vnitřní tunel nese jen hovory, výstupní uzel nemá kam dát
+        if (TsModeController.modeInUse() != TsModeController.Mode.SYSTEM) return ""
         if (effectiveTunnelAccess() != TsPreferences.TunnelAccess.INTERNET) return ""
         val (peer, status) = findGateway(lastDiag)
         if (status != GatewayState.READY || peer == null) return null
@@ -1556,8 +1792,80 @@ object TsManager {
         }
     }
 
+    /**
+     * Odkud bere jádro tunelu DNS a výchozí rozhraní: systémový režim ze
+     * sítě bez VPN (vlastní sokety chrání a váže), vnitřní režim z výchozí
+     * sítě TÉHLE appky — běží-li jiná VPN, jede tunel přes ni. Při změně
+     * režimu se hned pošle, co platí.
+     */
+    fun useNetworkSourceFor(newMode: TsModeController.Mode) {
+        val internal = newMode != TsModeController.Mode.SYSTEM
+        if (internal == internalNetSource) return
+        internalNetSource = internal
+        pushNetworkToBackend()
+    }
+
+    private fun pushNetworkToBackend() {
+        val lp = (if (internalNetSource) appNetLinkProps else systemNetLinkProps) ?: return
+        val servers = lp.dnsServers.mapNotNull { it.hostAddress }
+        val domains = lp.domains.orEmpty()
+        tsAppContext?.platformDnsConfig = "${servers.joinToString(" ")}\n$domains".trim()
+        try {
+            libtailscale.Libtailscale.onDNSConfigChanged(lp.interfaceName)
+        } catch (e: Exception) {
+            Log.w("$TAG Failed to notify backend about DNS change: $e")
+        }
+    }
+
     private fun monitorNetworkChanges() {
+        internalNetSource = TsModeController.modeInUse() != TsModeController.Mode.SYSTEM
         val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        // Výchozí síť appky (i s cizí VPN): zdroj pro vnitřní režim.
+        try {
+            cm.registerDefaultNetworkCallback(
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onCapabilitiesChanged(
+                        network: Network,
+                        caps: NetworkCapabilities
+                    ) {
+                        val vpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                        val before = appNetIsVpn
+                        appNetIsVpn = vpn
+                        // jiná VPN, kvůli které stupeň jede bez systémové
+                        // VPN, zmizela: srovnat (vezme místo jen se souhlasem)
+                        if (before == true && !vpn &&
+                            TsModeController.systemBlockNow() == TsModeController.SystemBlock.OTHER_VPN
+                        ) {
+                            TsModeController.reconcile("jiná VPN zmizela")
+                        }
+                        if (before != vpn && internalNetSource && before != null) {
+                            org.linphone.twentyone.TwentyOneDiag.log(
+                                "P21-NET",
+                                if (vpn) {
+                                    "výchozí síť appky je teď VPN — vnitřní tunel jede přes ni"
+                                } else {
+                                    "VPN z výchozí sítě appky zmizela — vnitřní tunel jede napřímo"
+                                }
+                            )
+                        }
+                    }
+
+                    override fun onLinkPropertiesChanged(
+                        network: Network,
+                        linkProperties: LinkProperties
+                    ) {
+                        appNetLinkProps = linkProperties
+                        if (internalNetSource) pushNetworkToBackend()
+                    }
+
+                    override fun onLost(network: Network) {
+                        appNetLinkProps = null
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.e("$TAG Failed to watch the default network: $e")
+        }
         // NOT_VPN je klíčové (upstream parita): bez něj se po zvednutí
         // tunelu stane "výchozí sítí" tunel sám a jádro tunelu si do něj
         // sváže vlastní řídicí sokety — spojení se zacyklí do sebe.
@@ -1582,15 +1890,9 @@ object TsManager {
                     network: Network,
                     linkProperties: LinkProperties
                 ) {
-                    val servers = linkProperties.dnsServers.mapNotNull { it.hostAddress }
-                    val domains = linkProperties.domains.orEmpty()
-                    val config = "${servers.joinToString(" ")}\n$domains".trim()
-                    tsAppContext?.platformDnsConfig = config
-                    try {
-                        libtailscale.Libtailscale.onDNSConfigChanged(linkProperties.interfaceName)
-                    } catch (e: Exception) {
-                        Log.w("$TAG Failed to notify backend about DNS change: $e")
-                    }
+                    systemNetLinkProps = linkProperties
+                    // ve vnitřním režimu se síť bez VPN do jádra neposílá
+                    if (!internalNetSource) pushNetworkToBackend()
                 }
             }
         )

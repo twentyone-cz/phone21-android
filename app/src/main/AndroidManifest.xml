@@ -266,6 +266,19 @@
             </intent-filter>
         </service>
 
+        <!-- fork: vnitřní tunel pro „jen hovory“ (bez systémové VPN) —
+             služba v popředí drží proces, aby příchozí hovor dorazil. -->
+        <service
+            android:name="org.linphone.twentyone.vpn.TsTunnelService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false"
+            android:label="@string/app_name">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the in-app private network connection running so that incoming calls arrive; no system VPN is used." />
+        </service>
+
         <!-- fork: vytáčení z auta — účet pro volání (managed telecom).
              Dokud volba v aplikaci nezaregistruje PhoneAccount, systém
              se na službu nikdy nenaváže. -->

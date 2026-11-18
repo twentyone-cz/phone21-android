@@ -8,6 +8,11 @@
  *  - SERVER: všechny aplikace; trasy do tunelu jsou pořád jen adresy
  *    privátní sítě, ostatní provoz jde mimo něj,
  *  - INTERNET: navíc výstupní uzel, takže tunelem jde i obecný provoz.
+ *
+ * APP_ONLY tu jede už jen se synchronizací kontaktů přes tunel; samotné
+ * „jen hovory“ běží vnitřním tunelem bez systémové VPN (TsTunnelService,
+ * TsModeController). Přepnutí na něj = ACTION_HANDOVER: služba se zavře,
+ * ale WantRunning zůstává a knihovna tunelu převezme vnitřní režim.
  */
 package org.linphone.twentyone.vpn
 
@@ -30,6 +35,15 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
         const val ACTION_START = "cz.twentyone.phone.TUNNEL_START"
         const val ACTION_STOP = "cz.twentyone.phone.TUNNEL_STOP"
         const val ACTION_RESTART = "cz.twentyone.phone.TUNNEL_RESTART"
+
+        /** Předání vnitřnímu tunelu: zavřít bez WantRunning=false. */
+        const val ACTION_HANDOVER = "cz.twentyone.phone.TUNNEL_HANDOVER"
+
+        private val instances = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /** Žije instance služby? (Posílat STOP/HANDOVER jen živé službě —
+         *  jinak by ji záměr teprve vytvořil.) */
+        fun isRunning(): Boolean = instances.get() > 0
     }
 
     private val randomId: String = UUID.randomUUID().toString()
@@ -56,6 +70,7 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
 
     override fun onCreate() {
         super.onCreate()
+        instances.incrementAndGet()
         // Pojistka proti smyčce pád→vzkříšení→pád: vzkříšení systémem se
         // počítá; ruční start počítadlo hned v onStartCommand vynuluje.
         guardOk = TunnelStartGuard.registerSystemStart(applicationContext)
@@ -98,7 +113,26 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
         }
         return when (intent?.action) {
             ACTION_STOP -> {
+                if (TsManager.wantsRunning() &&
+                    TsModeController.desired() == TsModeController.Mode.INTERNAL
+                ) {
+                    // Přepnutí na vnitřní tunel nesmí zapsat WantRunning=false
+                    // (to by byl stav „Zakázáno“) — jen předat.
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN", "vypnutí služby VPN při vnitřním režimu = předání")
+                    close()
+                    return START_NOT_STICKY
+                }
                 TsManager.setWantRunning(false)
+                // žádost o vnitřní režim pryč DŘÍV, než se služba odpojí —
+                // jinak by knihovna tunel převzala do vnitřního režimu
+                TsRelay.stopInternal()
+                close()
+                START_NOT_STICKY
+            }
+            ACTION_HANDOVER -> {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "služba VPN předává tunel vnitřnímu režimu")
                 close()
                 START_NOT_STICKY
             }
@@ -111,10 +145,27 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
                 START_NOT_STICKY
             }
             null -> {
-                org.linphone.twentyone.TwentyOneDiag.log(
-                    "P21-TUN", "služba vzkříšena systémem po zabití procesu")
                 startForegroundNotification()
                 TsManager.setWantRunning(true)
+                if (TsModeController.desiredAccessMode(applicationContext) !=
+                    TsModeController.Mode.SYSTEM
+                ) {
+                    // Typicky po aktualizaci na verzi s vnitřním tunelem při
+                    // „jen hovory“: systémové místo se uvolní, rozhraní se
+                    // vůbec nežádá a tunel převezme vnitřní režim.
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN",
+                        "služba VPN vzkříšena systémem, ale stupeň jede vnitřním tunelem — systémové místo uvolněno")
+                    try {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    } catch (_: Exception) {
+                    }
+                    stopSelf()
+                    TsModeController.reconcile("vzkříšení služby VPN")
+                    return START_NOT_STICKY
+                }
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "služba vzkříšena systémem po zabití procesu")
                 libtailscale.Libtailscale.requestVPN(this)
                 START_STICKY
             }
@@ -173,7 +224,7 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
         try {
             startForeground(
                 TsNotifications.NOTIFICATION_ID,
-                TsNotifications.buildStatusNotification(this)
+                TsNotifications.buildStatusNotification(this, TsModeController.Mode.SYSTEM)
             )
         } catch (e: Exception) {
             Log.e("$TAG Failed to start foreground service: $e")
@@ -227,6 +278,7 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
     override fun onDestroy() {
         close()
         updateVpnStatus(false)
+        instances.decrementAndGet()
         super.onDestroy()
     }
 
@@ -239,7 +291,12 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
         // (jinak by ho přes VpnService.prepare() potichu sebrala jiné VPN)
         TsManager.markSlotLost(
             applicationContext, "systém odebral rozhraní (jiná VPN nebo vypnutí v nastavení)")
-        TsManager.setWantRunning(false)
+        // Hovory jedou dál vnitřním tunelem (knihovna ho má vyžádaný jako
+        // zálohu a po odpojení služby ho převezme sama) — WantRunning=false
+        // by z toho udělal stav „Zakázáno“. Jen bez zálohy jako dřív.
+        if (!TsModeController.keepsCallsWithoutSystemVpn()) {
+            TsManager.setWantRunning(false)
+        }
         close()
         updateVpnStatus(false)
         super.onRevoke()

@@ -1,6 +1,8 @@
 /*
- * fork: trvalá notifikace služby tunelu (Android ji u VpnService vyžaduje)
- * a výstrahy: blokace mimo VPN, ztracené místo pro VPN.
+ * fork: trvalá notifikace služby tunelu (Android ji u služby v popředí
+ * vyžaduje; text podle režimu) a výstrahy: blokace mimo VPN, ztracené
+ * místo pro VPN (obojí jen systémový režim), a výzva, když zvolený stupeň
+ * chce systémovou VPN, ale hovory jedou vnitřním tunelem.
  */
 package org.linphone.twentyone.vpn
 
@@ -19,6 +21,13 @@ object TsNotifications {
     const val NOTIFICATION_ID = 42
     const val LOCKDOWN_NOTIFICATION_ID = 43
     const val SLOT_LOST_NOTIFICATION_ID = 44
+
+    /** Zvolený stupeň chce systémovou VPN, hovory jedou vnitřním tunelem. */
+    const val SYSTEM_BLOCKED_NOTIFICATION_ID = 45
+
+    /** Služba vnitřního tunelu. Vlastní číslo: při přepínání režimu chvíli
+     *  žijí obě služby a zavření jedné nesmí shodit notifikaci té druhé. */
+    const val INTERNAL_NOTIFICATION_ID = 46
     private const val CHANNEL_ID = "twentyone_tunnel"
 
     /** Výstrahy (ztracené místo pro VPN). Stavový kanál výš zůstává tichý
@@ -34,7 +43,10 @@ object TsNotifications {
         manager.createNotificationChannel(channel)
     }
 
-    fun buildStatusNotification(context: Context): Notification {
+    fun buildStatusNotification(
+        context: Context,
+        mode: TsModeController.Mode = TsModeController.Mode.SYSTEM
+    ): Notification {
         // kanál se mohl mezitím smazat (první start jádra po instalaci maže všechny)
         createChannel(context)
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -49,7 +61,15 @@ object TsNotifications {
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.linphone_notification)
             .setContentTitle(context.getString(R.string.twentyone_tunnel_notification_title))
-            .setContentText(context.getString(R.string.twentyone_tunnel_notification_message))
+            .setContentText(
+                context.getString(
+                    if (mode == TsModeController.Mode.INTERNAL) {
+                        R.string.twentyone_tunnel_notification_message_internal
+                    } else {
+                        R.string.twentyone_tunnel_notification_message
+                    }
+                )
+            )
             .setOngoing(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -183,6 +203,69 @@ object TsNotifications {
                 .activeNotifications.any { it.id == SLOT_LOST_NOTIFICATION_ID }
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /**
+     * Zvolený stupeň (miniserver, síť, synchronizace kontaktů) chce
+     * systémovou VPN, ale místo se nebere potichu: chybí souhlas, drží ho
+     * jiná VPN, nebo o něj Phone21 přišlo. Hovory jedou dál vnitřním
+     * tunelem. „Zapnout přístup“ vede přes TsConsentActivity (potvrzení
+     * převzetí místa a souhlas); [silent] = stejný důvod jako minule.
+     */
+    fun notifySystemAccessBlocked(
+        context: Context,
+        block: TsModeController.SystemBlock,
+        silent: Boolean
+    ) {
+        createAlertChannel(context)
+        val message = context.getString(
+            when (block) {
+                TsModeController.SystemBlock.OTHER_VPN -> R.string.twentyone_system_access_blocked_other_vpn
+                TsModeController.SystemBlock.SLOT_LOST -> R.string.twentyone_system_access_blocked_slot_lost
+                else -> R.string.twentyone_system_access_blocked_no_consent
+            }
+        )
+        val open = PendingIntent.getActivity(
+            context,
+            5,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val enable = PendingIntent.getActivity(
+            context,
+            6,
+            Intent(context, TsConsentActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra(TsConsentActivity.EXTRA_RECLAIM, true)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setSmallIcon(R.drawable.linphone_notification)
+            .setContentTitle(context.getString(R.string.twentyone_system_access_blocked_title))
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setOnlyAlertOnce(true)
+            .setSilent(silent)
+            .setContentIntent(open)
+            .addAction(0, context.getString(R.string.twentyone_system_access_blocked_action), enable)
+            .build()
+        try {
+            context.getSystemService(NotificationManager::class.java)
+                .notify(SYSTEM_BLOCKED_NOTIFICATION_ID, notification)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun cancelSystemAccessBlocked(context: Context) {
+        try {
+            context.getSystemService(NotificationManager::class.java)
+                .cancel(SYSTEM_BLOCKED_NOTIFICATION_ID)
+        } catch (_: Exception) {
         }
     }
 

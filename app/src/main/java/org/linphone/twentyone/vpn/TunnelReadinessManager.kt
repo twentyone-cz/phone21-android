@@ -37,6 +37,8 @@ class TunnelReadinessManager {
         @WorkerThread
         override fun onAccountAdded(core: Core, account: Account) {
             ensureInternationalPrefix(core)
+            // ruční účet z asistenta potřebuje totéž co účet z QR
+            TsSipTransport.apply(core, TsModeController.modeInUse(), "nový účet")
             applyState(ready)
         }
 
@@ -51,6 +53,22 @@ class TunnelReadinessManager {
                 "P21-REG",
                 "registrace u ústředny: %s %s".format(state, message)
             )
+            // Vnitřní režim: registrace bez odpovědi přes běžící relé =
+            // šifrované spojení s relé neprošlo (nejčastěji odmítnutý
+            // certifikát). Odpověď ústředny (401/403…) sem nepatří.
+            if (state == org.linphone.core.RegistrationState.Failed &&
+                TsModeController.modeInUse() == TsModeController.Mode.INTERNAL &&
+                TsRelay.isUp()
+            ) {
+                val info = account.errorInfo
+                if (info == null || info.protocolCode == 0) {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-E25",
+                        "registrace přes relé bez odpovědi (%s %s) — spojení volací knihovny s relé neprošlo"
+                            .format(info?.reason ?: "", message)
+                    )
+                }
+            }
         }
 
     }
@@ -76,6 +94,12 @@ class TunnelReadinessManager {
         // Skipped: odebrání proběhlo, aplikace ne.
         if (status == ConfiguringState.Successful) {
             org.linphone.twentyone.TwentyOneProvisioning.forgetRemovedAuthInfo()
+            // Konfigurace z QR mohla změnit doménu účtu (jiná ústředna pro
+            // relé) — účet znovu podle režimu. Během startu jádra to udělá
+            // start sám (nastavení před GlobalState.On se neuloží).
+            if (core.globalState == org.linphone.core.GlobalState.On) {
+                TsSipTransport.apply(core, TsModeController.modeInUse(), "po konfiguraci")
+            }
             coreContext.postOnMainThread { evaluate("po konfiguraci") }
         } else {
             org.linphone.twentyone.TwentyOneProvisioning.restoreAuthInfo(core)
@@ -131,7 +155,13 @@ class TunnelReadinessManager {
         evaluate()
     }
 
-    private val vpnObserver = Observer<Boolean> {
+    // Cesta k miniserveru podle režimu (systémové rozhraní, nebo vnitřní
+    // tunel s relé) — ne vpnActive, to je jen systémové rozhraní.
+    private val transportObserver = Observer<Boolean> {
+        evaluate()
+    }
+
+    private val modeObserver = Observer<TsModeController.Mode> {
         evaluate()
     }
 
@@ -209,6 +239,9 @@ class TunnelReadinessManager {
         core.addListener(coreListener)
         ensureInternationalPrefix(core)
         ensureWidebandCodec(core)
+        // účet podle uloženého režimu hned (ve vnitřním: trasa na relé =
+        // zavřená cesta, i když relé ještě neběží), pak srovnání režimu
+        TsModeController.onCoreStarted(core)
         coreContext.postOnMainThread {
             // nový start jádra začíná od nepřipravené sítě
             ready = false
@@ -216,7 +249,8 @@ class TunnelReadinessManager {
             TsManager.state.observeForever(stateObserver)
             TsManager.loggedIn.observeForever(loginObserver)
             TsManager.endpointVerified.observeForever(endpointObserver)
-            TsManager.vpnActive.observeForever(vpnObserver)
+            TsManager.transportUp.observeForever(transportObserver)
+            TsManager.mode.observeForever(modeObserver)
             TsManager.networkPaused.observeForever(pausedObserver)
             evaluate("po startu jádra")
             mainHandler.removeCallbacks(reconcile)
@@ -232,7 +266,8 @@ class TunnelReadinessManager {
             TsManager.state.removeObserver(stateObserver)
             TsManager.loggedIn.removeObserver(loginObserver)
             TsManager.endpointVerified.removeObserver(endpointObserver)
-            TsManager.vpnActive.removeObserver(vpnObserver)
+            TsManager.transportUp.removeObserver(transportObserver)
+            TsManager.mode.removeObserver(modeObserver)
             TsManager.networkPaused.removeObserver(pausedObserver)
             mainHandler.removeCallbacks(reconcile)
         }
@@ -262,7 +297,7 @@ class TunnelReadinessManager {
     // podívá, jestli aktivní síť nedrží VPN jiné aplikace — a když ano,
     // místo nevezme, jen ho ohlásí jako ztracené (bezpečný směr: pokyn
     // uživatele tahle kontrola nikdy neblokuje).
-    private fun maybeStartService() {
+    private fun maybeStartSystem() {
         if (!TsManager.wantsRunning() || TsManager.isSlotLost()) {
             otherVpnSeenAt = 0L
             return
@@ -294,7 +329,34 @@ class TunnelReadinessManager {
             "P21-TUN",
             "rozhraní tunelu neběží a souhlas je udělen — startuji službu"
         )
-        TsManager.startService()
+        TsManager.startVpnServiceNow()
+    }
+
+    /**
+     * Vnitřní tunel neběží, i když jádro tunelu jede: srovnat režim
+     * (žádost v knihovně, služba v popředí, relé). Bez souhlasu, bez
+     * kontroly jiné VPN a bez logiky místa — nic z toho nepotřebuje.
+     */
+    private fun maybeStartInternal() {
+        if (!TsManager.wantsRunning()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastAutoStart < 30_000) return
+        lastAutoStart = now
+        TsModeController.reconcile("vnitřní tunel neběží")
+    }
+
+    /** Přepínání režimu: registrace vypnout a nezapínat, dokud přepnutí
+     *  neskončí (TsModeController). Vlákno jádra. */
+    @WorkerThread
+    fun holdForSwitch(core: Core) {
+        ready = false
+        if (this.core == null) this.core = core
+        applyState(false)
+    }
+
+    /** Vynucené vyhodnocení se zápisem do deníku (z libovolného vlákna). */
+    fun reevaluate(reason: String) {
+        coreContext.postOnMainThread { evaluate(reason) }
     }
 
     /** [forced] = důvod vynuceného vyhodnocení (zapíše se do deníku i beze
@@ -305,29 +367,43 @@ class TunnelReadinessManager {
         val state = TsManager.backendState()
         val loggedIn = TsManager.loggedIn.value == true
         val verified = TsManager.endpointVerified.value == true
-        val vpnUp = TsManager.vpnActive.value == true
+        val mode = TsModeController.modeInUse()
+        // cesta podle režimu: systémové rozhraní, nebo vnitřní tunel s relé
+        val pathUp = TsManager.isTransportUp()
         val paused = TsManager.networkPaused.value == true
         // Stav RUNNING z definice znamená přihlášený uzel — příznak
         // přihlášení z notifikací chodí pozdě/nespolehlivě a držel účet
         // v „disabled", i když tunel dávno běžel (do logu se dál píše).
-        if (verified && state == TsManager.State.RUNNING && !vpnUp) {
-            maybeStartService()
+        if (verified && state == TsManager.State.RUNNING && !pathUp) {
+            when (mode) {
+                TsModeController.Mode.SYSTEM -> maybeStartSystem()
+                TsModeController.Mode.INTERNAL -> maybeStartInternal()
+                TsModeController.Mode.OFF -> {}
+            }
         }
         // rozhraní stojí: případné první pozorování „jiné VPN“ patřilo
         // dobíhajícímu vlastnímu rozhraní, příští výpadek počítá znovu
-        if (vpnUp) otherVpnSeenAt = 0L
-        // Bez postaveného rozhraní nemá registrace kudy jít — dřív se
+        if (mode == TsModeController.Mode.SYSTEM && pathUp) otherVpnSeenAt = 0L
+        // Účet ve volací knihovně musí odpovídat režimu: ve vnitřním trasa
+        // na port běžícího relé (a šifrování hlasu, jak ho relé chce) — jinak
+        // by registrace šla jinudy nebo na mrtvý port. Během přepínání se
+        // registrace nezapíná vůbec.
+        val sipOk = TsSipTransport.sipConfiguredFor(mode)
+        val switching = TsModeController.isSwitching()
+        // Bez postavené cesty nemá registrace kudy jít — dřív se
         // zapínala i tak a padala na io error.
         // Pozastavená síť (prázdná mapa protějšků) je pro registraci totéž
         // co spadlé rozhraní: ústředna není odkud dosažitelná. Po návratu
         // protějšků se příznak zhasne a registrace se zapne zpátky sama.
-        val available = verified && (state == TsManager.State.RUNNING) && vpnUp && !paused
-        val facts = "stav=%s přihlášení=%s ověření=%s rozhraní=%s pozastaveno=%s".format(
-            state, loggedIn, verified, vpnUp, paused)
+        val available = verified && (state == TsManager.State.RUNNING) && pathUp && !paused &&
+            sipOk && !switching
+        val facts = ("režim=%s stav=%s přihlášení=%s ověření=%s cesta=%s účet=%s " +
+            "pozastaveno=%s přepínání=%s").format(
+            TsModeController.label(mode), state, loggedIn, verified, pathUp, sipOk, paused, switching)
         if (reconcile) {
             // znění výstrahy o ztraceném místě pro VPN: jiná VPN se mohla
             // ukázat až po odebrání (jen tiché přepsání, žádné nové pípnutí)
-            if (TsManager.isSlotLost()) {
+            if (TsManager.isSlotLost() && mode == TsModeController.Mode.SYSTEM) {
                 TsManager.refreshSlotLostAlert(coreContext.context)
             }
             ready = available
@@ -348,10 +424,9 @@ class TunnelReadinessManager {
         Log.i("$TAG Network readiness is now [$available]")
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-NET",
-            ("síť %s (stav=%s přihlášení=%s ověření=%s rozhraní=%s pozastaveno=%s) — " +
-                "registrace u ústředny se %s").format(
+            "síť %s (%s) — registrace u ústředny se %s".format(
                 if (available) "připravena" else "nepřipravena",
-                state, loggedIn, verified, vpnUp, paused,
+                facts,
                 if (available) "zapíná" else "vypíná")
         )
         coreContext.postOnCoreThread {
