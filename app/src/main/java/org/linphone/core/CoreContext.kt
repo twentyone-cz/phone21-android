@@ -796,10 +796,7 @@ class CoreContext
                 }
             }
 
-            if (core.logCollectionUploadServerUrl.isNullOrEmpty()) {
-                Log.w("$TAG Logs sharing server URL not set, fixing that")
-                core.logCollectionUploadServerUrl = "https://files.linphone.org/http-file-transfer-server/hft.php"
-            }
+            // fork: žádný server původní appky pro nahrání logů (TwentyOneUpstreamServers)
 
             corePreferences.linphoneConfigurationVersion = currentVersion
             Log.w(
@@ -808,6 +805,8 @@ class CoreContext
         } else {
             Log.i("$TAG No configuration migration required")
         }
+        // fork: logy ani soubory nejdou na servery původní appky (při každém startu)
+        org.linphone.twentyone.TwentyOneUpstreamServers.clear(core)
 
         contactsManager.onCoreStarted(core)
         telecomManager.onCoreStarted(core)
@@ -1356,7 +1355,6 @@ class CoreContext
         if (core.logCollectionUploadServerUrl == "https://www.linphone.org:444/lft.php") {
             core.logCollectionUploadServerUrl = "https://files.linphone.org/http-file-transfer-server/hft.php"
         }
-
         Log.i("$TAG IMDN threshold set to 1 (meaning only sender will receive delivery & read notifications)")
         core.imdnToEverybodyThreshold = 1
 
