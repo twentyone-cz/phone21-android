@@ -356,7 +356,16 @@ object TwentyOneProvisioning {
         )
         val startedAt = android.os.SystemClock.elapsedRealtime()
         val tm = org.linphone.twentyone.vpn.TsManager
-        if (!internal && tm.isLoggedIn() && (tm.isSlotLost() || tm.otherVpnActive(context))) {
+        // Stupeň chce systémovou VPN, ale místo drží jiná VPN / chybí souhlas
+        // a hovory jedou vnitřním tunelem: ke stažení stačí ten — místo se
+        // kvůli QR nebere a jiná VPN běží dál (přepnutí jen přes „Zapnout přístup“).
+        val fallback = !internal &&
+            TsModeController.modeInUse() == TsModeController.Mode.INTERNAL &&
+            TsModeController.systemBlockNow() != TsModeController.SystemBlock.NONE
+        if (fallback && tm.isLoggedIn()) {
+            TwentyOneDiag.log("P21-TUN", "systémové místo nemáme — konfiguraci stahuji vnitřním tunelem, místo neberu")
+            tm.startService(userInitiated = false)
+        } else if (!internal && tm.isLoggedIn() && (tm.isSlotLost() || tm.otherVpnActive(context))) {
             // Místo pro VPN drží jiná aplikace (nebo o něj Phone21 přišlo):
             // samotné spuštění služby by rozhraní nepostavilo. Zpátky přes
             // potvrzení a souhlas, stejně jako tlačítko ve výstraze.
