@@ -9,6 +9,8 @@
  * běží jiná VPN (21p.45), a systémový souhlas; při odmítnutí volba zůstane
  * na „jen hovory“. Stupeň převzatý z miniserveru se ptá stejně a odmítnutí
  * se zapíše zpátky na miniserver, ať sdílená volba odpovídá skutečnosti.
+ * Připojit (i Moje síť) při miniserveru/síti s odmítnutým souhlasem tunel
+ * nenechá vypnutý: hovory jedou vnitřním tunelem s výzvou „Zapnout přístup“.
  */
 package org.linphone.twentyone.vpn
 
@@ -122,10 +124,20 @@ class TwentyOneTunnelFragment : Fragment() {
                 }
             } else {
                 Log.w("$TAG VPN permission was refused")
+                // Bez souhlasu tunel nezůstává vypnutý: hovory pojedou
+                // vnitřním tunelem s výzvou „Zapnout přístup“ (jako u jiné
+                // VPN nebo ztraceného místa). Místo pro VPN se nebere.
                 org.linphone.twentyone.TwentyOneDiag.log(
-                    "P21-TUN", "souhlas s VPN odmítnut — tunel zůstává vypnutý")
+                    "P21-TUN", "souhlas s VPN odmítnut — hovory pojedou vnitřním tunelem, přístup čeká na souhlas")
+                TsManager.startService(userInitiated = false)
+                TsModeController.onConsentMissing("souhlas s VPN odmítnut")
+                if (what == Pending.WEB_LOGIN || needsNewCode() || TsManager.loggedIn.value != true) {
+                    TsManager.login(TsManager.prefs.controlUrl, null)
+                }
                 // trvale zapnutá jiná VPN: systém souhlas zamítne sám — říct proč
-                if (isAdded) TsConsentActivity.explainRefusal(requireContext()) { }
+                if (isAdded && !TsConsentActivity.explainRefusal(requireContext()) { }) {
+                    toast(R.string.twentyone_system_access_refused)
+                }
             }
             Pending.SYSTEM_ACCESS -> if (ok) {
                 TsManager.startService()
@@ -371,8 +383,8 @@ class TwentyOneTunnelFragment : Fragment() {
                 // viset). Jediná cesta zpět je nový kód.
                 needsNewCode() -> startNewCode()
                 // cesta k miniserveru podle režimu (systémové rozhraní,
-                // nebo vnitřní tunel s relé)
-                TsManager.transportUp.value == true -> TsManager.stopService()
+                // nebo vnitřní tunel s relé), viz offersDisconnect
+                offersDisconnect() -> TsManager.stopService()
                 else -> connect()
             }
         }
@@ -950,12 +962,22 @@ class TwentyOneTunnelFragment : Fragment() {
         toggleButton.setText(
             when {
                 needsCode -> R.string.twentyone_tunnel_needs_login_action
-                transport -> R.string.twentyone_tunnel_disconnect
+                offersDisconnect() -> R.string.twentyone_tunnel_disconnect
                 else -> R.string.twentyone_tunnel_connect
             }
         )
         updateAccessViews()
     }
+
+    /**
+     * Nabídnout Odpojit? Když cesta stojí — a ve vnitřním režimu vždy, když
+     * uživatel tunel chce: relé může stát (čeká na cíle, chyba identity)
+     * a „Připojit“ by nepřidalo nic, co srovnání nedělá samo. Bez toho by
+     * tunel nešlo vypnout.
+     */
+    private fun offersDisconnect(): Boolean =
+        TsManager.transportUp.value == true ||
+            (TsManager.wantsRunning() && TsManager.mode.value == TsModeController.Mode.INTERNAL)
 
     /** Zvolený stupeň chce systémovou VPN, ale hovory jedou vnitřním
      *  tunelem (chybí souhlas, místo drží jiná VPN, nebo o něj Phone21

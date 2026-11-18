@@ -11,6 +11,10 @@
  * Stupeň „jen hovory“ (vnitřní tunel) místo pro VPN nepotřebuje: obě cesty
  * pak jedou bez dialogu a bez VpnService.prepare() — jiná VPN zůstane
  * zapnutá a tunel pojede přes ni.
+ *
+ * Odmítnutý systémový souhlas tunel nenechá vypnutý (obě cesty): hovory
+ * jedou vnitřním tunelem s výzvou „Zapnout přístup“, telefon se klíčem
+ * z QR přihlásí i tak.
  */
 package org.linphone.twentyone.vpn
 
@@ -69,10 +73,11 @@ class TsConsentActivity : AppCompatActivity() {
          */
         fun explainRefusal(context: Context, onDone: () -> Unit): Boolean {
             if (!TsManager.otherVpnActive(context)) return false
-            // Uživatel tunel chce a hovory jedou vnitřním tunelem: věta
-            // „hovory nechodí“ by lhala — chybí jen přístup pro ostatní appky.
-            val callsKeepGoing = TsManager.wantsRunning() &&
-                TsModeController.modeInUse() == TsModeController.Mode.INTERNAL
+            // Uživatel tunel chce: hovory jedou (nebo hned pojedou —
+            // přepnutí běží na vlákně jádra) vnitřním tunelem, i když
+            // souhlas neprošel. Věta „hovory nechodí“ by lhala — chybí jen
+            // přístup pro ostatní appky.
+            val callsKeepGoing = TsManager.wantsRunning()
             org.linphone.twentyone.TwentyOneDiag.log(
                 "P21-E21",
                 "běží jiná VPN a souhlas neprošel — zrušen, nebo je ta VPN " +
@@ -80,7 +85,13 @@ class TsConsentActivity : AppCompatActivity() {
                     if (callsKeepGoing) " (hovory jedou dál vnitřním tunelem)" else ""
             )
             AlertDialog.Builder(context)
-                .setTitle(R.string.twentyone_other_vpn_blocked_title)
+                .setTitle(
+                    if (callsKeepGoing) {
+                        R.string.twentyone_other_vpn_blocked_title_calls_ok
+                    } else {
+                        R.string.twentyone_other_vpn_blocked_title
+                    }
+                )
                 .setMessage(
                     if (callsKeepGoing) {
                         R.string.twentyone_other_vpn_blocked_message_calls_ok
@@ -119,16 +130,33 @@ class TsConsentActivity : AppCompatActivity() {
             finish()
             return@registerForActivityResult
         }
-        Log.w("$TAG VPN permission was refused, tunnel stays down")
+        Log.w("$TAG VPN permission was refused, calls go through the internal tunnel")
         org.linphone.twentyone.TwentyOneDiag.log(
-            "P21-TUN", "souhlas s VPN odmítnut — tunel zůstává vypnutý")
-        giveUp()
+            "P21-TUN", "souhlas s VPN odmítnut — hovory pojedou vnitřním tunelem, přístup čeká na souhlas")
+        startWithoutConsent()
     }
 
-    /** Konec bez zapnutí tunelu; běží-li jiná VPN, nejdřív vysvětlit proč. */
-    private fun giveUp() {
-        lastGaveUpAt = android.os.SystemClock.elapsedRealtime()
-        if (!explainRefusal(this) { finish() }) finish()
+    /**
+     * Systémový souhlas neprošel: tunel přesto zapnout (QR: přihlásit
+     * klíčem), hovory jedou vnitřním tunelem s výzvou „Zapnout přístup“.
+     * Běží-li jiná VPN, vysvětlit proč souhlas neprošel, jinak krátce říct,
+     * co platí.
+     */
+    private fun startWithoutConsent() {
+        if (reclaim) {
+            started = true
+            TsManager.startService(userInitiated = false)
+        } else {
+            connect(withConsent = false)
+        }
+        TsModeController.onConsentMissing("souhlas s VPN odmítnut")
+        if (!explainRefusal(this) { finish() }) {
+            android.widget.Toast.makeText(
+                applicationContext, R.string.twentyone_system_access_refused,
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            finish()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -278,7 +306,7 @@ class TsConsentActivity : AppCompatActivity() {
             if (withConsent) {
                 "souhlas s VPN udělen — přihlašuji klíčem z QR"
             } else {
-                "jen hovory: přihlašuji klíčem z QR bez souhlasu s VPN (vnitřní tunel)"
+                "přihlašuji klíčem z QR bez souhlasu s VPN (vnitřní tunel)"
             }
         )
         TsManager.startService(userInitiated = withConsent)
