@@ -61,6 +61,9 @@ object TsRelay {
         val privateSipPort: Int,
         /** relé chce od volací knihovny šifrovaný hlas (SRTP s klíči v SDP) */
         val clientSrtp: Boolean,
+        /** webové relé mluví jen šifrovaně s identitou relé (bez toho ho
+         *  appka nepoužije — starší knihovna) */
+        val httpTls: Boolean,
         /** instance rozhraní uvnitř procesu, na které relé běží */
         val generation: Int
     )
@@ -74,6 +77,18 @@ object TsRelay {
         val error: String,
         val vpnService: Boolean,
         val leftoverSockets: Int
+    )
+
+    /**
+     * Webové relé pro TsHttp: port na 127.0.0.1, token pro hlavičku
+     * X-Phone21-Relay, šifrované spojení (httpTls) a certifikát relé, který
+     * se na tom portu musí prokázat. Token nikam neukládat ani nelogovat.
+     */
+    class HttpEndpoint(
+        val port: Int,
+        val token: String,
+        val tls: Boolean,
+        val serverCertPem: String
     )
 
     /** Identity obou konců spojení na 127.0.0.1 (PEM). Nikdy do logu. */
@@ -112,6 +127,15 @@ object TsRelay {
     @Volatile
     private var upNow = false
 
+    /** Webové relé smí dostat požadavek (během výměny relé ne — starý token
+     *  by nové relé odmítlo a v deníku by to vypadalo jako cizí klient). */
+    @Volatile
+    private var httpReady = false
+
+    /** Certifikát relé, se kterým běží současné relé (TsHttp ho připne). */
+    @Volatile
+    private var runningServerCertPem: String? = null
+
     /** Co naposled odešlo do [relayInfo] (LiveData.value mimo hlavní
      *  vlákno vrací hodnotu, která ještě nebyla doručena). */
     @Volatile
@@ -141,6 +165,7 @@ object TsRelay {
     private var errorSince = 0L
     private var lastRejected = 0L
     private var lastForbidden = 0L
+    private var lastTlsFailed = 0L
     private var waitingForTargetsLogged = false
 
     fun init(context: Context) {
@@ -213,15 +238,15 @@ object TsRelay {
     fun currentInfo(): Info? = info
 
     /**
-     * Webové relé pro HTTP k miniserveru: (port na 127.0.0.1, token pro
-     * hlavičku X-Phone21-Relay), null = relé neběží. Token nikam neukládat
-     * ani nelogovat.
+     * Webové relé pro HTTP k miniserveru, null = relé neběží (nebo se právě
+     * vyměňuje). Token nikam neukládat ani nelogovat.
      */
-    fun httpEndpoint(): Pair<Int, String>? {
-        if (!upNow) return null
+    fun httpEndpoint(): HttpEndpoint? {
+        if (!upNow || !httpReady) return null
         val i = info ?: return null
         val t = token ?: return null
-        return i.httpPort to t
+        val cert = runningServerCertPem ?: return null
+        return HttpEndpoint(i.httpPort, t, i.httpTls, cert)
     }
 
     /** Povolit webovému relé další cíl v privátní síti (adresa z QR).
@@ -240,7 +265,7 @@ object TsRelay {
      * ani nelogovat.
      */
     @androidx.annotation.WorkerThread
-    fun httpEndpointFor(host: String, waitMs: Long): Pair<Int, String>? {
+    fun httpEndpointFor(host: String, waitMs: Long): HttpEndpoint? {
         val h = host.trim().removePrefix("[").removeSuffix("]")
         addHttpHost(h)
         val deadline = android.os.SystemClock.elapsedRealtime() + waitMs
@@ -432,6 +457,9 @@ object TsRelay {
             .put("sipPort", routePort())
             .put("httpPort", p.relayHttpPort.coerceIn(0, 65535))
             .put("privateSipPort", p.relayPrivateSipPort.coerceIn(0, 65535))
+        // Staré relé knihovna teď zavře a port na chvíli uvolní: web do
+        // odpovědi nového relé nepoužívat.
+        httpReady = false
         val result = try {
             libtailscale.Libtailscale.startRelay(cfg.toString())
         } catch (e: Throwable) {
@@ -462,23 +490,28 @@ object TsRelay {
             httpPort = o.optInt("httpPort", 0),
             privateSipPort = o.optInt("privateSipPort", 0),
             clientSrtp = o.optBoolean("clientSrtp", false),
+            httpTls = o.optBoolean("httpTls", false),
             generation = st.generation
         )
         token = o.optString("httpToken", "").ifEmpty { null }
+        runningServerCertPem = id.serverCertPem
         info = newInfo
+        httpReady = true
         runningTargets = targets
         runningHttpHosts = hosts
         retryMs = 0L
         lastRejected = 0L
         lastForbidden = 0L
+        lastTlsFailed = 0L
         p.relaySipPort = newInfo.sipPort
         p.relayHttpPort = newInfo.httpPort
         p.relayPrivateSipPort = newInfo.privateSipPort
         p.relayClientSrtp = newInfo.clientSrtp
         TwentyOneDiag.log(
             "P21-TUN",
-            "relé běží: signalizace 127.0.0.1:%d, web %d, hlas %s, rozhraní č. %d".format(
+            "relé běží: signalizace 127.0.0.1:%d, web %d %s, hlas %s, rozhraní č. %d".format(
                 newInfo.sipPort, newInfo.httpPort,
+                if (newInfo.httpTls) "šifrovaný" else "NEšifrovaný (starší knihovna — web přes relé nepoužit)",
                 if (newInfo.clientSrtp) "šifrovaný" else "NEšifrovaný (starší knihovna)",
                 newInfo.generation)
         )
@@ -500,9 +533,11 @@ object TsRelay {
     }
 
     private fun setDown() {
+        httpReady = false
         if (info != null || token != null || upNow) {
             info = null
             token = null
+            runningServerCertPem = null
             runningTargets = null
             runningHttpHosts = emptySet()
             publish(false)
@@ -543,8 +578,8 @@ object TsRelay {
         }
     }
 
-    /** Cizí klient na 127.0.0.1 (bez platného certifikátu) nebo webový
-     *  požadavek bez tokenu → P21-E23 s počty. */
+    /** Cizí klient na 127.0.0.1 (bez platného certifikátu), webový
+     *  požadavek bez tokenu nebo bez šifrování → P21-E23 s počty. */
     private fun checkStats() {
         val counters = try {
             JSONObject(statsJson()).optJSONObject("counters") ?: return
@@ -553,15 +588,17 @@ object TsRelay {
         }
         val rejected = counters.optLong("client.rejected", 0L)
         val forbidden = counters.optLong("http.forbidden_token", 0L)
-        if (rejected > lastRejected || forbidden > lastForbidden) {
+        val tlsFailed = counters.optLong("http.tls_failed", 0L)
+        if (rejected > lastRejected || forbidden > lastForbidden || tlsFailed > lastTlsFailed) {
             TwentyOneDiag.log(
                 "P21-E23",
-                "na 127.0.0.1 se hlásil cizí klient: bez platného certifikátu %d×, bez tokenu %d×"
-                    .format(rejected - lastRejected, forbidden - lastForbidden)
+                "na 127.0.0.1 se hlásil cizí klient: bez platného certifikátu %d×, bez tokenu %d×, web bez šifrování %d×"
+                    .format(rejected - lastRejected, forbidden - lastForbidden, tlsFailed - lastTlsFailed)
             )
         }
         lastRejected = rejected
         lastForbidden = forbidden
+        lastTlsFailed = tlsFailed
     }
 
     // ---- cíle relé ----

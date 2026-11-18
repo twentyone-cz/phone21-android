@@ -185,7 +185,10 @@ object TwentyOneProvisioning {
                 if (e is TsHttp.RelayException) {
                     // zapsáno do deníku (P21-E23/E24) v TsHttp
                     onError(
-                        if (e.code == "P21-E23") {
+                        if (e is TsHttp.RelayIdentityException) {
+                            "[P21-E23] Na místě relé uvnitř aplikace odpověděl někdo " +
+                                "jiný — nic se neodeslalo. Zkus QR naskenovat znovu za chvíli."
+                        } else if (e.code == "P21-E23") {
                             "[P21-E23] Relé uvnitř aplikace požadavek odmítlo. " +
                                 "Zkus QR naskenovat znovu za chvíli."
                         } else {
