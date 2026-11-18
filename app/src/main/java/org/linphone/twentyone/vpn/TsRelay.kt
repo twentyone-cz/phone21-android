@@ -21,7 +21,6 @@ package org.linphone.twentyone.vpn
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.lifecycle.MutableLiveData
-import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -148,8 +147,11 @@ object TsRelay {
     @Volatile
     private var sipHost: String? = null
 
-    /** Další povolené cíle webového relé (adresa z QR — další krok). */
-    private val extraHttpHosts = CopyOnWriteArraySet<String>()
+    /** Cíl webového relé z odkazu na konfiguraci (miniserver z QR) — jen
+     *  jeden a jen po dobu stažení; [qrHostGen] odliší další stažení. */
+    @Volatile
+    private var qrHttpHost: String? = null
+    private var qrHostGen = 0
 
     /** Cíle, se kterými běží současné relé (při změně se restartuje). */
     @Volatile
@@ -249,25 +251,48 @@ object TsRelay {
         return HttpEndpoint(i.httpPort, t, i.httpTls, cert)
     }
 
-    /** Povolit webovému relé další cíl v privátní síti (adresa z QR).
-     *  Relé se kvůli tomu restartuje (mimo hovor). */
-    fun addHttpHost(host: String) {
+    /**
+     * Povolit webovému relé cíl z odkazu na konfiguraci (adresa miniserveru
+     * v privátní síti) — jen po potvrzeném odkazu nebo skenu v appce a jen
+     * do [clearQrHost]. Nahradí předchozí cíl z QR. Relé se kvůli novému
+     * cíli restartuje (mimo hovor). Vrací značku pro [clearQrHost], 0 =
+     * adresa není v privátní síti.
+     */
+    @Synchronized
+    fun allowQrHost(host: String): Int {
         val h = host.trim().removePrefix("[").removeSuffix("]")
-        if (!TwentyOneCallPrivacy.isPrivateNetworkAddress(h)) return
-        if (extraHttpHosts.add(h)) poke()
+        if (!TwentyOneCallPrivacy.isPrivateNetworkAddress(h)) return 0
+        qrHostGen++
+        if (qrHttpHost != h) {
+            qrHttpHost = h
+            poke()
+        }
+        return qrHostGen
+    }
+
+    /** Stažení skončilo (úspěch i chyba): cíl z QR zase pryč, pokud mezitím
+     *  nezačalo další stažení. */
+    @Synchronized
+    fun clearQrHost(gen: Int) {
+        if (gen == 0 || gen != qrHostGen || qrHttpHost == null) return
+        qrHttpHost = null
+        poke()
     }
 
     /**
-     * Webové relé, které smí na [host] (adresa v privátní síti): cíl doplní
-     * a počká nejvýš [waitMs], až relé běží a cíl převzalo (restart relé
-     * s novým cílem se během hovoru odkládá). null = relé neběží nebo na
-     * cíl zatím nesmí. Jen z pracovního vlákna — spí. Token nikam neukládat
-     * ani nelogovat.
+     * Webové relé, které smí na [host] (adresa v privátní síti): počká
+     * nejvýš [waitMs], až relé běží a cíl převzalo (restart relé s novým
+     * cílem se během hovoru odkládá). Cíl musí být povolený předem (brána,
+     * ústředna, nebo [allowQrHost]). null = relé neběží nebo na cíl nesmí.
+     * Jen z pracovního vlákna — spí. Token nikam neukládat ani nelogovat.
      */
     @androidx.annotation.WorkerThread
     fun httpEndpointFor(host: String, waitMs: Long): HttpEndpoint? {
         val h = host.trim().removePrefix("[").removeSuffix("]")
-        addHttpHost(h)
+        if (h !in httpHosts()) {
+            Log.w("$TAG Web relay target is not allowed")
+            return null
+        }
         val deadline = android.os.SystemClock.elapsedRealtime() + waitMs
         while (true) {
             val ep = httpEndpoint()
@@ -608,7 +633,7 @@ object TsRelay {
         sipHost?.let { return it }
         val gw = TsPreferences(context()).gatewayAddress.trim()
         if (isIpv4(gw) && TwentyOneCallPrivacy.isPrivateNetworkAddress(gw)) return gw
-        return extraHttpHosts.firstOrNull { isIpv4(it) }
+        return qrHttpHost?.takeIf { isIpv4(it) }
     }
 
     /** Cíle webového relé: jen adresy v privátní síti (relé jinam nesmí). */
@@ -617,7 +642,7 @@ object TsRelay {
         val gw = TsPreferences(context()).gatewayAddress.trim().removePrefix("[").removeSuffix("]")
         if (gw.isNotEmpty() && TwentyOneCallPrivacy.isPrivateNetworkAddress(gw)) out.add(gw)
         sipHost?.let { out.add(it) }
-        out.addAll(extraHttpHosts)
+        qrHttpHost?.let { out.add(it) }
         return out
     }
 

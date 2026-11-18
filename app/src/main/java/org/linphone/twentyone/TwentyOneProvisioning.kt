@@ -14,6 +14,11 @@
  * jednorázový klíč do ní: telefon se nejdřív připojí a konfiguraci si pak
  * stáhne tunelem — ve vnitřním režimu přes relé uvnitř appky, bez
  * souhlasu s VPN (TsHttp; přímo na adresu v privátní síti nikdy).
+ *
+ * Odkaz zvenku (linphone-config: z fotoaparátu, prohlížeče, jiné appky) sem
+ * přijde až po potvrzení adresy (TwentyOneConfigLinkActivity); skener
+ * v appce a ruční adresa v nastavení se neptají. Relé smí na miniserver
+ * z odkazu jen po dobu stažení (TsRelay.allowQrHost/clearQrHost).
  */
 package org.linphone.twentyone
 
@@ -100,122 +105,147 @@ object TwentyOneProvisioning {
      *  s krátkým lidským popisem — ten se zobrazí v hlášce. */
     fun fetchAndApply(qrUrl: String, onError: (String) -> Unit) {
         executor.execute {
-            val (url, joinKey) = splitJoinKey(qrUrl)
-            val target = try {
-                URL(url).let { "%s:%d".format(it.host, if (it.port > 0) it.port else 80) }
-            } catch (_: Exception) {
-                url
-            }
-            val host = try {
-                URL(url).host.removePrefix("[").removeSuffix("]")
-            } catch (_: Exception) {
-                ""
-            }
-            if (!Compatibility.isAccessLocalNetworkPermissionGranted(
-                    coreContext.context)) {
-                TwentyOneDiag.log("P21-E10", "chybí oprávnění Místní síť, cíl=%s"
-                    .format(target))
-                onError("[P21-E10] Chybí oprávnění pro domácí síť — v " +
-                    "nastavení aplikace zapni \u201eMístní síť\u201c, a když " +
-                    "tam není, tak \u201eZařízení v okolí\u201c. Pak naskenuj " +
-                    "QR znovu.")
-                return@execute
-            }
-            // Adresa v privátní síti jde vždy tunelem (i bez klíče v QR) —
-            // přímo by odešla výchozí sítí nešifrovaně.
-            val viaTunnel = joinKey.isNotEmpty() || TsHttp.isPrivateNetworkUrl(url)
-            if (viaTunnel) {
-                // relé smí na miniserver z QR; bez účtu podle něj i naběhne
-                TsRelay.addHttpHost(host)
-            }
-            if (viaTunnel && !org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
-                if (!joinNetwork(joinKey)) {
-                    TwentyOneDiag.log("P21-E18", "cíl=%s %s".format(target, networkFacts()))
-                    if (internalWanted()) {
-                        onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
-                            "tunel uvnitř aplikace nenaběhl. Klíč v QR platí jen " +
-                            "jednou, vygeneruj nový QR a zkus to znovu.")
-                        return@execute
-                    }
-                    // „jiná VPN blokuje QR“ jen tam, kde je potřeba místo pro VPN
-                    if (org.linphone.twentyone.vpn.TsManager.otherVpnActive(coreContext.context)) {
-                        onError(coreContext.context.getString(
-                            org.linphone.R.string.twentyone_qr_join_other_vpn))
-                        return@execute
-                    }
-                    onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
-                        "potvrdil jsi souhlas s VPN? Klíč v QR platí jen jednou, " +
-                        "vygeneruj nový QR a zkus to znovu.")
-                    return@execute
-                }
-            }
+            // Cíl relé z QR jen po dobu stažení: po chybě hned pryč, po
+            // úspěchu až po aplikaci konfigurace (pak už je známá brána).
+            val qr = QrHostHold()
             try {
-                val data = if (viaTunnel) downloadViaTunnel(url) else download(url)
-                if (!looksLikeConfig(data)) {
-                    TwentyOneDiag.log("P21-E1", "cíl=%s cesta=%s délka=%d".format(
-                        target, lastRoute, data.size))
-                    onError("[P21-E1] Server nevrátil konfiguraci (odkaz už asi vypršel).")
-                    return@execute
+                fetchAndApplyNow(qrUrl, onError, qr)
+            } finally {
+                if (!qr.handedOver) TsRelay.clearQrHost(qr.gen)
+            }
+        }
+    }
+
+    /** Cíl webového relé z QR povolený pro tohle stažení. */
+    private class QrHostHold {
+        var gen = 0
+        /** úklid převzala aplikace konfigurace na vlákně jádra */
+        var handedOver = false
+    }
+
+    private fun fetchAndApplyNow(qrUrl: String, onError: (String) -> Unit, qr: QrHostHold) {
+        val (url, joinKey) = splitJoinKey(qrUrl)
+        val target = try {
+            URL(url).let { "%s:%d".format(it.host, if (it.port > 0) it.port else 80) }
+        } catch (_: Exception) {
+            redact(url)
+        }
+        val host = try {
+            URL(url).host.removePrefix("[").removeSuffix("]")
+        } catch (_: Exception) {
+            ""
+        }
+        if (!Compatibility.isAccessLocalNetworkPermissionGranted(
+                coreContext.context)) {
+            TwentyOneDiag.log("P21-E10", "chybí oprávnění Místní síť, cíl=%s"
+                .format(target))
+            onError("[P21-E10] Chybí oprávnění pro domácí síť — v " +
+                "nastavení aplikace zapni \u201eMístní síť\u201c, a když " +
+                "tam není, tak \u201eZařízení v okolí\u201c. Pak naskenuj " +
+                "QR znovu.")
+            return
+        }
+        // Adresa v privátní síti jde vždy tunelem (i bez klíče v QR) —
+        // přímo by odešla výchozí sítí nešifrovaně.
+        val viaTunnel = joinKey.isNotEmpty() || TsHttp.isPrivateNetworkUrl(url)
+        if (viaTunnel) {
+            // relé smí na miniserver z QR (jen po dobu stažení); bez účtu
+            // podle něj i naběhne
+            qr.gen = TsRelay.allowQrHost(host)
+        }
+        if (viaTunnel && !org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
+            if (!joinNetwork(joinKey)) {
+                TwentyOneDiag.log("P21-E18", "cíl=%s %s".format(target, networkFacts()))
+                if (internalWanted()) {
+                    onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
+                        "tunel uvnitř aplikace nenaběhl. Klíč v QR platí jen " +
+                        "jednou, vygeneruj nový QR a zkus to znovu.")
+                    return
                 }
-                val file = File(coreContext.context.filesDir, "provisioning.xml")
-                file.writeBytes(data)
-                coreContext.postOnCoreThread { core ->
-                    // Uložené přihlašovací údaje výchozího účtu musí pryč JEŠTĚ
-                    // před aplikací konfigurace: jádro si heslo pamatuje i jako
-                    // ha1 spočítané pro minulou doménu, a to by přebilo heslo
-                    // i doménu, které nová konfigurace přepisuje. Cíleně jen
-                    // výchozí účet — hromadné smazání by vzalo i údaje
-                    // synchronizace kontaktů, které s ústřednou nesouvisejí.
-                    // Totéž pro všechny uložené údaje se jménem z konfigurace:
-                    // po smazání účtu zůstávají a přihlášení je najde dřív.
-                    val user = provisionedUsername(String(data, Charsets.UTF_8))
-                    val stale = (
-                        listOfNotNull(core.defaultAccount?.findAuthInfo()) +
-                            core.authInfoList.filter { user != null && it.username == user }
-                        ).distinctBy { "${it.username}|${it.realm}|${it.domain}" }
-                    if (stale.isNotEmpty()) {
-                        Log.i("$TAG Removing ${stale.size} stored credential(s) before config")
-                        // kopie si necháme: když aplikace konfigurace selže,
-                        // vrátíme je, ať telefon nezůstane bez hesla
-                        removedAuthInfo = stale.map { it.clone() }
-                        stale.forEach { core.removeAuthInfo(it) }
-                    }
-                    core.provisioningUri = "file://" + file.absolutePath
-                    Log.i("$TAG Config downloaded (${data.size} B), applying from file")
+                // „jiná VPN blokuje QR“ jen tam, kde je potřeba místo pro VPN
+                if (org.linphone.twentyone.vpn.TsManager.otherVpnActive(coreContext.context)) {
+                    onError(coreContext.context.getString(
+                        org.linphone.R.string.twentyone_qr_join_other_vpn))
+                    return
+                }
+                onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
+                    "potvrdil jsi souhlas s VPN? Klíč v QR platí jen jednou, " +
+                    "vygeneruj nový QR a zkus to znovu.")
+                return
+            }
+        }
+        try {
+            val data = if (viaTunnel) downloadViaTunnel(url) else download(url)
+            if (!looksLikeConfig(data)) {
+                TwentyOneDiag.log("P21-E1", "cíl=%s cesta=%s délka=%d".format(
+                    target, lastRoute, data.size))
+                onError("[P21-E1] Server nevrátil konfiguraci (odkaz už asi vypršel).")
+                return
+            }
+            val file = File(coreContext.context.filesDir, "provisioning.xml")
+            file.writeBytes(data)
+            val qrGen = qr.gen
+            qr.handedOver = true
+            coreContext.postOnCoreThread { core ->
+                // Uložené přihlašovací údaje výchozího účtu musí pryč JEŠTĚ
+                // před aplikací konfigurace: jádro si heslo pamatuje i jako
+                // ha1 spočítané pro minulou doménu, a to by přebilo heslo
+                // i doménu, které nová konfigurace přepisuje. Cíleně jen
+                // výchozí účet — hromadné smazání by vzalo i údaje
+                // synchronizace kontaktů, které s ústřednou nesouvisejí.
+                // Totéž pro všechny uložené údaje se jménem z konfigurace:
+                // po smazání účtu zůstávají a přihlášení je najde dřív.
+                val user = provisionedUsername(String(data, Charsets.UTF_8))
+                val stale = (
+                    listOfNotNull(core.defaultAccount?.findAuthInfo()) +
+                        core.authInfoList.filter { user != null && it.username == user }
+                    ).distinctBy { "${it.username}|${it.realm}|${it.domain}" }
+                if (stale.isNotEmpty()) {
+                    Log.i("$TAG Removing ${stale.size} stored credential(s) before config")
+                    // kopie si necháme: když aplikace konfigurace selže,
+                    // vrátíme je, ať telefon nezůstane bez hesla
+                    removedAuthInfo = stale.map { it.clone() }
+                    stale.forEach { core.removeAuthInfo(it) }
+                }
+                core.provisioningUri = "file://" + file.absolutePath
+                Log.i("$TAG Config downloaded (${data.size} B), applying from file")
+                try {
                     core.stop()
                     core.start()
+                } finally {
+                    TsRelay.clearQrHost(qrGen)
                 }
-            } catch (e: Exception) {
-                Log.e("$TAG Download of [${redact(url)}] via [$lastRoute] failed: $e")
-                if (e is TsHttp.RelayException) {
-                    // zapsáno do deníku (P21-E23/E24) v TsHttp
-                    onError(
-                        if (e is TsHttp.RelayIdentityException) {
-                            "[P21-E23] Na místě relé uvnitř aplikace odpověděl někdo " +
-                                "jiný — nic se neodeslalo. Zkus QR naskenovat znovu za chvíli."
-                        } else if (e.code == "P21-E23") {
-                            "[P21-E23] Relé uvnitř aplikace požadavek odmítlo. " +
-                                "Zkus QR naskenovat znovu za chvíli."
-                        } else {
-                            "[P21-E24] Miniserver $target přes privátní síť " +
-                                "neodpovídá (HTTP ${e.status}). Je miniserver zapnutý a v síti?"
-                        }
-                    )
-                    return@execute
-                }
-                if (viaTunnel && e !is IllegalStateException) {
-                    TwentyOneDiag.log("P21-E19", "cíl=%s %s výjimka=%s %s".format(
-                        target, networkFacts(), e.javaClass.simpleName, e.message ?: ""))
-                    onError("[P21-E19] Telefon je v privátní síti, ale miniserver " +
-                        "$target přes ni neodpovídá. Je miniserver zapnutý a v síti?")
-                    return@execute
-                }
-                val code = codeFor(e)
-                TwentyOneDiag.log(code, "cíl=%s cesta=%s %s výjimka=%s %s".format(
-                    target, lastRoute, networkFacts(),
-                    e.javaClass.simpleName, e.message ?: ""))
-                onError(describe(e, target))
             }
+        } catch (e: Exception) {
+            Log.e("$TAG Download of [${redact(url)}] via [$lastRoute] failed: $e")
+            if (e is TsHttp.RelayException) {
+                // zapsáno do deníku (P21-E23/E24) v TsHttp
+                onError(
+                    if (e is TsHttp.RelayIdentityException) {
+                        "[P21-E23] Na místě relé uvnitř aplikace odpověděl někdo " +
+                            "jiný — nic se neodeslalo. Zkus QR naskenovat znovu za chvíli."
+                    } else if (e.code == "P21-E23") {
+                        "[P21-E23] Relé uvnitř aplikace požadavek odmítlo. " +
+                            "Zkus QR naskenovat znovu za chvíli."
+                    } else {
+                        "[P21-E24] Miniserver $target přes privátní síť " +
+                            "neodpovídá (HTTP ${e.status}). Je miniserver zapnutý a v síti?"
+                    }
+                )
+                return
+            }
+            if (viaTunnel && e !is IllegalStateException) {
+                TwentyOneDiag.log("P21-E19", "cíl=%s %s výjimka=%s %s".format(
+                    target, networkFacts(), e.javaClass.simpleName, e.message ?: ""))
+                onError("[P21-E19] Telefon je v privátní síti, ale miniserver " +
+                    "$target přes ni neodpovídá. Je miniserver zapnutý a v síti?")
+                return
+            }
+            val code = codeFor(e)
+            TwentyOneDiag.log(code, "cíl=%s cesta=%s %s výjimka=%s %s".format(
+                target, lastRoute, networkFacts(),
+                e.javaClass.simpleName, e.message ?: ""))
+            onError(describe(e, target))
         }
     }
 
