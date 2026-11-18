@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 15:58:42 +0000
+Subject: [PATCH 30/33] =?UTF-8?q?Rel=C3=A9:=20zku=C5=A1ebn=C3=AD=20pakety?=
+ =?UTF-8?q?=20knihovny=20se=20nepo=C4=8D=C3=ADtaj=C3=AD=20jako=20po=C5=A1k?=
+ =?UTF-8?q?ozen=C3=A9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Volací knihovna posílá na port řízení hlasu zkušební pakety pro otevření
+cesty, dokud nepřijde první zpráva řízení od protistrany. Laboratoř se
+skutečnou ústřednou je ukázala u každého hovoru (13 až 22 kusů) a relé je
+počítalo mezi poškozené pakety, takže diagnostika hlásila chybu i u
+bezvadného hovoru. Teď se zahodí jako dřív, ale mají ve statistikách
+relé vlastní počítadlo; poškozený paket zůstává poškozeným a paket
+z cizího portu cizím.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/media.go         |  9 ++++++
+ libtailscale/p21relay/srtp.go          |  9 ++++++
+ libtailscale/p21relay/srtpcall_test.go | 42 +++++++++++++++++++++++++-
+ 3 files changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/libtailscale/p21relay/media.go b/libtailscale/p21relay/media.go
+index fba7fdb..e3b050e 100644
+--- a/libtailscale/p21relay/media.go
++++ b/libtailscale/p21relay/media.go
+@@ -314,6 +314,7 @@ type mediaManager struct {
+ 	srtpNoKeyToClient, srtpSealErr atomic.Int64 // pro knihovnu: bez klíče relé / nejde zašifrovat
+ 	srtpSeqResync                  atomic.Int64 // vyrovnaný skok v číslech paketů pro knihovnu
+ 	srtpKeyError                   atomic.Int64 // klíč z SDP nešel použít
++	stunFromClient                 atomic.Int64 // od knihovny: zkušební STUN (zahozený, není chyba)
+ }
+ 
+ func newMediaManager(nw Network, upIP netip.Addr, cnt *counters, log *rateLog) *mediaManager {
+@@ -639,6 +640,13 @@ func (mm *mediaManager) pump(st *mediaStream, in, out net.PacketConn, toUp, rtcp
+ 				mm.dropClientSrc.Add(1)
+ 				continue
+ 			}
++			if isSTUN(pkt) {
++				// Knihovna bez ICE posílá zkušební STUN „pro otevření
++				// firewallu“, na portu RTCP dokud nepřijde RTCP. Ústředně
++				// k ničemu není a nejde o poškozený paket.
++				mm.stunFromClient.Add(1)
++				continue
++			}
+ 			plain, res := st.recv.open(work, pkt, rtcpSock, time.Now())
+ 			if !mm.countOpen(res) {
+ 				continue
+@@ -860,6 +868,7 @@ func (mm *mediaManager) stats() map[string]int64 {
+ 		"srtpSealError":      mm.srtpSealErr.Load(),
+ 		"srtpSeqResync":      mm.srtpSeqResync.Load(),
+ 		"srtpKeyError":       mm.srtpKeyError.Load(),
++		"stunFromClient":     mm.stunFromClient.Load(),
+ 		"calls":              int64(calls),
+ 		"streams":            int64(streams),
+ 		"packetsToUpstream":  mm.pktToUp.Load(),
+diff --git a/libtailscale/p21relay/srtp.go b/libtailscale/p21relay/srtp.go
+index e98131d..82e2d23 100644
+--- a/libtailscale/p21relay/srtp.go
++++ b/libtailscale/p21relay/srtp.go
+@@ -225,6 +225,15 @@ func classifyRTP(pkt []byte) (isRTCP, ok bool) {
+ 	return false, len(pkt) >= 12
+ }
+ 
++// isSTUN pozná zprávu STUN (RFC 5389 6): první dva bity nulové, magic
++// cookie a délka těla, která sedí s velikostí paketu. RTP ani RTCP takhle
++// nevypadá (verze 2 v prvních dvou bitech).
++func isSTUN(pkt []byte) bool {
++	return len(pkt) >= 20 && pkt[0]&0xc0 == 0 &&
++		pkt[4] == 0x21 && pkt[5] == 0x12 && pkt[6] == 0xa4 && pkt[7] == 0x42 &&
++		int(pkt[2])<<8|int(pkt[3]) == len(pkt)-20
++}
++
+ // openResult říká, co se stalo s paketem od volací knihovny.
+ type openResult int
+ 
+diff --git a/libtailscale/p21relay/srtpcall_test.go b/libtailscale/p21relay/srtpcall_test.go
+index 02c4a2e..bc4d29a 100644
+--- a/libtailscale/p21relay/srtpcall_test.go
++++ b/libtailscale/p21relay/srtpcall_test.go
+@@ -224,6 +224,46 @@ func TestSRTPInjectionDropped(t *testing.T) {
+ 	cl.checkMedia(t, "after")
+ }
+ 
++// Zkušební STUN od knihovny (bez ICE ho posílá na RTCP, dokud nepřijde
++// RTCP) se zahodí a počítá zvlášť, ne jako poškozený paket; laboratoř
++// s volací knihovnou ho ukázala u každého hovoru.
++func TestSRTPStunFromClient(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++	cl.checkMedia(t, "before")
++
++	stun := []byte{0x00, 0x01, 0x00, 0x00, 0x21, 0x12, 0xa4, 0x42}
++	stun = append(stun, []byte("p21-stun-txn")...) // 12 B transakce
++	withAttr := append([]byte{}, stun...)
++	withAttr[3] = 8
++	withAttr = append(withAttr, 0x80, 0x22, 0x00, 0x04, 'p', '2', '1', '!') // SOFTWARE
++	sendUDP(t, cl.cli.rtcp, cl.relayClientRTCP(), stun)
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), withAttr)
++	// Nula bez magic cookie není STUN ani RTP: to je poškozený paket.
++	sendUDP(t, cl.cli.rtcp, cl.relayClientRTCP(), make([]byte, 20))
++	expectNoPacket(t, cl.mediaPath.up.rtp)
++	expectNoPacket(t, cl.mediaPath.up.rtcp)
++	waitFor(t, func() bool { return e.mediaStat("stunFromClient") == 2 && e.mediaStat("srtpMalformed") == 1 })
++	if e.mediaStat("srtpAuthFail") != 0 {
++		t.Fatalf("srtpAuthFail %d", e.mediaStat("srtpAuthFail"))
++	}
++
++	// STUN z cizího portu je cizí paket jako každý jiný.
++	intruder, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback4.AsSlice()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer intruder.Close()
++	foreign := e.mediaStat("dropForeignClient")
++	sendUDP(t, intruder, cl.relayClientRTCP(), stun)
++	waitFor(t, func() bool { return e.mediaStat("dropForeignClient") == foreign+1 })
++	if e.mediaStat("stunFromClient") != 2 {
++		t.Fatalf("stunFromClient %d", e.mediaStat("stunFromClient"))
++	}
++	cl.checkMedia(t, "after")
++}
++
+ // Re-INVITE s novým klíčem knihovny: do přechodu platí starý, potom jen nový.
+ func TestSRTPReinviteNewClientKey(t *testing.T) {
+ 	e := newEnv(t)
+@@ -478,7 +518,7 @@ func TestSRTPStatsAndLogs(t *testing.T) {
+ 	cl := establishOutgoing(t, e, c)
+ 	cl.checkMedia(t, "s")
+ 	m := e.stats()["media"].(map[string]any)
+-	for _, k := range []string{"srtpAuthFail", "srtpReplay", "srtpNoKey", "srtpMalformed", "srtpRepeat", "srtpKeySwitch", "srtpNoKeyToClient", "srtpSealError", "srtpSeqResync", "srtpKeyError"} {
++	for _, k := range []string{"srtpAuthFail", "srtpReplay", "srtpNoKey", "srtpMalformed", "srtpRepeat", "srtpKeySwitch", "srtpNoKeyToClient", "srtpSealError", "srtpSeqResync", "srtpKeyError", "stunFromClient"} {
+ 		if _, ok := m[k]; !ok {
+ 			t.Errorf("stats without %s", k)
+ 		}

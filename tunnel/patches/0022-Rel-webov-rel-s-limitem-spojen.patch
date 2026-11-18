@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:53:00 +0000
+Subject: [PATCH 22/33] =?UTF-8?q?Rel=C3=A9:=20webov=C3=A9=20rel=C3=A9=20s?=
+ =?UTF-8?q?=20limitem=20spojen=C3=AD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Webové relé na 127.0.0.1 nemělo limit spojení. Cizí appka mohla otevřít
+tisíce spojení (pomalé hlavičky nebo opakované požadavky bez tokenu
+v jednom spojení) a každé stálo proces appky deskriptor a vlákno.
+Proces pak mohl přestat otevírat sokety pro hlas a tunel.
+
+Spojení hlídá stejné hlídání jako port signalizace: nejvýš 16 tichých
+(po 1 s zavřít) a 32 posílajících, vyřazuje se nejdéle zaseknuté.
+Spojení s probíhajícím požadavkem appky (platný token) se nevyřazuje.
+Po odpovědi 403 se spojení zavře, hlavičky musí přijít do 3 s
+a mají nejvýš 8 KiB. Test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/http.go      | 34 ++++++++++-
+ libtailscale/p21relay/http_test.go | 92 ++++++++++++++++++++++++++++++
+ 2 files changed, 123 insertions(+), 3 deletions(-)
+
+diff --git a/libtailscale/p21relay/http.go b/libtailscale/p21relay/http.go
+index 50ab749..11a78e4 100644
+--- a/libtailscale/p21relay/http.go
++++ b/libtailscale/p21relay/http.go
+@@ -28,19 +28,28 @@ const TokenHeader = "X-Phone21-Relay"
+ const (
+ 	httpDialTimeout       = 10 * time.Second
+ 	httpResponseTimeout   = 2 * time.Minute
+-	httpReadHeaderTimeout = 10 * time.Second
++	httpReadHeaderTimeout = 3 * time.Second
+ 	httpIdleTimeout       = 60 * time.Second
++	httpMaxHeaderBytes    = 8 << 10
++	// Connections on the HTTP port (see connGuard): the app's own HTTP
++	// clients use a few at a time.
++	httpMaxSilent     = 16
++	httpMaxBusy       = 32
++	httpSilentTimeout = time.Second
+ )
+ 
+ var errHTTPTarget = fixedErr("target not allowed")
+ 
+ type relayTargetKey struct{}
+ 
++type relayConnKey struct{}
++
+ // httpRelay forwards http://127.0.0.1:P/<host>:<port>/<rest> to
+ // http://<host>:<port>/<rest> in the private network, for requests that
+ // carry the secret token.
+ type httpRelay struct {
+ 	ln      net.Listener
++	guard   *connGuard
+ 	srv     *http.Server
+ 	token   string
+ 	allowed map[netip.Addr]bool
+@@ -101,14 +110,26 @@ func newHTTPRelay(ctx context.Context, hosts []netip.Addr, port int, nw Network,
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	h.ln = ln
++	// Every app on the phone can connect; the guard keeps them from
++	// tying up this process's descriptors and goroutines.
++	h.guard = &connGuard{
++		name:          "http.conn",
++		maxSilent:     httpMaxSilent,
++		maxBusy:       httpMaxBusy,
++		silentTimeout: httpSilentTimeout,
++		cnt:           cnt,
++	}
++	h.ln = guardedListener{Listener: ln, g: h.guard}
+ 	h.srv = &http.Server{
+ 		Handler:           h,
+ 		ReadHeaderTimeout: httpReadHeaderTimeout,
+ 		IdleTimeout:       httpIdleTimeout,
+-		MaxHeaderBytes:    64 << 10,
++		MaxHeaderBytes:    httpMaxHeaderBytes,
+ 		ErrorLog:          log.New(io.Discard, "", 0),
+ 		BaseContext:       func(net.Listener) context.Context { return ctx },
++		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
++			return context.WithValue(ctx, relayConnKey{}, c)
++		},
+ 	}
+ 	return h, nil
+ }
+@@ -131,9 +152,16 @@ func (h *httpRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	tok := r.Header.Values(TokenHeader)
+ 	if len(tok) != 1 || subtle.ConstantTimeCompare([]byte(tok[0]), []byte(h.token)) != 1 {
+ 		h.cnt.inc("http.forbidden_token")
++		w.Header().Set("Connection", "close") // no keep-alive for strangers
+ 		http.Error(w, "forbidden", http.StatusForbidden)
+ 		return
+ 	}
++	// The app's own request: its connection must not be closed to make
++	// room for others while it runs.
++	if gc, ok := r.Context().Value(relayConnKey{}).(*guardedConn); ok {
++		gc.inUse.Add(1)
++		defer gc.inUse.Add(-1)
++	}
+ 	target, status := h.target(r)
+ 	if target == nil {
+ 		h.cnt.inc("http.rejected_target")
+diff --git a/libtailscale/p21relay/http_test.go b/libtailscale/p21relay/http_test.go
+index 772c8db..de18811 100644
+--- a/libtailscale/p21relay/http_test.go
++++ b/libtailscale/p21relay/http_test.go
+@@ -206,3 +206,95 @@ func TestHTTPRelayRejects(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// Other apps cannot tie up the HTTP relay with connections: silent and
++// stalled ones are bounded, a stranger's connection closes after the 403,
++// and the app's own requests get through, also one that runs meanwhile.
++func TestHTTPRelayConnLimit(t *testing.T) {
++	gotSlow, finish := make(chan struct{}), make(chan struct{})
++	_, upAddr := newHTTPUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/slow" {
++			close(gotSlow)
++			<-finish
++		}
++		io.WriteString(w, "ok")
++	}))
++	e := newTestHTTPRelay(t, upIP)
++	addr := fmt.Sprintf("127.0.0.1:%d", e.port())
++	get := func(path string) (int, string, error) {
++		req, _ := http.NewRequest("GET", "http://"+addr+"/"+upAddr+path, nil)
++		req.Header.Set(TokenHeader, e.token)
++		resp, err := relayClient().Do(req)
++		if err != nil {
++			return 0, "", err
++		}
++		defer resp.Body.Close()
++		b, err := io.ReadAll(resp.Body)
++		return resp.StatusCode, string(b), err
++	}
++	slow := make(chan error, 1)
++	go func() {
++		code, body, err := get("/slow")
++		if err == nil && (code != 200 || body != "ok") {
++			err = fmt.Errorf("status %d, body %q", code, body)
++		}
++		slow <- err
++	}()
++	<-gotSlow
++
++	dial := func() net.Conn {
++		c, err := net.Dial("tcp4", addr)
++		if err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() { c.Close() })
++		return c
++	}
++	for i := 0; i < 3*httpMaxSilent; i++ {
++		dial()
++	}
++	for i := 0; i < 2*httpMaxBusy; i++ {
++		fmt.Fprintf(dial(), "GET /%s/x HTTP/1.1\r\n", upAddr) // the headers never end
++	}
++	waitFor(t, func() bool {
++		return e.cnt.get("http.conn.evicted_silent") > 0 && e.cnt.get("http.conn.evicted_busy") > 0
++	})
++	if silent, busy := e.guard.counts(); silent > httpMaxSilent || busy > httpMaxBusy {
++		t.Fatalf("tracked %d silent, %d busy", silent, busy)
++	}
++
++	if code, body, err := get("/x"); err != nil || code != 200 || body != "ok" {
++		t.Fatalf("request of the app: %d %q %v", code, body, err)
++	}
++	close(finish)
++	if err := <-slow; err != nil {
++		t.Fatalf("running request of the app: %v", err)
++	}
++
++	// A request without the token: 403, then the connection closes.
++	c := dial()
++	fmt.Fprintf(c, "GET /%s/x HTTP/1.1\r\nHost: x\r\n\r\n", upAddr)
++	c.SetReadDeadline(time.Now().Add(waitLong))
++	br := bufio.NewReader(c)
++	resp, err := http.ReadResponse(br, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	io.Copy(io.Discard, resp.Body)
++	if resp.StatusCode != 403 || !resp.Close {
++		t.Fatalf("status %d, close %v", resp.StatusCode, resp.Close)
++	}
++	if _, err := br.ReadByte(); err == nil {
++		t.Fatal("connection stayed open after 403")
++	}
++
++	// Oversized headers are refused before the token is even looked at
++	// (431, or a reset when the relay hangs up while they are still
++	// arriving).
++	c = dial()
++	fmt.Fprintf(c, "GET /%s/x HTTP/1.1\r\nHost: x\r\nX-Big: %s\r\n\r\n", upAddr, strings.Repeat("a", 4*httpMaxHeaderBytes))
++	c.SetReadDeadline(time.Now().Add(waitLong))
++	if resp, err := http.ReadResponse(bufio.NewReader(c), nil); err == nil && resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
++		t.Fatalf("big headers: status %d", resp.StatusCode)
++	}
++}

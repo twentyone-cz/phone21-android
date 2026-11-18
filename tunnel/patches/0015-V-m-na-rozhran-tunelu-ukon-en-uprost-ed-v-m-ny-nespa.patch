@@ -1,0 +1,612 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:34:56 +0000
+Subject: [PATCH 15/33] =?UTF-8?q?V=C3=BDm=C4=9Bna=20rozhran=C3=AD=20tunelu?=
+ =?UTF-8?q?:=20ukon=C4=8Den=C3=AD=20uprost=C5=99ed=20v=C3=BDm=C4=9Bny=20ne?=
+ =?UTF-8?q?spadne=20ani=20neuv=C3=A1zne?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Když se rozhraní vyměnilo a tunel se ukončil dřív, než staré rozhraní
+doběhlo, proces spadl na dvojím zavření (převzatá chyba, novou
+výměnou vnitřní → systémové a při změně adres přibyla příležitost).
+Při dvou výměnách po sobě prostřední rozhraní nikdy neběželo, zůstalo
+otevřené, čtení na něm viselo a ukončení i zavření čekalo navždy.
+
+Každé rozhraní se teď zastavuje právě jednou; to, které na řadu
+nepřišlo, se zavře přímo. Ukončení čeká jen na to, co opravdu běží,
+čtení skončí hned po zastavení rozhraní a zavření celku nepřijde
+o nejnovější rozhraní. Testy (na počítači skriptem
+multitun_hosttest.sh): ukončení během výměny, tři rozhraní po sobě,
+běžná výměna, zavření během výměny a náhodné střídání za provozu.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/multitun.go          | 121 ++++++++--
+ libtailscale/multitun_hosttest.sh |  21 ++
+ libtailscale/multitun_test.go     | 352 ++++++++++++++++++++++++++++++
+ 3 files changed, 471 insertions(+), 23 deletions(-)
+ create mode 100755 libtailscale/multitun_hosttest.sh
+ create mode 100644 libtailscale/multitun_test.go
+
+diff --git a/libtailscale/multitun.go b/libtailscale/multitun.go
+index 4103c9f..8406b12 100644
+--- a/libtailscale/multitun.go
++++ b/libtailscale/multitun.go
+@@ -45,6 +45,10 @@ type multiTUN struct {
+ 	// must be held when writing.
+ 	downCh syncs.AtomicValue[chan struct{}]
+ 	down   bool // whether the downCh is closed
++
++	// closers counts the goroutines closing devices that never ran
++	// (see stopDevice). Only used by run.
++	closers sync.WaitGroup
+ }
+ 
+ // tunDevice wraps and drives a single tun.Device.
+@@ -55,6 +59,8 @@ type tunDevice struct {
+ 	closeDone chan error
+ 	// readDone is notified when the read goroutine is done.
+ 	readDone chan struct{}
++	// closed reports whether close has been closed. Only used by run.
++	closed bool
+ }
+ 
+ type readRequest struct {
+@@ -113,53 +119,93 @@ func (d *multiTUN) run() {
+ 		}
+ 	}()
+ 
++	// Phone21: devices can be replaced again before the previous swap
++	// completed (in-process interface -> system VPN, new addresses) and shut
++	// down in the middle of a swap. So the goroutines of every device are
++	// tracked: each device is stopped once (close is never closed twice),
++	// and Shutdown waits only for goroutines that actually run.
++
++	// devices are the devices not yet done with, oldest first. All but the
++	// newest are stopping.
+ 	var devices []*tunDevice
+-	// readDone is the readDone channel of the device being read from.
+-	var readDone chan struct{}
+-	// runDone is the closeDone channel of the device being written to.
+-	var runDone chan error
++	// reader is the device being read from: devices[0], nil if none.
++	var reader *tunDevice
++	// writer is the device being written to (its runDevice runs), nil if
++	// none. It may be gone from devices already: its reads can end before
++	// runDevice returns.
++	var writer *tunDevice
+ 	for {
++		var readDone chan struct{}
++		if reader != nil {
++			readDone = reader.readDone
++		}
++		var runDone chan error
++		if writer != nil {
++			runDone = writer.closeDone
++		}
+ 		select {
+ 		case <-readDone:
++			if !reader.closed {
++				// readFrom returned because the multiTUN is closing;
++				// the close case handles the devices.
++				reader = nil
++				break
++			}
+ 			// The oldest device has reached EOF, replace it.
+ 			n := copy(devices, devices[1:])
++			devices[n] = nil
+ 			devices = devices[:n]
++			reader = nil
+ 			if len(devices) > 0 {
+ 				// Start reading from the next device.
+-				dev := devices[0]
+-				readDone = dev.readDone
+-				go d.readFrom(dev)
++				reader = devices[0]
++				go d.readFrom(reader)
+ 			}
+ 		case <-runDone:
++			prev := writer
++			writer = nil
++			if !prev.closed {
++				// runDevice returned because the multiTUN is closing
++				// and closed the device; the close case does the rest.
++				d.stopDevice(prev, prev)
++				break
++			}
+ 			// A device completed runDevice, replace it.
+ 			if len(devices) > 0 {
+-				dev := devices[len(devices)-1]
+-				runDone = dev.closeDone
+-				go d.runDevice(dev)
++				if dev := devices[len(devices)-1]; !dev.closed {
++					writer = dev
++					go d.runDevice(dev)
++				}
+ 			}
+ 		case <-d.shutdowns:
+ 			// Shut down all devices.
+ 			for _, dev := range devices {
+-				close(dev.close)
+-				<-dev.closeDone
+-				<-dev.readDone
++				d.stopDevice(dev, writer)
++			}
++			if writer != nil {
++				<-writer.closeDone
+ 			}
+-			devices = nil
++			d.closers.Wait()
++			if reader != nil {
++				<-reader.readDone
++			}
++			devices, reader, writer = nil, nil, nil
+ 			d.shutdownDone <- struct{}{}
+ 		case <-d.close:
+-			var derr error
+ 			for _, dev := range devices {
+-				if err := <-dev.closeDone; err != nil {
+-					derr = err
+-				}
++				d.stopDevice(dev, writer)
+ 			}
++			var derr error
++			if writer != nil {
++				derr = <-writer.closeDone
++			}
++			d.closers.Wait()
+ 			d.closeErr <- derr
+ 			return
+ 		case dev := <-d.devices:
+ 			if len(devices) > 0 {
+ 				// Ask the most recent device to stop.
+-				prev := devices[len(devices)-1]
+-				close(prev.close)
++				d.stopDevice(devices[len(devices)-1], writer)
+ 			}
+ 			wrap := &tunDevice{
+ 				dev:       dev,
+@@ -168,10 +214,13 @@ func (d *multiTUN) run() {
+ 				readDone:  make(chan struct{}, 1),
+ 			}
+ 			if len(devices) == 0 {
+-				// Start using this first device.
+-				readDone = wrap.readDone
++				// Start reading from this first device.
++				reader = wrap
+ 				go d.readFrom(wrap)
+-				runDone = wrap.closeDone
++			}
++			if writer == nil {
++				// Start writing to this device.
++				writer = wrap
+ 				go d.runDevice(wrap)
+ 			}
+ 			devices = append(devices, wrap)
+@@ -193,6 +242,28 @@ func (d *multiTUN) run() {
+ 	}
+ }
+ 
++// stopDevice asks dev to stop, once. The writer's runDevice closes its
++// underlying device; any other device never ran runDevice (it was replaced
++// before its turn) and is closed here, in the background like runDevice
++// does, so that its reads end. Only called by run.
++func (d *multiTUN) stopDevice(dev, writer *tunDevice) {
++	if dev.closed {
++		return
++	}
++	dev.closed = true
++	close(dev.close)
++	if dev == writer {
++		return
++	}
++	d.closers.Add(1)
++	go func() {
++		defer d.closers.Done()
++		if err := dev.dev.Close(); err != nil {
++			log.Printf("multiTUN: closing a replaced device: %v", err)
++		}
++	}()
++}
++
+ func (d *multiTUN) readFrom(dev *tunDevice) {
+ 	defer func() {
+ 		if p := recover(); p != nil {
+@@ -221,6 +292,10 @@ func (d *multiTUN) readFrom(dev *tunDevice) {
+ 			if stop {
+ 				return
+ 			}
++		case <-dev.close:
++			// Phone21: replaced or shut down. Do not wait for another read
++			// request to notice: Shutdown waits for this goroutine.
++			return
+ 		case <-d.close:
+ 			return
+ 		}
+diff --git a/libtailscale/multitun_hosttest.sh b/libtailscale/multitun_hosttest.sh
+new file mode 100755
+index 0000000..a06f37b
+--- /dev/null
++++ b/libtailscale/multitun_hosttest.sh
+@@ -0,0 +1,21 @@
++#!/bin/sh
++# Copyright (c) Phone21
++# SPDX-License-Identifier: BSD-3-Clause
++#
++# Runs multitun_test.go on a Linux host with the race detector. The
++# libtailscale package builds only for Android, but multiTUN has no Android
++# dependency: multitun.go and its test are copied into a scratch module that
++# uses this module's dependencies (from the module cache, offline).
++#
++#	./libtailscale/multitun_hosttest.sh [go test flags, e.g. -count=20 -v]
++set -eu
++root=$(cd "$(dirname "$0")/.." && pwd)
++tmp=$(mktemp -d)
++trap 'rm -rf "$tmp"' EXIT
++sed 's#^module .*#module multituntest#' "$root/go.mod" >"$tmp/go.mod"
++cp "$root/go.sum" "$tmp/"
++cp "$root/libtailscale/multitun.go" "$root/libtailscale/multitun_test.go" "$tmp/"
++printf 'package libtailscale\n\nconst defaultMTU = 1280\n' >"$tmp/mtu.go"
++# tool/go reads ./go.mod, so it runs from the repo root; -C runs go in $tmp.
++cd "$root"
++GOPROXY=off GOFLAGS="${GOFLAGS:-} -mod=mod" ./tool/go -C "$tmp" test -race "$@" .
+diff --git a/libtailscale/multitun_test.go b/libtailscale/multitun_test.go
+new file mode 100644
+index 0000000..1c8ab0f
+--- /dev/null
++++ b/libtailscale/multitun_test.go
+@@ -0,0 +1,352 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package libtailscale
++
++// The package builds only for Android. On a Linux host these tests run with
++// ./libtailscale/multitun_hosttest.sh (this file must therefore use nothing
++// from the package but multitun.go).
++
++import (
++	"errors"
++	"fmt"
++	"math/rand/v2"
++	"os"
++	"slices"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/tailscale/wireguard-go/tun"
++)
++
++// fakeTUN is a tun.Device whose reads are fed through in and whose writes
++// appear on out.
++type fakeTUN struct {
++	name      string
++	events    chan tun.Event
++	in        chan []byte
++	out       chan []byte
++	done      chan struct{}
++	closeOnce sync.Once
++	closes    atomic.Int32
++}
++
++func newFakeTUN(name string) *fakeTUN {
++	return &fakeTUN{
++		name:   name,
++		events: make(chan tun.Event, 1),
++		in:     make(chan []byte, 16),
++		out:    make(chan []byte, 256),
++		done:   make(chan struct{}),
++	}
++}
++
++func (f *fakeTUN) File() *os.File { return nil }
++
++func (f *fakeTUN) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
++	select {
++	case p := <-f.in:
++		n := copy(slab[tun.ReadPacketSpacing:len(slab)-tun.ReadPacketSpacing], p)
++		packets[0] = tun.ReadPacket{Offset: tun.ReadPacketSpacing, Size: n}
++		return 1, nil
++	case <-f.done:
++		return 0, os.ErrClosed
++	}
++}
++
++func (f *fakeTUN) Write(bufs [][]byte, offset int) (int, error) {
++	select {
++	case <-f.done:
++		return 0, os.ErrClosed
++	default:
++	}
++	for _, b := range bufs {
++		select {
++		case f.out <- slices.Clone(b[offset:]):
++		default:
++		}
++	}
++	return len(bufs), nil
++}
++
++func (f *fakeTUN) MTU() (int, error)        { return 1280, nil }
++func (f *fakeTUN) Name() (string, error)    { return f.name, nil }
++func (f *fakeTUN) Events() <-chan tun.Event { return f.events }
++func (f *fakeTUN) BatchSize() int           { return 1 }
++
++func (f *fakeTUN) Close() error {
++	f.closes.Add(1)
++	f.closeOnce.Do(func() { close(f.done) })
++	return nil
++}
++
++func (f *fakeTUN) isClosed() bool {
++	select {
++	case <-f.done:
++		return true
++	default:
++		return false
++	}
++}
++
++// within fails the test if fn does not return in time (a hang in multiTUN).
++func within(t *testing.T, what string, fn func()) {
++	t.Helper()
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		fn()
++	}()
++	select {
++	case <-done:
++	case <-time.After(10 * time.Second):
++		t.Fatalf("%s: timed out", what)
++	}
++}
++
++// engineReader keeps reading like the engine does, until d is closed, and
++// reports the packets it read.
++func engineReader(d *multiTUN) (got <-chan string, stopped <-chan struct{}) {
++	ch := make(chan string, 256)
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		slab := make([]byte, 2048)
++		packets := make([]tun.ReadPacket, 1)
++		for {
++			n, err := d.Read(slab, packets)
++			if errors.Is(err, os.ErrClosed) {
++				return
++			}
++			if n == 1 {
++				p := packets[0]
++				select {
++				case ch <- string(slab[p.Offset : p.Offset+p.Size]):
++				default:
++				}
++			}
++		}
++	}()
++	return ch, done
++}
++
++func waitPacket(t *testing.T, got <-chan string, want string) {
++	t.Helper()
++	deadline := time.After(10 * time.Second)
++	for {
++		select {
++		case p := <-got:
++			if p == want {
++				return
++			}
++		case <-deadline:
++			t.Fatalf("packet %q not read", want)
++		}
++	}
++}
++
++// writeUntil writes pkt through d until it shows up on dev.
++func writeUntil(t *testing.T, d *multiTUN, dev *fakeTUN, pkt string) {
++	t.Helper()
++	deadline := time.Now().Add(10 * time.Second)
++	for time.Now().Before(deadline) {
++		if _, err := d.Write([][]byte{[]byte(pkt)}, 0); err != nil {
++			t.Fatalf("write: %v", err)
++		}
++		select {
++		case p := <-dev.out:
++			if string(p) == pkt {
++				return
++			}
++		case <-time.After(10 * time.Millisecond):
++		}
++	}
++	t.Fatalf("packet %q not written to %s", pkt, dev.name)
++}
++
++// A device replaced and the tunnel shut down before the old device is done
++// (switch from the in-process interface to the system VPN that fails right
++// away, or a new address followed by a disconnect) must neither crash the
++// process (close of a closed channel) nor hang the backend.
++func TestMultiTUNShutdownDuringSwap(t *testing.T) {
++	for _, withReader := range []bool{false, true} {
++		t.Run(fmt.Sprintf("reader=%v", withReader), func(t *testing.T) {
++			d := newTUNDevices()
++			var stopped <-chan struct{}
++			if withReader {
++				_, stopped = engineReader(d)
++			}
++			for i := 0; i < 100; i++ {
++				a, b := newFakeTUN("a"), newFakeTUN("b")
++				within(t, "swap and shutdown", func() {
++					d.add(a)
++					d.Up()
++					d.add(b)
++					d.Down()
++					d.Shutdown()
++				})
++				if !a.isClosed() || !b.isClosed() {
++					t.Fatalf("round %d: after Shutdown closed a=%v b=%v", i, a.isClosed(), b.isClosed())
++				}
++			}
++			within(t, "close", func() {
++				if err := d.Close(); err != nil {
++					t.Errorf("Close: %v", err)
++				}
++			})
++			if stopped != nil {
++				within(t, "reader stop", func() { <-stopped })
++			}
++		})
++	}
++}
++
++// Three devices in a row (the middle one never gets its turn): reads and
++// writes end up on the newest one, the middle one is closed and Shutdown
++// returns.
++func TestMultiTUNReplaceTwice(t *testing.T) {
++	d := newTUNDevices()
++	got, stopped := engineReader(d)
++	d.Up()
++	a, b, c := newFakeTUN("a"), newFakeTUN("b"), newFakeTUN("c")
++	within(t, "adds", func() {
++		d.add(a)
++		d.add(b)
++		d.add(c)
++	})
++
++	c.in <- []byte("from c")
++	waitPacket(t, got, "from c")
++	writeUntil(t, d, c, "to c")
++	if !a.isClosed() || !b.isClosed() || c.isClosed() {
++		t.Fatalf("closed a=%v b=%v c=%v", a.isClosed(), b.isClosed(), c.isClosed())
++	}
++	if name, _ := d.Name(); name != "c" {
++		t.Errorf("Name = %q, want c", name)
++	}
++
++	within(t, "shutdown", d.Shutdown)
++	if !c.isClosed() {
++		t.Error("c not closed by Shutdown")
++	}
++
++	// Usable again after Shutdown.
++	e := newFakeTUN("e")
++	within(t, "add after shutdown", func() { d.add(e) })
++	e.in <- []byte("from e")
++	waitPacket(t, got, "from e")
++	writeUntil(t, d, e, "to e")
++
++	within(t, "close", func() {
++		if err := d.Close(); err != nil {
++			t.Errorf("Close: %v", err)
++		}
++	})
++	within(t, "reader stop", func() { <-stopped })
++	if !e.isClosed() {
++		t.Error("e not closed by Close")
++	}
++}
++
++// The usual swap keeps working: the old device is closed, traffic moves to
++// the new one.
++func TestMultiTUNSwap(t *testing.T) {
++	d := newTUNDevices()
++	got, stopped := engineReader(d)
++	d.Up()
++	a := newFakeTUN("a")
++	within(t, "add a", func() { d.add(a) })
++	a.in <- []byte("from a")
++	waitPacket(t, got, "from a")
++	writeUntil(t, d, a, "to a")
++
++	b := newFakeTUN("b")
++	within(t, "add b", func() { d.add(b) })
++	b.in <- []byte("from b")
++	waitPacket(t, got, "from b")
++	writeUntil(t, d, b, "to b")
++	if !a.isClosed() || b.isClosed() {
++		t.Fatalf("closed a=%v b=%v", a.isClosed(), b.isClosed())
++	}
++
++	within(t, "close", func() {
++		if err := d.Close(); err != nil {
++			t.Errorf("Close: %v", err)
++		}
++	})
++	within(t, "reader stop", func() { <-stopped })
++	if !b.isClosed() {
++		t.Error("b not closed by Close")
++	}
++}
++
++// Close in the middle of a swap must not hang either.
++func TestMultiTUNCloseDuringSwap(t *testing.T) {
++	for i := 0; i < 50; i++ {
++		d := newTUNDevices()
++		a, b, c := newFakeTUN("a"), newFakeTUN("b"), newFakeTUN("c")
++		within(t, "swap and close", func() {
++			d.add(a)
++			d.add(b)
++			d.add(c)
++			d.Close()
++		})
++		if !a.isClosed() || !b.isClosed() || !c.isClosed() {
++			t.Fatalf("round %d: closed a=%v b=%v c=%v", i, a.isClosed(), b.isClosed(), c.isClosed())
++		}
++	}
++}
++
++// Random adds, shutdowns and up/down while the engine reads and writes all
++// the time: no crash, no hang, and every device is closed in the end.
++func TestMultiTUNChurn(t *testing.T) {
++	d := newTUNDevices()
++	_, readerStopped := engineReader(d)
++	stopWriting := make(chan struct{})
++	writerStopped := make(chan struct{})
++	go func() {
++		defer close(writerStopped)
++		for {
++			select {
++			case <-stopWriting:
++				return
++			default:
++			}
++			if _, err := d.Write([][]byte{[]byte("x")}, 0); errors.Is(err, os.ErrClosed) {
++				return
++			}
++		}
++	}()
++
++	var all []*fakeTUN
++	within(t, "churn", func() {
++		for i := 0; i < 500; i++ {
++			switch rand.IntN(5) {
++			case 0, 1:
++				f := newFakeTUN(fmt.Sprint(i))
++				all = append(all, f)
++				d.add(f)
++				f.in <- []byte("p")
++			case 2:
++				d.Up()
++			case 3:
++				d.Down()
++			case 4:
++				d.Shutdown()
++			}
++		}
++		d.Down()
++		d.Shutdown()
++	})
++	for i, f := range all {
++		if !f.isClosed() {
++			t.Fatalf("device %d not closed after Shutdown", i)
++		}
++	}
++	close(stopWriting)
++	within(t, "close", func() { d.Close() })
++	within(t, "reader stop", func() { <-readerStopped })
++	within(t, "writer stop", func() { <-writerStopped })
++}

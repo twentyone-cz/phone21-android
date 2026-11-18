@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:35:15 +0000
+Subject: [PATCH 18/33] =?UTF-8?q?Rel=C3=A9:=20appka=20m=C5=AF=C5=BEe=20p?=
+ =?UTF-8?q?=C5=99edat=20st=C3=A1l=C3=A9=20porty?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Konfigurace od appky neznala porty relé a neznámá pole odmítala, takže
+každé nové spuštění relé (nová generace rozhraní, přepnutí režimu)
+dostalo náhodné porty. Ústředna pak do nové registrace posílala
+příchozí hovory na starý port v privátní síti a volací knihovna se
+připojovala na starý port na 127.0.0.1.
+
+Nová volitelná pole sipPort, httpPort a privateSipPort (0 nebo
+chybí = libovolný, rozsah 0-65535 se kontroluje), stejná jména jako
+ve výsledku spuštění relé, takže je appka předá zpět. Obsazený port
+relé nahradí volným. Popis u spuštění relé, testy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21_export.go                | 16 ++++++--
+ libtailscale/p21internal/relaycfg.go      | 29 ++++++++++++-
+ libtailscale/p21internal/relaycfg_test.go | 50 +++++++++++++++++++++++
+ 3 files changed, 90 insertions(+), 5 deletions(-)
+
+diff --git a/libtailscale/p21_export.go b/libtailscale/p21_export.go
+index 005f466..9a0fdfd 100644
+--- a/libtailscale/p21_export.go
++++ b/libtailscale/p21_export.go
+@@ -61,11 +61,19 @@ func GenerateRelayIdentity() (string, error) {
+ // replacing a relay that is already running. cfgJSON:
+ //
+ //	{"upstreamSip":"100.64.0.1:5060","httpHosts":["100.64.0.1"],
+-//	 "serverCertPem":"…","serverKeyPem":"…","clientCertPem":"…"}
++//	 "serverCertPem":"…","serverKeyPem":"…","clientCertPem":"…",
++//	 "sipPort":int,"httpPort":int,"privateSipPort":int}
+ //
+-// It returns {"sipPort":int,"httpPort":int,"httpToken":"…"} (p21relay.Info),
+-// or an error when the internal mode is not up. The relay stops by itself
+-// when the interface is replaced or closed (InternalStatus "relay" false).
++// The three ports are optional preferences (0 or absent = any free port; a
++// port that is taken is replaced by a free one). Pass the ports of the
++// previous result when restarting the relay (new generation, relay stopped):
++// the calling library's route to 127.0.0.1 and the miniserver's
++// registration binding on the private address then stay valid.
++//
++// It returns {"sipPort":int,"httpPort":int,"httpToken":"…","privateSipPort":int}
++// (p21relay.Info), or an error when the internal mode is not up. The relay
++// stops by itself when the interface is replaced or closed (InternalStatus
++// "relay" false).
+ func StartRelay(cfgJSON string) (string, error) {
+ 	cfg, err := p21internal.ParseRelayConfig(cfgJSON)
+ 	if err != nil {
+diff --git a/libtailscale/p21internal/relaycfg.go b/libtailscale/p21internal/relaycfg.go
+index 5f3eb49..1e37cb5 100644
+--- a/libtailscale/p21internal/relaycfg.go
++++ b/libtailscale/p21internal/relaycfg.go
+@@ -21,6 +21,15 @@ type relayConfigJSON struct {
+ 	ServerCertPEM string   `json:"serverCertPem"` // relay identity toward the calling library
+ 	ServerKeyPEM  string   `json:"serverKeyPem"`
+ 	ClientCertPEM string   `json:"clientCertPem"` // the only accepted client certificate
++
++	// Preferred ports, 0 or absent = any. The app passes the ports the
++	// previous relay reported (StartRelay result) so that a restarted relay
++	// keeps them: the calling library's route to 127.0.0.1 and the
++	// miniserver's registration binding (Contact on the private address)
++	// stay valid. A port that is taken is replaced by a free one.
++	SIPPort        int `json:"sipPort"`        // TLS on 127.0.0.1
++	HTTPPort       int `json:"httpPort"`       // HTTP on 127.0.0.1
++	PrivateSIPPort int `json:"privateSipPort"` // UDP and TCP on the private address
+ }
+ 
+ // ParseRelayConfig parses and validates the app's relay configuration.
+@@ -58,7 +67,25 @@ func ParseRelayConfig(s string) (p21relay.Config, error) {
+ 		return p21relay.Config{}, fmt.Errorf("relay config: upstreamSip %v must be IPv4 address:port", up)
+ 	}
+ 
+-	cfg := p21relay.Config{UpstreamSIP: up}
++	for _, p := range []struct {
++		name string
++		val  int
++	}{
++		{"sipPort", j.SIPPort},
++		{"httpPort", j.HTTPPort},
++		{"privateSipPort", j.PrivateSIPPort},
++	} {
++		if p.val < 0 || p.val > 65535 {
++			return p21relay.Config{}, fmt.Errorf("relay config: %s %d out of range 0-65535", p.name, p.val)
++		}
++	}
++
++	cfg := p21relay.Config{
++		UpstreamSIP:    up,
++		SIPPort:        j.SIPPort,
++		HTTPPort:       j.HTTPPort,
++		PrivateSIPPort: uint16(j.PrivateSIPPort),
++	}
+ 	for _, h := range j.HTTPHosts {
+ 		a, err := netip.ParseAddr(h)
+ 		if err != nil {
+diff --git a/libtailscale/p21internal/relaycfg_test.go b/libtailscale/p21internal/relaycfg_test.go
+index 5aad7b8..2716674 100644
+--- a/libtailscale/p21internal/relaycfg_test.go
++++ b/libtailscale/p21internal/relaycfg_test.go
+@@ -8,6 +8,8 @@ import (
+ 	"net/netip"
+ 	"strings"
+ 	"testing"
++
++	"github.com/tailscale/tailscale-android/libtailscale/p21relay"
+ )
+ 
+ func validRelayConfig(t *testing.T) map[string]any {
+@@ -57,6 +59,48 @@ func TestParseRelayConfig(t *testing.T) {
+ 	if cfg.Logf != nil {
+ 		t.Error("Logf must be set by the caller")
+ 	}
++	if cfg.SIPPort != 0 || cfg.HTTPPort != 0 || cfg.PrivateSIPPort != 0 {
++		t.Errorf("ports without preference = %d/%d/%d, want any (0)", cfg.SIPPort, cfg.HTTPPort, cfg.PrivateSIPPort)
++	}
++}
++
++// The app restarts the relay with the ports the previous one reported, so
++// that the calling library's route and the miniserver's registration binding
++// stay valid.
++func TestParseRelayConfigPorts(t *testing.T) {
++	m := validRelayConfig(t)
++	m["sipPort"] = 40001
++	m["httpPort"] = 41001
++	m["privateSipPort"] = 65535
++	cfg, err := ParseRelayConfig(marshal(t, m))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if cfg.SIPPort != 40001 || cfg.HTTPPort != 41001 || cfg.PrivateSIPPort != 65535 {
++		t.Errorf("ports = %d/%d/%d", cfg.SIPPort, cfg.HTTPPort, cfg.PrivateSIPPort)
++	}
++
++	// The relay's own result carries the ports under the same names.
++	info, err := json.Marshal(p21relay.Info{SIPPort: 40002, HTTPPort: 41002, PrivateSIPPort: 5062})
++	if err != nil {
++		t.Fatal(err)
++	}
++	var ports map[string]any
++	if err := json.Unmarshal(info, &ports); err != nil {
++		t.Fatal(err)
++	}
++	delete(ports, "httpToken")
++	m = validRelayConfig(t)
++	for k, v := range ports {
++		m[k] = v
++	}
++	cfg, err = ParseRelayConfig(marshal(t, m))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if cfg.SIPPort != 40002 || cfg.HTTPPort != 41002 || cfg.PrivateSIPPort != 5062 {
++		t.Errorf("ports from Info = %d/%d/%d", cfg.SIPPort, cfg.HTTPPort, cfg.PrivateSIPPort)
++	}
+ }
+ 
+ func TestParseRelayConfigErrors(t *testing.T) {
+@@ -79,6 +123,12 @@ func TestParseRelayConfigErrors(t *testing.T) {
+ 		{name: "key as cert", edit: func(m map[string]any) { m["serverCertPem"] = m["serverKeyPem"] }},
+ 		{name: "cert as key", edit: func(m map[string]any) { m["serverKeyPem"] = m["serverCertPem"] }},
+ 		{name: "no client cert", edit: func(m map[string]any) { m["clientCertPem"] = "" }},
++		{name: "negative sip port", edit: func(m map[string]any) { m["sipPort"] = -1 }},
++		{name: "http port too big", edit: func(m map[string]any) { m["httpPort"] = 65536 }},
++		{name: "private port too big", edit: func(m map[string]any) { m["privateSipPort"] = 70000 }},
++		{name: "fractional port", edit: func(m map[string]any) { m["sipPort"] = 5060.5 }},
++		{name: "port as string", edit: func(m map[string]any) { m["privateSipPort"] = "5060" }},
++		{name: "token is not config", edit: func(m map[string]any) { m["httpToken"] = "x" }},
+ 	} {
+ 		t.Run(tc.name, func(t *testing.T) {
+ 			m := validRelayConfig(t)

@@ -1,0 +1,243 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:35:22 +0000
+Subject: [PATCH 19/33] =?UTF-8?q?Identita=20rel=C3=A9:=20platnost=20nez?=
+ =?UTF-8?q?=C3=A1visl=C3=A1=20na=20hodin=C3=A1ch,=20bez=20pr=C3=A1va=20vyd?=
+ =?UTF-8?q?=C3=A1vat?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Platnost se odvozovala od hodin telefonu v okamžiku vytvoření a appka
+identitu ukládá natrvalo. Telefon se špatným časem (po úplném vybití,
+hodiny napřed) by uložil certifikát, který volací knihovna později
+odmítne jako prošlý nebo ještě neplatný (data kontroluje i u
+certifikátu, kterému věří přímo), a registrace by neprošla. Teď pevně
+1970-01-01 až 9999-12-31 (bez data vypršení); data nic nechrání,
+obě strany druhou pinují přesnou shodou.
+
+Certifikát už není certifikační autorita. Appka ho volací knihovně
+dává jako důvěryhodný a ta důvěra platí pro všechna její šifrovaná
+spojení: s uloženým klíčem relé by šlo vydat certifikát pro libovolný
+server. Self-signed koncový certifikát, který je sám v seznamu
+důvěryhodných, šifrovací vrstvy přijímají. Testy: platnost při různých
+hodinách, certifikát vydaný klíčem relé neprojde.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21internal/identity.go      | 39 ++++++----
+ libtailscale/p21internal/identity_test.go | 91 +++++++++++++++++++----
+ 2 files changed, 100 insertions(+), 30 deletions(-)
+
+diff --git a/libtailscale/p21internal/identity.go b/libtailscale/p21internal/identity.go
+index 4f61a53..56b533a 100644
+--- a/libtailscale/p21internal/identity.go
++++ b/libtailscale/p21internal/identity.go
+@@ -26,9 +26,19 @@ import (
+ // IdentityCommonName is the subject CN of every relay identity.
+ const IdentityCommonName = "Phone21 relay"
+ 
+-// identityValidity is long on purpose: the identity lives only inside the
+-// app (pinned by exact match on both sides), there is no CA to renew it with.
+-const identityValidity = 20 * 365 * 24 * time.Hour
++// The validity period is fixed and does not depend on the phone's clock when
++// the identity is generated: the app keeps an identity for good, and a phone
++// that starts with a wrong clock (RTC reset after a full discharge, clock
++// ahead and corrected later) would otherwise store a certificate that the
++// calling library's TLS stack later rejects as expired or not yet valid; it
++// checks the dates even of a certificate it trusts directly. The dates carry
++// no security: both sides pin the other's certificate by exact match.
++// NotAfter 9999-12-31T23:59:59Z means "no well-defined expiration date"
++// (RFC 5280, 4.1.2.5).
++var (
++	identityNotBefore = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
++	identityNotAfter  = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
++)
+ 
+ // Identity is a self-signed TLS identity for one side of the 127.0.0.1 link
+ // between the calling library and the relay.
+@@ -39,13 +49,15 @@ type Identity struct {
+ 
+ // GenerateIdentity creates an ECDSA P-256 self-signed certificate valid for
+ // IP 127.0.0.1, usable both as a TLS server and a TLS client certificate.
+-// It is marked as a CA so that TLS stacks that insist on verifying the peer
+-// against a trust anchor can be given the certificate itself as the anchor.
++//
++// It is an end-entity certificate, not a CA: the app gives it to the calling
++// library as a trust anchor (to verify the relay), and that trust covers all
++// of the library's TLS connections. A CA certificate there would let anyone
++// holding the relay's stored key issue certificates for any server the
++// library talks to. TLS stacks accept a self-signed end-entity certificate
++// that is itself in the trusted list (exact match), which is all the link on
++// 127.0.0.1 needs.
+ func GenerateIdentity() (Identity, error) {
+-	return generateIdentity(time.Now())
+-}
+-
+-func generateIdentity(now time.Time) (Identity, error) {
+ 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+ 	if err != nil {
+ 		return Identity{}, fmt.Errorf("generate key: %w", err)
+@@ -54,15 +66,14 @@ func generateIdentity(now time.Time) (Identity, error) {
+ 	if err != nil {
+ 		return Identity{}, fmt.Errorf("serial: %w", err)
+ 	}
+-	notBefore := now.Add(-time.Hour) // tolerate a phone clock that is slightly behind
+ 	tmpl := &x509.Certificate{
+ 		SerialNumber:          serial,
+ 		Subject:               pkix.Name{CommonName: IdentityCommonName},
+-		NotBefore:             notBefore,
+-		NotAfter:              notBefore.Add(identityValidity),
+-		IsCA:                  true,
++		NotBefore:             identityNotBefore,
++		NotAfter:              identityNotAfter,
++		IsCA:                  false,
+ 		BasicConstraintsValid: true,
+-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
++		KeyUsage:              x509.KeyUsageDigitalSignature,
+ 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+ 		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
+ 	}
+diff --git a/libtailscale/p21internal/identity_test.go b/libtailscale/p21internal/identity_test.go
+index ee4a41c..1b93237 100644
+--- a/libtailscale/p21internal/identity_test.go
++++ b/libtailscale/p21internal/identity_test.go
+@@ -6,11 +6,14 @@ package p21internal
+ import (
+ 	"crypto/ecdsa"
+ 	"crypto/elliptic"
++	"crypto/rand"
+ 	"crypto/tls"
+ 	"crypto/x509"
++	"crypto/x509/pkix"
+ 	"encoding/json"
+ 	"encoding/pem"
+ 	"maps"
++	"math/big"
+ 	"net"
+ 	"slices"
+ 	"testing"
+@@ -18,8 +21,7 @@ import (
+ )
+ 
+ func TestGenerateIdentity(t *testing.T) {
+-	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+-	id, err := generateIdentity(now)
++	id, err := GenerateIdentity()
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -51,13 +53,15 @@ func TestGenerateIdentity(t *testing.T) {
+ 	if cert.Subject.CommonName != "Phone21 relay" || cert.Issuer.CommonName != "Phone21 relay" {
+ 		t.Errorf("subject/issuer = %q/%q", cert.Subject.CommonName, cert.Issuer.CommonName)
+ 	}
+-	if err := cert.CheckSignatureFrom(cert); err != nil {
++	// Self-signed (CheckSignatureFrom would refuse a non-CA parent).
++	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
+ 		t.Errorf("not self-signed: %v", err)
+ 	}
+-	if !cert.IsCA || !cert.BasicConstraintsValid {
++	// An end-entity certificate: it must not be able to issue others.
++	if cert.IsCA || !cert.BasicConstraintsValid {
+ 		t.Errorf("IsCA=%v BasicConstraintsValid=%v", cert.IsCA, cert.BasicConstraintsValid)
+ 	}
+-	if want := x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign; cert.KeyUsage != want {
++	if want := x509.KeyUsageDigitalSignature; cert.KeyUsage != want {
+ 		t.Errorf("KeyUsage = %v, want %v", cert.KeyUsage, want)
+ 	}
+ 	if !slices.Equal(cert.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}) {
+@@ -66,11 +70,12 @@ func TestGenerateIdentity(t *testing.T) {
+ 	if len(cert.IPAddresses) != 1 || !cert.IPAddresses[0].Equal(net.IPv4(127, 0, 0, 1)) || len(cert.DNSNames) != 0 {
+ 		t.Errorf("SAN IPs=%v DNS=%v", cert.IPAddresses, cert.DNSNames)
+ 	}
+-	if want := now.Add(-time.Hour); !cert.NotBefore.Equal(want) {
++	// Fixed validity, independent of the clock at generation time.
++	if want := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC); !cert.NotBefore.Equal(want) {
+ 		t.Errorf("NotBefore = %v, want %v", cert.NotBefore, want)
+ 	}
+-	if years := cert.NotAfter.Sub(cert.NotBefore).Hours() / 24 / 365; years < 19.99 || years > 20.01 {
+-		t.Errorf("validity = %.2f years", years)
++	if want := time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC); !cert.NotAfter.Equal(want) {
++		t.Errorf("NotAfter = %v, want %v", cert.NotAfter, want)
+ 	}
+ 	if cert.SerialNumber.Sign() <= 0 {
+ 		t.Errorf("serial = %v", cert.SerialNumber)
+@@ -81,16 +86,70 @@ func TestGenerateIdentity(t *testing.T) {
+ 	if _, err := tls.X509KeyPair([]byte(id.CertPEM), []byte(id.KeyPEM)); err != nil {
+ 		t.Fatal(err)
+ 	}
++	// Whatever the phone's clock says: right after an RTC reset, today, or
++	// far in the future.
+ 	roots := x509.NewCertPool()
+ 	roots.AddCert(cert)
+-	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
+-		if _, err := cert.Verify(x509.VerifyOptions{
+-			DNSName:     "127.0.0.1",
+-			Roots:       roots,
+-			CurrentTime: now,
+-			KeyUsages:   []x509.ExtKeyUsage{usage},
+-		}); err != nil {
+-			t.Errorf("verify for %v: %v", usage, err)
++	for _, now := range []time.Time{
++		time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC),
++		time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC),
++		time.Now(),
++		time.Date(2126, 11, 18, 12, 0, 0, 0, time.UTC),
++	} {
++		for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
++			if _, err := cert.Verify(x509.VerifyOptions{
++				DNSName:     "127.0.0.1",
++				Roots:       roots,
++				CurrentTime: now,
++				KeyUsages:   []x509.ExtKeyUsage{usage},
++			}); err != nil {
++				t.Errorf("verify at %v for %v: %v", now, usage, err)
++			}
++		}
++	}
++}
++
++// The calling library trusts the relay's certificate for all its TLS
++// connections; a certificate issued with the relay's key for some other
++// server must not verify against it.
++func TestIdentityCannotIssue(t *testing.T) {
++	id, err := GenerateIdentity()
++	if err != nil {
++		t.Fatal(err)
++	}
++	tlsCert, err := tls.X509KeyPair([]byte(id.CertPEM), []byte(id.KeyPEM))
++	if err != nil {
++		t.Fatal(err)
++	}
++	issuer, err := x509.ParseCertificate(tlsCert.Certificate[0])
++	if err != nil {
++		t.Fatal(err)
++	}
++	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
++		SerialNumber: big.NewInt(2),
++		Subject:      pkix.Name{CommonName: "miniserver.example"},
++		DNSNames:     []string{"miniserver.example"},
++		IPAddresses:  []net.IP{net.IPv4(100, 64, 0, 1)},
++		NotBefore:    time.Now().Add(-time.Hour),
++		NotAfter:     time.Now().Add(time.Hour),
++		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
++	}, issuer, &leafKey.PublicKey, tlsCert.PrivateKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	leaf, err := x509.ParseCertificate(der)
++	if err != nil {
++		t.Fatal(err)
++	}
++	roots := x509.NewCertPool()
++	roots.AddCert(issuer)
++	for _, name := range []string{"miniserver.example", "100.64.0.1"} {
++		if _, err := leaf.Verify(x509.VerifyOptions{DNSName: name, Roots: roots}); err == nil {
++			t.Errorf("certificate for %s issued by the relay identity verifies", name)
+ 		}
+ 	}
+ }

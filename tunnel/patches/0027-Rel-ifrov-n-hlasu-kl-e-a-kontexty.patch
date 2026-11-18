@@ -1,0 +1,812 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 14:58:33 +0000
+Subject: [PATCH 27/33] =?UTF-8?q?Rel=C3=A9:=20=C5=A1ifrov=C3=A1n=C3=AD=20h?=
+ =?UTF-8?q?lasu=20=E2=80=93=20kl=C3=AD=C4=8De=20a=20kontexty?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Základ pro šifrovaný hlas mezi volací knihovnou a relé (klíče v popisu
+relace). Čtení a tvorba řádků s klíčem (dvě sady, odmítnutí sad bez
+šifrování či ověřování a řádků s více klíči nebo indexem klíče),
+ověření a dešifrování paketů knihovny s ochranou proti opakování, nový
+klíč jako kandidát do prvního podepsaného paketu, propuštění
+bezprostředního opakování téhož paketu (konec tónové volby) a šifrování
+pro knihovnu s vyrovnáním skoků v číslech paketů. Stejný klíč ponechá
+kontext (počítadlo přetečení), jako to dělá volací knihovna.
+
+Nová závislost: knihovna šifrování hlasu v3.1.3 a její pomocné knihovny
+(licence MIT).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ go.mod                             |   6 +
+ go.sum                             |  12 +
+ libtailscale/p21relay/srtp.go      | 464 +++++++++++++++++++++++++++++
+ libtailscale/p21relay/srtp_test.go | 258 ++++++++++++++++
+ 4 files changed, 740 insertions(+)
+ create mode 100644 libtailscale/p21relay/srtp.go
+ create mode 100644 libtailscale/p21relay/srtp_test.go
+
+diff --git a/go.mod b/go.mod
+index cd54cd4..16940d4 100644
+--- a/go.mod
++++ b/go.mod
+@@ -3,6 +3,10 @@ module github.com/tailscale/tailscale-android
+ go 1.27.4
+ 
+ require (
++	github.com/pion/rtcp v1.2.19
++	github.com/pion/rtp v1.10.5
++	github.com/pion/srtp/v3 v3.1.3
++	github.com/pion/transport/v5 v5.1.1
+ 	github.com/tailscale/wireguard-go v0.0.0-20261106233718-9e0ab45c16ca
+ 	golang.org/x/mobile v0.0.0-20240806205939-81131f6468ab
+ 	golang.org/x/net v0.60.0
+@@ -67,6 +71,8 @@ require (
+ 	github.com/mdlayher/socket v0.7.0 // indirect
+ 	github.com/mitchellh/go-ps v1.0.0 // indirect
+ 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
++	github.com/pion/logging v0.2.4 // indirect
++	github.com/pion/randutil v0.1.0 // indirect
+ 	github.com/pires/go-proxyproto v0.15.0 // indirect
+ 	github.com/safchain/ethtool v0.7.0 // indirect
+ 	github.com/tailscale/certstore v0.1.1-0.20260409135935-3638fb84b77d // indirect
+diff --git a/go.sum b/go.sum
+index 458de34..4f14836 100644
+--- a/go.sum
++++ b/go.sum
+@@ -148,6 +148,18 @@ github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 h1:zYyBkD/k9seD2A7fsi6
+ github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646/go.mod h1:jpp1/29i3P1S/RLdc7JQKbRpFeM1dOBd8T9ki5s+AY8=
+ github.com/pierrec/lz4/v4 v4.1.26 h1:GrpZw1gZttORinvzBdXPUXATeqlJjqUG/D87TKMnhjY=
+ github.com/pierrec/lz4/v4 v4.1.26/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcRIPL34O4=
++github.com/pion/logging v0.2.4 h1:tTew+7cmQ+Mc1pTBLKH2puKsOvhm32dROumOZ655zB8=
++github.com/pion/logging v0.2.4/go.mod h1:DffhXTKYdNZU+KtJ5pyQDjvOAh/GsNSyv1lbkFbe3so=
++github.com/pion/randutil v0.1.0 h1:CFG1UdESneORglEsnimhUjf33Rwjubwj6xfiOXBa3mA=
++github.com/pion/randutil v0.1.0/go.mod h1:XcJrSMMbbMRhASFVOlj/5hQial/Y8oH/HVo7TBZq+j8=
++github.com/pion/rtcp v1.2.19 h1:T79lR2Tfd/7zj+41nsUrftrUEee+Z03NQr9GSPSQ/WU=
++github.com/pion/rtcp v1.2.19/go.mod h1:vX7Es6skWYm4oVvOSC5+4WHLYUTZHcbGNmk5wjzMGH4=
++github.com/pion/rtp v1.10.5 h1:ip0HhO/wYZqQ4bKS+R99KnZh/GRCmIT0jDXikub7vlE=
++github.com/pion/rtp v1.10.5/go.mod h1:Au8fc6cEByy8RLTwKTQTEeQqDB/SJDxwL4mZuxYA5Pk=
++github.com/pion/srtp/v3 v3.1.3 h1:O3sfbfWfq/OyEaXRbX02Z0SNQRijS9nDdc/DEb8jxlU=
++github.com/pion/srtp/v3 v3.1.3/go.mod h1:v3uQtrCz9LH3aahau0jtzRDsWGwKkh4a0BiBwzzxhtQ=
++github.com/pion/transport/v5 v5.1.1 h1:Sauq8YJqRopgRfIgnpfKpdpKG14g0N4jWlRgpWsEfN8=
++github.com/pion/transport/v5 v5.1.1/go.mod h1:Qxw6fCEjFWQkRDZOhS4Vf+neJBcihauvA3uyEa1J1F0=
+ github.com/pires/go-proxyproto v0.15.0 h1:dTshmNbFm/D+0+sbrxUuddPOZ5Y0B7c5NhtsBkm6LqI=
+ github.com/pires/go-proxyproto v0.15.0/go.mod h1:OXsCrKwrK2tXS9YrI5tkHx5xaQlO8FH3lFW76orFh24=
+ github.com/pkg/sftp v1.13.11 h1:0N92SLTB8JqASJB14ZLHHzFnBV8mG9zw4K7jghEFWuE=
+diff --git a/libtailscale/p21relay/srtp.go b/libtailscale/p21relay/srtp.go
+new file mode 100644
+index 0000000..e98131d
+--- /dev/null
++++ b/libtailscale/p21relay/srtp.go
+@@ -0,0 +1,464 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++// Šifrování hlasu na úseku volací knihovna ↔ relé (SRTP s klíči z SDP,
++// RFC 3711 a RFC 4568). Volací knihovna přijímá RTP od kohokoli, takže
++// bez šifrování by cizí appka v telefonu mohla do hovoru podstrčit zvuk.
++// Relé šifrování ukončuje: k ústředně jde dál obyčejné RTP tunelem.
++//
++// Každá strana posílá v SDP klíč, kterým šifruje to, co sama odesílá:
++// klíčem volací knihovny relé ověřuje a dešifruje, svým klíčem šifruje
++// hlas směrem ke knihovně. Knihovna mění stav šifrování (počítadlo
++// přetečení, okno proti opakování) jen při změně klíče, proto relé při
++// stejném klíči kontext ponechává a při novém klíči začíná nový.
++
++import (
++	"bytes"
++	"crypto/rand"
++	"encoding/base64"
++	"errors"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/pion/rtcp"
++	"github.com/pion/rtp"
++	"github.com/pion/srtp/v3"
++	"github.com/pion/transport/v5/replaydetector"
++)
++
++// srtpSuite je podporovaná šifrovací sada (RFC 4568 6.2).
++type srtpSuite uint8
++
++const (
++	suiteNone srtpSuite = iota
++	suite80             // AES_CM_128_HMAC_SHA1_80
++	suite32             // AES_CM_128_HMAC_SHA1_32
++)
++
++// relaySuites jsou sady, které relé nabízí, v pořadí přednosti.
++var relaySuites = []srtpSuite{suite80, suite32}
++
++func (s srtpSuite) String() string {
++	switch s {
++	case suite80:
++		return "AES_CM_128_HMAC_SHA1_80"
++	case suite32:
++		return "AES_CM_128_HMAC_SHA1_32"
++	}
++	return ""
++}
++
++func suiteByName(name string) srtpSuite {
++	switch name {
++	case "AES_CM_128_HMAC_SHA1_80":
++		return suite80
++	case "AES_CM_128_HMAC_SHA1_32":
++		return suite32
++	}
++	return suiteNone
++}
++
++func (s srtpSuite) profile() srtp.ProtectionProfile {
++	if s == suite32 {
++		return srtp.ProtectionProfileAes128CmHmacSha1_32
++	}
++	return srtp.ProtectionProfileAes128CmHmacSha1_80
++}
++
++const (
++	srtpKeyLen    = 16
++	srtpSaltLen   = 14
++	srtpMasterLen = srtpKeyLen + srtpSaltLen
++
++	// srtpReplayWindow: okno proti opakování pro pakety volací knihovny.
++	// Na 127.0.0.1 se pakety nepřehazují, větší okno jen nic nestojí.
++	srtpReplayWindow = 1024
++	// srtpPeerWindow: okno libsrtp ve volací knihovně (výchozí 128, knihovna
++	// ho nemění). Paket o tolik a víc za nejvyšším číslem by zahodila.
++	srtpPeerWindow = 128
++	// Bezprostřední opakování téhož paketu (konec tónové volby se posílá
++	// třikrát se stejným číslem) se předá nejvýš tolikrát a jen v této době.
++	srtpMaxRepeats  = 2
++	srtpRepeatDelay = time.Second
++	// maxTrackedSSRC omezuje stav přečíslování na jeden proud.
++	maxTrackedSSRC = 16
++
++	maxSRTPIndex  = 1<<48 - 1
++	maxSRTCPIndex = 1<<31 - 1
++)
++
++// srtpKey je hlavní klíč a sůl jedné sady.
++type srtpKey struct {
++	suite  srtpSuite
++	master [srtpMasterLen]byte
++}
++
++func newRelayKey(s srtpSuite) srtpKey {
++	k := srtpKey{suite: s}
++	rand.Read(k.master[:]) // crypto/rand.Read nikdy nevrací chybu
++	return k
++}
++
++// cryptoLine je jeden použitelný atribut a=crypto.
++type cryptoLine struct {
++	tag int
++	key srtpKey
++}
++
++func (c cryptoLine) String() string {
++	return strconv.Itoa(c.tag) + " " + c.key.suite.String() + " inline:" + base64.StdEncoding.EncodeToString(c.key.master[:])
++}
++
++// parseCrypto přečte hodnotu atributu a=crypto (RFC 4568 9.1). Odmítne
++// nepodporované sady, víc klíčů nebo MKI, a parametry, které by vypnuly
++// šifrování nebo ověřování, nebo kterým relé nerozumí.
++func parseCrypto(v string) (cryptoLine, bool) {
++	f := strings.Fields(v)
++	if len(f) < 3 || len(f[0]) > 9 {
++		return cryptoLine{}, false
++	}
++	tag, err := strconv.Atoi(f[0])
++	if err != nil || tag < 0 {
++		return cryptoLine{}, false
++	}
++	suite := suiteByName(f[1])
++	if suite == suiteNone {
++		return cryptoLine{}, false
++	}
++	params, ok := strings.CutPrefix(f[2], "inline:")
++	if !ok || strings.Contains(params, ";") {
++		return cryptoLine{}, false
++	}
++	parts := strings.Split(params, "|")
++	if len(parts) > 2 || (len(parts) == 2 && strings.Contains(parts[1], ":")) {
++		return cryptoLine{}, false // MKI
++	}
++	raw, err := base64.StdEncoding.DecodeString(parts[0])
++	if err != nil {
++		raw, err = base64.RawStdEncoding.DecodeString(parts[0])
++	}
++	if err != nil || len(raw) != srtpMasterLen {
++		return cryptoLine{}, false
++	}
++	for _, p := range f[3:] {
++		switch {
++		case p == "KDR=0", strings.HasPrefix(p, "WSH="):
++		case strings.HasPrefix(p, "-"): // nepovinný parametr
++		default:
++			// UNENCRYPTED_SRTP/SRTCP, UNAUTHENTICATED_SRTP, KDR, FEC…
++			return cryptoLine{}, false
++		}
++	}
++	c := cryptoLine{tag: tag, key: srtpKey{suite: suite}}
++	copy(c.key.master[:], raw)
++	return c, true
++}
++
++// firstSupportedCrypto vybere první použitelný řádek (pořadí přednosti
++// určuje volací knihovna).
++func firstSupportedCrypto(values []string) (cryptoLine, bool) {
++	for _, v := range values {
++		if c, ok := parseCrypto(v); ok {
++			return c, true
++		}
++	}
++	return cryptoLine{}, false
++}
++
++// ---- kontexty ----
++
++// srtpCtx je kontext jednoho klíče pro jeden směr.
++type srtpCtx struct {
++	key    srtpKey
++	ctx    *srtp.Context
++	replay bool // poslední neúspěch byl opakovaný paket
++}
++
++// replayFlag obaluje detektor opakování a poznamená si odmítnutí.
++type replayFlag struct {
++	d   replaydetector.ReplayDetector
++	hit *bool
++}
++
++func (r replayFlag) Check(seq uint64) (func() bool, bool) {
++	accept, ok := r.d.Check(seq)
++	if !ok {
++		*r.hit = true
++	}
++	return accept, ok
++}
++
++func newSRTPCtx(k srtpKey, decrypt bool) (*srtpCtx, error) {
++	c := &srtpCtx{key: k}
++	var opts []srtp.ContextOption
++	if decrypt {
++		opts = []srtp.ContextOption{
++			srtp.SRTPReplayDetectorFactory(func() replaydetector.ReplayDetector {
++				return replayFlag{d: replaydetector.New(srtpReplayWindow, maxSRTPIndex), hit: &c.replay}
++			}),
++			srtp.SRTCPReplayDetectorFactory(func() replaydetector.ReplayDetector {
++				return replayFlag{d: replaydetector.New(srtpReplayWindow, maxSRTCPIndex), hit: &c.replay}
++			}),
++		}
++	}
++	ctx, err := srtp.CreateContext(k.master[:srtpKeyLen], k.master[srtpKeyLen:], k.suite.profile(), opts...)
++	if err != nil {
++		return nil, err
++	}
++	c.ctx = ctx
++	return c, nil
++}
++
++// classifyRTP rozliší RTP a RTCP na jednom portu (RFC 5761 4); ok=false
++// pro cokoli jiného.
++func classifyRTP(pkt []byte) (isRTCP, ok bool) {
++	if len(pkt) < 8 || pkt[0]>>6 != 2 {
++		return false, false
++	}
++	if pkt[1] >= 192 && pkt[1] <= 223 {
++		return true, true
++	}
++	return false, len(pkt) >= 12
++}
++
++// openResult říká, co se stalo s paketem od volací knihovny.
++type openResult int
++
++const (
++	openOK     openResult = iota
++	openSwitch            // v pořádku, knihovna přešla na nový klíč
++	openRepeat
++	openNoKey
++	openAuthFail
++	openReplay
++	openMalformed
++)
++
++// srtpRecv ověřuje a dešifruje pakety volací knihovny.
++type srtpRecv struct {
++	mu   sync.Mutex
++	cur  *srtpCtx // platný klíč
++	next *srtpCtx // nový klíč z SDP, dokud ho knihovna nezačne používat
++
++	// Poslední přijatý paket RTP kvůli bezprostřednímu opakování.
++	last, lastPlain []byte
++	lastAt          time.Time
++	repeats         int
++
++	hdr  rtp.Header
++	rhdr rtcp.Header
++}
++
++// setKey převezme klíč volací knihovny z SDP. Stejný klíč kontext
++// nemění; nový čeká jako kandidát, dokud jím knihovna nepodepíše paket
++// (do té doby platí i starý: knihovna přepne až po dokončení výměny SDP,
++// a výměna může i selhat).
++func (r *srtpRecv) setKey(k srtpKey) error {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	switch {
++	case r.cur != nil && r.cur.key == k:
++		r.next = nil
++		return nil
++	case r.next != nil && r.next.key == k:
++		return nil
++	}
++	c, err := newSRTPCtx(k, true)
++	if err != nil {
++		return err
++	}
++	if r.cur == nil {
++		r.cur = c
++	} else {
++		r.next = c
++	}
++	return nil
++}
++
++func (r *srtpRecv) clear() {
++	r.mu.Lock()
++	r.cur, r.next, r.last, r.lastPlain = nil, nil, nil, nil
++	r.mu.Unlock()
++}
++
++func (r *srtpRecv) hasKey() bool {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return r.cur != nil
++}
++
++// open ověří a dešifruje paket do dst. rtcpOnly: paket přišel na port
++// RTCP (bez rtcp-mux).
++func (r *srtpRecv) open(dst, pkt []byte, rtcpOnly bool, now time.Time) ([]byte, openResult) {
++	isRTCP, ok := classifyRTP(pkt)
++	if !ok || (rtcpOnly && !isRTCP) {
++		return nil, openMalformed
++	}
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.cur == nil {
++		return nil, openNoKey
++	}
++	if !isRTCP && r.last != nil && r.repeats < srtpMaxRepeats && now.Sub(r.lastAt) < srtpRepeatDelay && bytes.Equal(pkt, r.last) {
++		// Bajtově shodný s právě přijatým, tedy ověřeným paketem.
++		r.repeats++
++		return append(dst[:0], r.lastPlain...), openRepeat
++	}
++	out, res := r.try(r.cur, dst, pkt, isRTCP)
++	if res != openOK && r.next != nil {
++		var res2 openResult
++		if out, res2 = r.try(r.next, dst, pkt, isRTCP); res2 == openOK {
++			r.cur, r.next = r.next, nil
++			res = openSwitch
++		} else if res2 == openReplay {
++			res = openReplay
++		}
++	}
++	if res != openOK && res != openSwitch {
++		return nil, res
++	}
++	if !isRTCP {
++		r.last = append(r.last[:0], pkt...)
++		r.lastPlain = append(r.lastPlain[:0], out...)
++		r.lastAt, r.repeats = now, 0
++	}
++	return out, res
++}
++
++func (r *srtpRecv) try(c *srtpCtx, dst, pkt []byte, isRTCP bool) ([]byte, openResult) {
++	c.replay = false
++	var out []byte
++	var err error
++	if isRTCP {
++		out, err = c.ctx.DecryptRTCP(dst, pkt, &r.rhdr)
++	} else {
++		out, err = c.ctx.DecryptRTP(dst, pkt, &r.hdr)
++	}
++	switch {
++	case err == nil:
++		return out, openOK
++	case c.replay:
++		return nil, openReplay
++	case errors.Is(err, srtp.ErrFailedToVerifyAuthTag):
++		return nil, openAuthFail
++	}
++	return nil, openMalformed
++}
++
++// sealResult říká, co se stalo s paketem pro volací knihovnu.
++type sealResult int
++
++const (
++	sealOK     sealResult = iota
++	sealResync            // v pořádku, čísla paketů vyrovnána (seqTrack)
++	sealNoKey
++	sealFail
++)
++
++// seqTrack drží řadu čísel paketů jedné SSRC směrem ke knihovně.
++type seqTrack struct {
++	last, offset uint16
++}
++
++// next vrátí číslo paketu pro knihovnu. Skok zpět o srtpPeerWindow a víc
++// (nebo dopředu o víc než 2^15, což vypadá stejně) by libsrtp ve volací
++// knihovně zahodila jako starý paket a zvuk by do dosažení původního
++// čísla zmlkl. Takový skok relé vyrovná: dál čísluje od posledního čísla.
++func (t *seqTrack) next(seq uint16) (out uint16, resync bool) {
++	out = seq + t.offset
++	d := int16(out - t.last)
++	switch {
++	case d > 0:
++		t.last = out
++	case d <= -srtpPeerWindow:
++		t.offset += t.last + 1 - out
++		out = t.last + 1
++		t.last = out
++		resync = true
++	}
++	return out, resync
++}
++
++// srtpSend šifruje pakety pro volací knihovnu klíčem relé.
++type srtpSend struct {
++	mu   sync.Mutex
++	cur  *srtpCtx
++	seq  map[uint32]*seqTrack
++	hdr  rtp.Header
++	rhdr rtcp.Header
++}
++
++// setKey nastaví klíč relé, který knihovna dostala v SDP. Stejný klíč
++// kontext ponechá (knihovna ho také ponechá), nový začne od nuly.
++func (s *srtpSend) setKey(k srtpKey) error {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.cur != nil && s.cur.key == k {
++		return nil
++	}
++	c, err := newSRTPCtx(k, false)
++	if err != nil {
++		return err
++	}
++	s.cur, s.seq = c, nil
++	return nil
++}
++
++func (s *srtpSend) clear() {
++	s.mu.Lock()
++	s.cur, s.seq = nil, nil
++	s.mu.Unlock()
++}
++
++func (s *srtpSend) key() (srtpKey, bool) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.cur == nil {
++		return srtpKey{}, false
++	}
++	return s.cur.key, true
++}
++
++// seal zašifruje paket (pkt se smí změnit) do dst.
++func (s *srtpSend) seal(dst, pkt []byte, rtcpOnly bool) ([]byte, sealResult) {
++	isRTCP, ok := classifyRTP(pkt)
++	if !ok || (rtcpOnly && !isRTCP) {
++		return nil, sealFail
++	}
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.cur == nil {
++		return nil, sealNoKey
++	}
++	var out []byte
++	var err error
++	res := sealOK
++	if isRTCP {
++		out, err = s.cur.ctx.EncryptRTCP(dst, pkt, &s.rhdr)
++	} else {
++		ssrc := uint32(pkt[8])<<24 | uint32(pkt[9])<<16 | uint32(pkt[10])<<8 | uint32(pkt[11])
++		seq := uint16(pkt[2])<<8 | uint16(pkt[3])
++		t := s.seq[ssrc]
++		if t == nil {
++			if s.seq == nil || len(s.seq) >= maxTrackedSSRC {
++				s.seq = make(map[uint32]*seqTrack)
++			}
++			t = &seqTrack{last: seq}
++			s.seq[ssrc] = t
++		}
++		n, resync := t.next(seq)
++		if resync {
++			res = sealResync
++		}
++		pkt[2], pkt[3] = byte(n>>8), byte(n)
++		out, err = s.cur.ctx.EncryptRTP(dst, pkt, &s.hdr)
++	}
++	if err != nil {
++		return nil, sealFail
++	}
++	return out, res
++}
+diff --git a/libtailscale/p21relay/srtp_test.go b/libtailscale/p21relay/srtp_test.go
+new file mode 100644
+index 0000000..162361f
+--- /dev/null
++++ b/libtailscale/p21relay/srtp_test.go
+@@ -0,0 +1,258 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bytes"
++	"encoding/binary"
++	"testing"
++	"time"
++
++	"github.com/pion/srtp/v3"
++)
++
++const (
++	testKey1 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwd" // 30 bajtů
++	testKey2 = "HRwbGhkYFxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA"
++)
++
++func TestParseCrypto(t *testing.T) {
++	for _, v := range []string{
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1,
++		"7 AES_CM_128_HMAC_SHA1_32 inline:" + testKey1 + "|2^31",
++		"2 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + " WSH=64",
++		"3 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + " KDR=0",
++	} {
++		c, ok := parseCrypto(v)
++		if !ok {
++			t.Errorf("rejected %q", v)
++			continue
++		}
++		if c.key.master[0] != 0 || c.key.master[29] != 29 {
++			t.Errorf("%q: key not decoded", v)
++		}
++	}
++	for _, v := range []string{
++		"1 AES_256_CM_HMAC_SHA1_80 inline:" + testKey1,                         // nepodporovaná sada
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + "|2^20|1:4",           // MKI
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + ";inline:" + testKey2, // víc klíčů
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + " UNENCRYPTED_SRTP",
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + " UNENCRYPTED_SRTCP",
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + " UNAUTHENTICATED_SRTP",
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + " KDR=1",
++		"1 AES_CM_128_HMAC_SHA1_80 inline:AAEC",                 // krátký klíč
++		"1 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + "AAAA", // dlouhý klíč
++		"1 AES_CM_128_HMAC_SHA1_80 inline:!!!",
++		"1 AES_CM_128_HMAC_SHA1_80 " + testKey1,
++		"x AES_CM_128_HMAC_SHA1_80 inline:" + testKey1,
++		"1 AES_CM_128_HMAC_SHA1_80",
++	} {
++		if _, ok := parseCrypto(v); ok {
++			t.Errorf("accepted %q", v)
++		}
++	}
++	c, ok := firstSupportedCrypto([]string{
++		"1 AES_256_CM_HMAC_SHA1_80 inline:" + testKey1,
++		"2 AES_CM_128_HMAC_SHA1_32 inline:" + testKey2,
++		"3 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1,
++	})
++	if !ok || c.tag != 2 || c.key.suite != suite32 {
++		t.Fatalf("first supported: %+v %v", c, ok)
++	}
++	// Formát řádku relé přečte i druhá strana.
++	k := newRelayKey(suite32)
++	back, ok := parseCrypto(cryptoLine{tag: 5, key: k}.String())
++	if !ok || back.tag != 5 || back.key != k {
++		t.Fatal("own line does not parse back")
++	}
++}
++
++func TestSeqTrack(t *testing.T) {
++	tr := &seqTrack{last: 100}
++	for _, c := range []struct {
++		in, want uint16
++		resync   bool
++	}{
++		{100, 100, false},
++		{101, 101, false},
++		{99, 99, false},       // pozdní paket v okně knihovny
++		{110, 110, false},     // malá mezera
++		{12000, 12000, false}, // skok dopředu do 2^15
++		{11000, 12001, true},  // skok zpět za okno: navázat
++		{11001, 12002, false},
++		{11001 + 40000, 12003, true}, // skok dopředu přes 2^15 vypadá jako zpět
++		{51002, 12004, false},
++		{51000, 12002, false}, // zpět v okně: beze změny vůči posunu
++	} {
++		got, resync := tr.next(c.in)
++		if got != c.want || resync != c.resync {
++			t.Fatalf("next(%d) = %d,%v; want %d,%v", c.in, got, resync, c.want, c.resync)
++		}
++	}
++	// Přetečení čísel je běžný posun dopředu.
++	tr = &seqTrack{last: 65535}
++	if got, resync := tr.next(0); got != 0 || resync {
++		t.Fatalf("wrap: %d %v", got, resync)
++	}
++}
++
++func testKey(t *testing.T, b64 string, s srtpSuite) srtpKey {
++	t.Helper()
++	c, ok := parseCrypto("1 " + s.String() + " inline:" + b64)
++	if !ok {
++		t.Fatal("bad test key")
++	}
++	return c.key
++}
++
++func pionCtx(t *testing.T, k srtpKey, opts ...srtp.ContextOption) *srtp.Context {
++	t.Helper()
++	c, err := srtp.CreateContext(k.master[:16], k.master[16:], k.suite.profile(), opts...)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return c
++}
++
++func TestSRTPRecv(t *testing.T) {
++	var r srtpRecv
++	now := time.Now()
++	k1, k2 := testKey(t, testKey1, suite80), testKey(t, testKey2, suite32)
++	if _, res := r.open(nil, rtpPkt(1, 1, 1, "x"), false, now); res != openNoKey {
++		t.Fatalf("without key: %v", res)
++	}
++	if err := r.setKey(k1); err != nil {
++		t.Fatal(err)
++	}
++	enc1 := pionCtx(t, k1)
++	seal := func(c *srtp.Context, seq uint16, payload string) []byte {
++		b, err := c.EncryptRTP(nil, rtpPkt(5, seq, uint32(seq)*160, payload), nil)
++		if err != nil {
++			t.Fatal(err)
++		}
++		return b
++	}
++	open := func(pkt []byte, want openResult) []byte {
++		t.Helper()
++		out, res := r.open(make([]byte, 0, 2048), pkt, false, now)
++		if res != want {
++			t.Fatalf("open: %v, want %v", res, want)
++		}
++		return out
++	}
++	p1, p2 := seal(enc1, 10, "one"), seal(enc1, 11, "two")
++	if got := open(p1, openOK); !bytes.Equal(got, rtpPkt(5, 10, 1600, "one")) {
++		t.Fatalf("plain %x", got)
++	}
++	// Bezprostřední opakování (konec tónové volby) projde nejvýš dvakrát.
++	open(p1, openRepeat)
++	open(p1, openRepeat)
++	open(p1, openReplay)
++	open(p2, openOK)
++	open(p1, openReplay) // staré opakování
++	open(rtpPkt(5, 12, 0, "plain-packet-payload"), openAuthFail)
++	bad := seal(enc1, 13, "bad")
++	bad[len(bad)-1] ^= 1
++	open(bad, openAuthFail)
++	open([]byte("junk-not-rtp"), openMalformed)
++	open(seal(pionCtx(t, testKey(t, testKey2, suite80)), 14, "other key"), openAuthFail)
++
++	// RTCP na samostatném portu, a paket RTP tam nepatří.
++	rtcpPlain := rtcpPkt(5, "report-with-enough-bytes")
++	rtcpSealed, err := enc1.EncryptRTCP(nil, rtcpPlain, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if out, res := r.open(nil, rtcpSealed, true, now); res != openOK || !bytes.Equal(out, rtcpPlain) {
++		t.Fatalf("rtcp: %v %x", res, out)
++	}
++	if _, res := r.open(nil, rtcpSealed, true, now); res != openReplay {
++		t.Fatalf("rtcp replay: %v", res)
++	}
++	if _, res := r.open(nil, seal(enc1, 15, "rtp"), true, now); res != openMalformed {
++		t.Fatalf("rtp on rtcp port: %v", res)
++	}
++	if _, res := r.open(nil, rtcpPlain, true, now); res != openAuthFail {
++		t.Fatalf("plain rtcp: %v", res)
++	}
++
++	// Nový klíč: starý platí, dokud knihovna nepošle paket novým.
++	if err := r.setKey(k2); err != nil {
++		t.Fatal(err)
++	}
++	open(seal(enc1, 16, "old key still"), openOK)
++	enc2 := pionCtx(t, k2)
++	open(seal(enc2, 17, "new key"), openSwitch)
++	open(seal(enc1, 18, "old key again"), openAuthFail)
++	open(seal(enc2, 19, "new key"), openOK)
++	// Stejný klíč znovu: beze změny (okno proti opakování zůstává).
++	p20 := seal(enc2, 20, "x")
++	open(p20, openOK)
++	r.setKey(k2)
++	open(seal(enc2, 21, "y"), openOK)
++	open(p20, openReplay)
++}
++
++// Při stejném klíči zůstává kontext relé (počítadlo přetečení), stejně
++// jako ve volací knihovně; nový klíč začíná od nuly.
++func TestSRTPSendKeepsContext(t *testing.T) {
++	var s srtpSend
++	k1, k2 := testKey(t, testKey1, suite80), testKey(t, testKey2, suite80)
++	if _, res := s.seal(nil, rtpPkt(1, 1, 1, "x"), false); res != sealNoKey {
++		t.Fatalf("without key: %v", res)
++	}
++	s.setKey(k1)
++	dec := pionCtx(t, k1, srtp.SRTPReplayProtection(128))
++	send := func(seq uint16) {
++		t.Helper()
++		out, res := s.seal(nil, rtpPkt(9, seq, 0, "p"), false)
++		if res != sealOK {
++			t.Fatalf("seal %d: %v", seq, res)
++		}
++		if _, err := dec.DecryptRTP(nil, out, nil); err != nil {
++			t.Fatalf("decrypt %d: %v", seq, err)
++		}
++	}
++	for _, seq := range []uint16{65533, 65534, 65535, 0, 1} { // přetečení
++		send(seq)
++	}
++	s.setKey(k1) // re-INVITE se stejným klíčem
++	send(2)
++	if roc, _ := s.cur.ctx.ROC(9); roc != 1 {
++		t.Fatalf("ROC %d after re-INVITE", roc)
++	}
++	s.setKey(k2)
++	dec = pionCtx(t, k2, srtp.SRTPReplayProtection(128))
++	send(3)
++	if roc, _ := s.cur.ctx.ROC(9); roc != 0 {
++		t.Fatalf("ROC %d with a new key", roc)
++	}
++	if _, res := s.seal(nil, []byte("junk-not-rtp"), false); res != sealFail {
++		t.Fatalf("junk: %v", res)
++	}
++}
++
++// ---- pakety ----
++
++func rtpPkt(ssrc uint32, seq uint16, ts uint32, payload string) []byte {
++	b := make([]byte, 12, 12+len(payload))
++	b[0], b[1] = 0x80, 0 // V=2, PCMU
++	binary.BigEndian.PutUint16(b[2:], seq)
++	binary.BigEndian.PutUint32(b[4:], ts)
++	binary.BigEndian.PutUint32(b[8:], ssrc)
++	return append(b, payload...)
++}
++
++// rtcpPkt je RR bez bloků s profilovým rozšířením (payload, doplněno na 4).
++func rtcpPkt(ssrc uint32, payload string) []byte {
++	p := []byte(payload)
++	for len(p)%4 != 0 {
++		p = append(p, 0)
++	}
++	b := make([]byte, 8, 8+len(p))
++	b[0], b[1] = 0x80, 201
++	binary.BigEndian.PutUint16(b[2:], uint16((8+len(p))/4-1))
++	binary.BigEndian.PutUint32(b[4:], ssrc)
++	return append(b, p...)
++}

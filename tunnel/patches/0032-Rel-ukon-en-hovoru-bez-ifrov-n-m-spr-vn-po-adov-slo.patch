@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 17:03:35 +0000
+Subject: [PATCH 32/33] =?UTF-8?q?Rel=C3=A9:=20ukon=C4=8Den=C3=AD=20hovoru?=
+ =?UTF-8?q?=20bez=20=C5=A1ifrov=C3=A1n=C3=AD=20m=C3=A1=20spr=C3=A1vn=C3=A9?=
+ =?UTF-8?q?=20po=C5=99adov=C3=A9=20=C4=8D=C3=ADslo?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Když ústředna pošle pozvánku k hovoru bez popisu relace (nabídka až
+v odpovědi) a volací knihovna odpoví bez šifrování hlasu, relé ústředně
+hovor odmítne a knihovně pošle potvrzení a ukončení. Ukončení ale neslo
+pořadové číslo 1, protože relé si čísla ústředny pamatuje jen u hovoru
+s popisem relace; knihovna by ho jako požadavek mimo pořadí odmítla
+a hovor bez hlasu by jí visel do vypršení.
+
+Ukončení teď bere jako dolní mez číslo požadavku ústředny, na který
+knihovna právě odpověděla (pozvánka i jiný požadavek v hovoru), takže
+jde vždy nad ním. Nový test pozdní nabídky bez opravy padá (číslo 1).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/sipproxy.go      | 18 +++++++++++-----
+ libtailscale/p21relay/srtpcall_test.go | 30 ++++++++++++++++++++++++++
+ 2 files changed, 43 insertions(+), 5 deletions(-)
+
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+index 364d72e..a8cd1b3 100644
+--- a/libtailscale/p21relay/sipproxy.go
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -1003,7 +1003,7 @@ func (p *sipProxy) clientRequest(m *sipMsg, cc *clientConn) {
+ 			// opakuje 200), pak relé hovor ukončí. Hlas bez klíče neprojde.
+ 			p.cnt.inc("sip.insecure_answer")
+ 			d := dialogRef{callID: callID, cliParty: m.get("from"), upParty: m.get("to")}
+-			defer p.endCall(d, true, now)
++			defer p.endCall(d, true, 0, now)
+ 		case errors.Is(err, errClientNoCrypto):
+ 			// Nabídka bez použitelného šifrování hlasu k ústředně nejde.
+ 			if m.method != "ACK" {
+@@ -1109,7 +1109,7 @@ func (p *sipProxy) clientResponse(m *sipMsg) {
+ 				p.refuseInsecureAnswer(m, d, num, conn, nv, now)
+ 				return
+ 			}
+-			defer p.endCall(d, true, now)
++			defer p.endCall(d, true, num, now)
+ 		}
+ 	}
+ 	p.mediaOnResponse(m, method)
+@@ -1185,14 +1185,22 @@ func (p *sipProxy) refuseInsecureAnswer(m *sipMsg, d dialogRef, num uint32, conn
+ 	}
+ 	ack := p.localRequest("ACK", p.clientTarget(d), p.localVia(true, d.callID, "ACK", num), d.upParty, d.cliParty, d.callID, num)
+ 	p.sendClient(ack.bytes())
+-	p.endCall(d, established, now)
++	// INVITE bez SDP hovor v relé nezaložil, takže jeho CSeq nikde není.
++	p.endCall(d, established, num, now)
+ }
+ 
+ // endCall ukončí hovor bez šifrování hlasu: BYE knihovně a případně
+ // ústředně (odpovědi na ně relé zachytí), a uvolní jeho hlas.
+-func (p *sipProxy) endCall(d dialogRef, byeUpstream bool, now time.Time) {
++//
++// upFloor je CSeq požadavku ústředny, na který knihovna právě odpověděla
++// (0 = žádný). BYE ke knihovně jde jménem ústředny a jeho CSeq musí být
++// vyšší než každý požadavek ústředny v dialogu, jinak ho knihovna odmítne
++// jako požadavek mimo pořadí (500) a hovor jí zůstane. Relé si CSeq ústředny
++// pamatuje jen u hovoru s popisem relace; INVITE bez SDP (nabídka až v 200
++// knihovny) nebo hovor nad limitem hovorů ho nemá.
++func (p *sipProxy) endCall(d dialogRef, byeUpstream bool, upFloor uint32, now time.Time) {
+ 	reason := sipHeader{name: "Reason", key: "reason", value: insecureReason}
+-	n := p.media.lastCSeq(d.callID, false) + 1
++	n := max(p.media.lastCSeq(d.callID, false), upFloor) + 1
+ 	bye := p.localRequest("BYE", p.clientTarget(d), p.localVia(true, d.callID, "BYE", n), d.upParty, d.cliParty, d.callID, n, reason)
+ 	p.sendClient(bye.bytes())
+ 	if byeUpstream {
+diff --git a/libtailscale/p21relay/srtpcall_test.go b/libtailscale/p21relay/srtpcall_test.go
+index 390fc9d..ea074a3 100644
+--- a/libtailscale/p21relay/srtpcall_test.go
++++ b/libtailscale/p21relay/srtpcall_test.go
+@@ -471,6 +471,36 @@ func TestSRTPInsecureAnswerIncoming(t *testing.T) {
+ 	}
+ }
+ 
++// INVITE ústředny bez SDP (nabídka až v 200 knihovny) a knihovna nabídne
++// bez šifrování: BYE ke knihovně musí mít CSeq nad INVITE ústředny, jinak ho
++// knihovna jako požadavek mimo pořadí odmítne a hovor bez hlasu jí zůstane.
++func TestSRTPInsecureAnswerLateOfferByeCSeq(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := newCall(t, "late-", 0)
++	inv := strings.Replace(incomingInvite(t, e, cl.callID, 24567, cl.mediaPath.up.port), "Content-Type: application/sdp\r\n", "", 1)
++	inv = inv[:strings.Index(inv, "Content-Length: ")] + "Content-Length: 0\r\n\r\n"
++	e.up.sendUDP(e.privSIP(), inv)
++	ci := c.expectRequest("INVITE")
++	if len(ci.body) != 0 {
++		t.Fatalf("INVITE without SDP got a body:\n%s", ci.body)
++	}
++	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", cl.cli.port)))
++
++	e.up.expectResponse(488, "INVITE")
++	if ack := c.expectRequest("ACK"); ack.get("cseq") != "24567 ACK" {
++		t.Fatalf("ACK to the client: CSeq %q", ack.get("cseq"))
++	}
++	bye := c.expectRequest("BYE")
++	if bye.get("cseq") != "24568 BYE" || !strings.Contains(bye.get("reason"), "cause=488") {
++		t.Fatalf("BYE to the client: CSeq %q, Reason %q", bye.get("cseq"), bye.get("reason"))
++	}
++	c.send(responseText(bye, 200, "OK", "cli-tag", nil, ""))
++	waitFor(t, func() bool { return e.counter("sip.local_answered") == 1 })
++	e.up.expectNothing()
++}
++
+ // Spojený hovor, re-INVITE ústředny a knihovna odpoví bez šifrování: re-INVITE
+ // dostane 488 a oba konce BYE.
+ func TestSRTPInsecureAnswerReinvite(t *testing.T) {

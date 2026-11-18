@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 14:59:48 +0000
+Subject: [PATCH 29/33] =?UTF-8?q?Rel=C3=A9:=20appka=20pozn=C3=A1,=20=C5=BE?=
+ =?UTF-8?q?e=20hlas=20mus=C3=AD=20b=C3=BDt=20=C5=A1ifrovan=C3=BD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Výsledek spuštění relé má nové pole s hodnotou true, podle kterého
+appka ve vnitřním režimu zapne ve volací knihovně povinné šifrování
+hlasu (v systémovém režimu ne, ústředna šifrování nemá). Popis
+spuštění relé doplněn o chování při nabídce či odpovědi bez šifrování
+a o počty ve statistikách. Exportované funkce beze změny.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21_export.go                | 21 +++++++++++++++++----
+ libtailscale/p21internal/relaycfg_test.go |  1 +
+ libtailscale/p21relay/relay.go            |  6 ++++++
+ libtailscale/p21relay/srtpcall_test.go    | 13 +++++++++++++
+ 4 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/libtailscale/p21_export.go b/libtailscale/p21_export.go
+index 9a0fdfd..11c665c 100644
+--- a/libtailscale/p21_export.go
++++ b/libtailscale/p21_export.go
+@@ -70,10 +70,23 @@ func GenerateRelayIdentity() (string, error) {
+ // the calling library's route to 127.0.0.1 and the miniserver's
+ // registration binding on the private address then stay valid.
+ //
+-// It returns {"sipPort":int,"httpPort":int,"httpToken":"…","privateSipPort":int}
+-// (p21relay.Info), or an error when the internal mode is not up. The relay
+-// stops by itself when the interface is replaced or closed (InternalStatus
+-// "relay" false).
++// It returns {"sipPort":int,"httpPort":int,"httpToken":"…","privateSipPort":int,
++// "clientSrtp":true} (p21relay.Info), or an error when the internal mode is
++// not up. The relay stops by itself when the interface is replaced or closed
++// (InternalStatus "relay" false).
++//
++// "clientSrtp": true = hlas mezi volací knihovnou a relé musí být SRTP
++// s klíči v SDP (SDES: RTP/SAVP s a=crypto, sady AES_CM_128_HMAC_SHA1_80
++// nebo _32). Relé ho ukončuje, ústředna dál dostává obyčejné RTP tunelem.
++// Appka nastaví ve volací knihovně šifrování hlasu SRTP jako povinné, a to
++// jen ve vnitřním režimu (ústředna SRTP neumí, v systémovém režimu by
++// povinné SRTP hovory rozbilo). Nabídka (INVITE/UPDATE) bez použitelného
++// a=crypto dostane od relé 488 a k ústředně nedojde. 2xx knihovny na INVITE
++// ústředny bez použitelného a=crypto relé nepředá: ústředna dostane 488,
++// knihovna ACK a BYE (Reason cause 488), už spojený hovor dostane BYE na
++// obou stranách. Neověřené, nešifrované i opakované pakety z 127.0.0.1 relé
++// zahodí a jen spočítá (RelayStats "media": srtpAuthFail, srtpReplay,
++// srtpNoKey, …).
+ func StartRelay(cfgJSON string) (string, error) {
+ 	cfg, err := p21internal.ParseRelayConfig(cfgJSON)
+ 	if err != nil {
+diff --git a/libtailscale/p21internal/relaycfg_test.go b/libtailscale/p21internal/relaycfg_test.go
+index 2716674..ad82801 100644
+--- a/libtailscale/p21internal/relaycfg_test.go
++++ b/libtailscale/p21internal/relaycfg_test.go
+@@ -90,6 +90,7 @@ func TestParseRelayConfigPorts(t *testing.T) {
+ 		t.Fatal(err)
+ 	}
+ 	delete(ports, "httpToken")
++	delete(ports, "clientSrtp")
+ 	m = validRelayConfig(t)
+ 	for k, v := range ports {
+ 		m[k] = v
+diff --git a/libtailscale/p21relay/relay.go b/libtailscale/p21relay/relay.go
+index 9aefdba..72474a3 100644
+--- a/libtailscale/p21relay/relay.go
++++ b/libtailscale/p21relay/relay.go
+@@ -70,6 +70,11 @@ type Info struct {
+ 	HTTPToken string `json:"httpToken"` // header X-Phone21-Relay
+ 	// PrivateSIPPort is the relay's SIP port on the private address.
+ 	PrivateSIPPort int `json:"privateSipPort"`
++	// ClientSRTP: relé přijímá od volací knihovny jen šifrovaný hlas (SRTP
++	// s klíči v SDP, RTP/SAVP); bez něj odmítne nabídku 488 a hovor, na
++	// který knihovna odpoví bez šifrování, ukončí. Appka musí ve vnitřním
++	// režimu zapnout povinné šifrování hlasu.
++	ClientSRTP bool `json:"clientSrtp"`
+ }
+ 
+ // Relay is a running relay.
+@@ -162,6 +167,7 @@ func Start(ctx context.Context, cfg Config, nw Network) (*Relay, Info, error) {
+ 		HTTPPort:       r.http.port(),
+ 		HTTPToken:      r.http.token,
+ 		PrivateSIPPort: p.upPort,
++		ClientSRTP:     true,
+ 	}
+ 	if cfg.Logf != nil {
+ 		cfg.Logf("p21relay: started (SIP %d, HTTP %d, private SIP %d)", info.SIPPort, info.HTTPPort, info.PrivateSIPPort)
+diff --git a/libtailscale/p21relay/srtpcall_test.go b/libtailscale/p21relay/srtpcall_test.go
+index b7a74d9..02c4a2e 100644
+--- a/libtailscale/p21relay/srtpcall_test.go
++++ b/libtailscale/p21relay/srtpcall_test.go
+@@ -5,6 +5,7 @@ package p21relay
+ 
+ import (
+ 	"bytes"
++	"encoding/json"
+ 	"fmt"
+ 	"net"
+ 	"strconv"
+@@ -489,3 +490,15 @@ func TestSRTPStatsAndLogs(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// Info říká appce, že relé přijímá jen šifrovaný hlas.
++func TestInfoClientSRTP(t *testing.T) {
++	e := newEnv(t)
++	if !e.info.ClientSRTP {
++		t.Fatal("Info does not say that the relay needs encrypted voice")
++	}
++	b, err := json.Marshal(e.info)
++	if err != nil || !strings.Contains(string(b), `"clientSrtp":true`) {
++		t.Fatalf("Info JSON %s %v", b, err)
++	}
++}

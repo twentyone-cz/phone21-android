@@ -39,4 +39,6 @@ Poznámky k forku, rebasu na upstream a dotčeným souborům jsou ve
 Aplikace je odvozená z **linphone-android**, © Belledonne Communications,
 a šíří se pod licencí [GNU GPL v3](https://www.gnu.org/licenses/gpl-3.0.en.html)
 (viz soubor `LICENSE`). Součástí je knihovna tunelu odvozená
-z tailscale-android (BSD-3-Clause), viz `FORK.md`.
+z tailscale-android (BSD-3-Clause) s vlastními záplatami
+(`tunnel/patches/`, závislosti pion/srtp a související pod licencí MIT),
+viz `FORK.md` a `tunnel/README.md`.

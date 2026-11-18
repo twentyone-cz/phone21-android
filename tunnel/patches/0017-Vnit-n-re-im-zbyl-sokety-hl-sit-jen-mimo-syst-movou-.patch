@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:35:10 +0000
+Subject: [PATCH 17/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20re=C5=BEim:=20zbyl?=
+ =?UTF-8?q?=C3=A9=20sokety=20hl=C3=A1sit=20jen=20mimo=20syst=C3=A9movou=20?=
+ =?UTF-8?q?VPN?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Ve stupních miniserver a síť hlásil stav trvale několik „zbylých“
+soketů (řízení, přenos, přímé spojení), protože za systémové VPN je
+tunel smí obcházet. Diagnostika by tak ukazovala falešný únik.
+
+Počet se teď vrací jen po přepnutí pryč od systémové VPN (značení
+vypnuté); se systémovou VPN je vždy 0. Test pro oba stavy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21internal/guard.go      | 10 ++++++++--
+ libtailscale/p21internal/guard_test.go | 22 +++++++++++++++++++++-
+ libtailscale/p21internal/state.go      |  6 ++++--
+ 3 files changed, 33 insertions(+), 5 deletions(-)
+
+diff --git a/libtailscale/p21internal/guard.go b/libtailscale/p21internal/guard.go
+index 0d52aac..3cff9d1 100644
+--- a/libtailscale/p21internal/guard.go
++++ b/libtailscale/p21internal/guard.go
+@@ -114,11 +114,17 @@ func (g *Guard) Sweep() SweepResult {
+ 	return r
+ }
+ 
+-// Leftover returns how many tracked sockets are still open, forgetting the
+-// ones that were closed meanwhile.
++// Leftover returns how many tracked sockets are still open while the guard
++// is disabled, forgetting the ones that were closed meanwhile. Those are the
++// marked sockets that outlived the switch away from the system VPN and still
++// bypass any VPN. While the guard is enabled (system VPN in use) marked
++// sockets are expected and Leftover returns 0.
+ func (g *Guard) Leftover() int {
+ 	g.mu.Lock()
+ 	defer g.mu.Unlock()
++	if g.allow {
++		return 0
++	}
+ 	n := 0
+ 	for fd, ino := range g.tracked {
+ 		if g.checkLocked(fd, ino, false) == sockGone {
+diff --git a/libtailscale/p21internal/guard_test.go b/libtailscale/p21internal/guard_test.go
+index f5a5e66..a0a7bb0 100644
+--- a/libtailscale/p21internal/guard_test.go
++++ b/libtailscale/p21internal/guard_test.go
+@@ -80,6 +80,11 @@ func TestGuardSweepBreaksMarkedTCP(t *testing.T) {
+ 	}
+ 	defer udp.Close()
+ 
++	// While the system VPN is in use, marked sockets are expected: no
++	// leftover is reported although two marked sockets are open.
++	if n := g.Leftover(); n != 0 {
++		t.Fatalf("Leftover with the guard enabled = %d, want 0", n)
++	}
+ 	if n := g.Disable(); n != 2 {
+ 		t.Fatalf("Disable: %d marked, want 2", n)
+ 	}
+@@ -133,7 +138,22 @@ func TestGuardSweepBreaksMarkedTCP(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+-	c2.Close()
++	defer c2.Close()
++	if n := g.Leftover(); n != 0 {
++		t.Fatalf("Leftover with the guard enabled again = %d, want 0", n)
++	}
++	// Back to the internal mode: the connection marked meanwhile is open
++	// until swept, then gone.
++	g.Disable()
++	if n := g.Leftover(); n != 1 {
++		t.Fatalf("Leftover before Sweep = %d, want 1", n)
++	}
++	if r := g.Sweep(); r.Shutdown != 1 {
++		t.Fatalf("Sweep = %+v", r)
++	}
++	if n := g.Leftover(); n != 0 {
++		t.Fatalf("Leftover after Sweep = %d, want 0", n)
++	}
+ }
+ 
+ func TestGuardIgnoresReusedFD(t *testing.T) {
+diff --git a/libtailscale/p21internal/state.go b/libtailscale/p21internal/state.go
+index db1f3d6..3c0fb1f 100644
+--- a/libtailscale/p21internal/state.go
++++ b/libtailscale/p21internal/state.go
+@@ -264,8 +264,10 @@ type Status struct {
+ 	// internal mode; Requested stays as the app set it).
+ 	VPNService bool `json:"vpnService"`
+ 	// LeftoverSockets: sockets marked to bypass the VPN during the system-VPN
+-	// period that are still open (datagram sockets the tunnel could not
+-	// break itself). Non-zero only briefly after a switch, see Guard.
++	// period that are still open after the switch away from it (datagram
++	// sockets the tunnel could not break itself). Non-zero only briefly
++	// after a switch; always 0 while the system VPN is in use, where marked
++	// sockets are expected. See Guard.Leftover.
+ 	LeftoverSockets int `json:"leftoverSockets"`
+ }
+ 

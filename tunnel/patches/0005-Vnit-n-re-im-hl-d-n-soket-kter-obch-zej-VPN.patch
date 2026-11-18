@@ -1,0 +1,389 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:49:55 +0000
+Subject: [PATCH 05/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20re=C5=BEim:=20hl?=
+ =?UTF-8?q?=C3=ADd=C3=A1n=C3=AD=20soket=C5=AF,=20kter=C3=A9=20obch=C3=A1ze?=
+ =?UTF-8?q?j=C3=AD=20VPN?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sokety tunelu vytvořené za systémové VPN jsou označené tak, aby VPN
+obcházely (ochrana proti smyčce, vazba na podkladovou síť). Značka
+zůstává na soketu po celou jeho životnost, takže by po přechodu do
+vnitřního režimu obcházely i VPN, kterou si uživatel zapne později.
+
+Hlídač si pamatuje každý označený soket (číslo i identitu soketu,
+aby nikdy nesáhl na cizí soket se stejným číslem), po vypnutí už
+značkovat nedovolí a při přechodu proudové sokety ukončí (shutdown,
+deskriptor zůstává vlastníkovi, ten se připojí znovu bez značky).
+Datagramové sokety nechává (ukončený UDP soket by čtenáře zacyklil)
+a hlásí, kolik jich ještě žije.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21internal/guard.go      | 164 ++++++++++++++++++++++
+ libtailscale/p21internal/guard_test.go | 183 +++++++++++++++++++++++++
+ 2 files changed, 347 insertions(+)
+ create mode 100644 libtailscale/p21internal/guard.go
+ create mode 100644 libtailscale/p21internal/guard_test.go
+
+diff --git a/libtailscale/p21internal/guard.go b/libtailscale/p21internal/guard.go
+new file mode 100644
+index 0000000..3907bf5
+--- /dev/null
++++ b/libtailscale/p21internal/guard.go
+@@ -0,0 +1,164 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux
++
++package p21internal
++
++import (
++	"errors"
++	"sync"
++
++	"golang.org/x/sys/unix"
++)
++
++// ErrGuardDisabled is returned by a wrapped mark function once the guard is
++// disabled: the socket is then created without the mark (or the dial fails
++// and is retried), it never bypasses the VPN.
++var ErrGuardDisabled = errors.New("socket marking disabled: internal tunnel mode")
++
++// Guard remembers every socket that the tunnel marked to bypass the VPN
++// (VpnService.protect, binding to the underlying network) while the system
++// VPN was in use. Such a mark stays on the socket for its whole life, so
++// after a switch to the internal mode the socket would keep bypassing any
++// VPN the user starts later. Sweep finds the survivors and breaks the
++// stream ones.
++//
++// Sockets are identified by (fd, inode): an fd number can be reused by an
++// unrelated socket (the calling library, the app's own HTTP client), whose
++// socket inode differs, and such sockets are never touched.
++type Guard struct {
++	mu      sync.Mutex
++	allow   bool
++	tracked map[int]uint64 // fd -> socket inode when it was marked
++}
++
++// NewGuard returns an enabled guard.
++func NewGuard() *Guard {
++	return &Guard{allow: true, tracked: make(map[int]uint64)}
++}
++
++// Enable allows wrapped mark functions to run again (system VPN in use).
++func (g *Guard) Enable() {
++	g.mu.Lock()
++	defer g.mu.Unlock()
++	g.allow = true
++}
++
++// Disable makes all wrapped mark functions fail from now on, including ones
++// captured earlier by a socket creation that is still in flight. It returns
++// the number of sockets tracked so far (alive or not).
++func (g *Guard) Disable() int {
++	g.mu.Lock()
++	defer g.mu.Unlock()
++	g.allow = false
++	return len(g.tracked)
++}
++
++// Wrap returns mark wrapped so that the socket is tracked before it is
++// marked, and so that it refuses to mark once the guard is disabled.
++// The guard's lock is held while mark runs; this orders every mark against
++// Disable, so no socket can be marked after Disable returned.
++func (g *Guard) Wrap(mark func(fd int) error) func(fd int) error {
++	return func(fd int) error {
++		g.mu.Lock()
++		defer g.mu.Unlock()
++		if !g.allow {
++			return ErrGuardDisabled
++		}
++		var st unix.Stat_t
++		if err := unix.Fstat(fd, &st); err == nil && st.Mode&unix.S_IFMT == unix.S_IFSOCK {
++			g.tracked[fd] = st.Ino
++		}
++		return mark(fd)
++	}
++}
++
++// SweepResult counts what Sweep found among the tracked sockets.
++type SweepResult struct {
++	Gone     int // closed already (or fd reused by another socket)
++	Shutdown int // stream sockets shut down; their owners reconnect unmarked
++	Left     int // still open and not breakable here (datagram, listening)
++}
++
++// Sweep shuts down every tracked socket that is still open and is a
++// connected or connecting stream socket. shutdown(2) does not release the
++// descriptor, so its owner (Go's poller) is not confused by fd reuse: its
++// reads return EOF, writes fail, it closes the socket and dials again,
++// this time without the mark.
++//
++// Datagram sockets are left alone: a shut-down UDP socket returns endless
++// zero-length reads, which would spin the reader. They are kept tracked and
++// counted by Leftover. Listening sockets are left alone too (marks matter
++// only for outgoing traffic).
++func (g *Guard) Sweep() SweepResult {
++	g.mu.Lock()
++	defer g.mu.Unlock()
++	var r SweepResult
++	for fd, ino := range g.tracked {
++		switch g.checkLocked(fd, ino, true) {
++		case sockGone:
++			r.Gone++
++			delete(g.tracked, fd)
++		case sockShutdown:
++			r.Shutdown++
++			delete(g.tracked, fd)
++		case sockLeft:
++			r.Left++
++		}
++	}
++	return r
++}
++
++// Leftover returns how many tracked sockets are still open, forgetting the
++// ones that were closed meanwhile.
++func (g *Guard) Leftover() int {
++	g.mu.Lock()
++	defer g.mu.Unlock()
++	n := 0
++	for fd, ino := range g.tracked {
++		if g.checkLocked(fd, ino, false) == sockGone {
++			delete(g.tracked, fd)
++		} else {
++			n++
++		}
++	}
++	return n
++}
++
++type sockFate int
++
++const (
++	sockGone sockFate = iota
++	sockShutdown
++	sockLeft
++)
++
++// checkLocked inspects the socket at fd through a private duplicate of the
++// descriptor, so the inode check and the shutdown act on the very same
++// socket even if the owner closes fd concurrently.
++func (g *Guard) checkLocked(fd int, ino uint64, shutdown bool) sockFate {
++	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
++	if err != nil {
++		return sockGone // EBADF: closed
++	}
++	defer unix.Close(dup)
++	var st unix.Stat_t
++	if err := unix.Fstat(dup, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFSOCK || st.Ino != ino {
++		return sockGone // fd now belongs to something else
++	}
++	typ, err := unix.GetsockoptInt(dup, unix.SOL_SOCKET, unix.SO_TYPE)
++	if err != nil || typ != unix.SOCK_STREAM {
++		return sockLeft
++	}
++	if acc, err := unix.GetsockoptInt(dup, unix.SOL_SOCKET, unix.SO_ACCEPTCONN); err != nil || acc != 0 {
++		return sockLeft
++	}
++	if !shutdown {
++		return sockLeft
++	}
++	// ENOTCONN (not connected yet / already closed by peer) is fine: the
++	// shutdown flags are set anyway and a pending connect is aborted.
++	unix.Shutdown(dup, unix.SHUT_RDWR)
++	return sockShutdown
++}
+diff --git a/libtailscale/p21internal/guard_test.go b/libtailscale/p21internal/guard_test.go
+new file mode 100644
+index 0000000..5304148
+--- /dev/null
++++ b/libtailscale/p21internal/guard_test.go
+@@ -0,0 +1,183 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux
++
++package p21internal
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net"
++	"os"
++	"syscall"
++	"testing"
++	"time"
++)
++
++// guardedDialer dials with g's wrapper installed as the socket control
++// hook, the way the tunnel's netns layer calls the protect function.
++func guardedDialer(g *Guard, marked *[]int) *net.Dialer {
++	mark := g.Wrap(func(fd int) error {
++		*marked = append(*marked, fd)
++		return nil
++	})
++	return &net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
++		var err error
++		if cerr := c.Control(func(fd uintptr) { err = mark(int(fd)) }); cerr != nil {
++			return cerr
++		}
++		return err
++	}}
++}
++
++func echoServer(t *testing.T) net.Listener {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	go func() {
++		for {
++			c, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			go func() { io.Copy(c, c); c.Close() }()
++		}
++	}()
++	return ln
++}
++
++func TestGuardSweepBreaksMarkedTCP(t *testing.T) {
++	ln := echoServer(t)
++	g := NewGuard()
++	var marked []int
++	d := guardedDialer(g, &marked)
++
++	c, err := d.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer c.Close()
++	if len(marked) != 1 {
++		t.Fatalf("marked %d sockets", len(marked))
++	}
++	// An unmarked connection (e.g. the calling library's) must survive.
++	other, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer other.Close()
++
++	// A marked UDP socket is tracked but left alone.
++	lc := net.ListenConfig{Control: d.Control}
++	udp, err := lc.ListenPacket(context.Background(), "udp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer udp.Close()
++
++	if n := g.Disable(); n != 2 {
++		t.Fatalf("Disable tracked %d, want 2", n)
++	}
++	r := g.Sweep()
++	if r.Shutdown != 1 || r.Left != 1 || r.Gone != 0 {
++		t.Fatalf("Sweep = %+v", r)
++	}
++
++	// The marked connection is broken: the read returns promptly.
++	c.SetReadDeadline(time.Now().Add(5 * time.Second))
++	if _, err := c.Read(make([]byte, 1)); err == nil {
++		t.Fatal("read on swept connection succeeded")
++	} else if errors.Is(err, os.ErrDeadlineExceeded) {
++		t.Fatal("swept connection still blocks")
++	}
++	// The unmarked one still works.
++	other.SetDeadline(time.Now().Add(5 * time.Second))
++	if _, err := other.Write([]byte("x")); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := io.ReadFull(other, make([]byte, 1)); err != nil {
++		t.Fatalf("unmarked connection broken: %v", err)
++	}
++	// The UDP socket still works and is reported as leftover until closed.
++	if _, err := udp.WriteTo([]byte("x"), udp.LocalAddr()); err != nil {
++		t.Fatal(err)
++	}
++	udp.SetReadDeadline(time.Now().Add(5 * time.Second))
++	if _, _, err := udp.ReadFrom(make([]byte, 1)); err != nil {
++		t.Fatalf("udp broken: %v", err)
++	}
++	if n := g.Leftover(); n != 1 {
++		t.Fatalf("Leftover = %d, want 1", n)
++	}
++	udp.Close()
++	if n := g.Leftover(); n != 0 {
++		t.Fatalf("Leftover after close = %d", n)
++	}
++
++	// Disabled guard refuses to mark: new dials fail instead of bypassing.
++	if _, err := d.Dial("tcp", ln.Addr().String()); !errors.Is(err, ErrGuardDisabled) {
++		t.Fatalf("dial with disabled guard: %v", err)
++	}
++	g.Enable()
++	c2, err := d.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	c2.Close()
++}
++
++func TestGuardIgnoresReusedFD(t *testing.T) {
++	ln := echoServer(t)
++	g := NewGuard()
++	mark := g.Wrap(func(int) error { return nil })
++
++	// A marked socket that is closed again; its fd number becomes free.
++	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := mark(fd); err != nil {
++		t.Fatal(err)
++	}
++	syscall.Close(fd)
++
++	// The next socket in the process (an unmarked connection, e.g. the
++	// calling library's) normally gets the lowest free fd number.
++	victim, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer victim.Close()
++	raw, _ := victim.(*net.TCPConn).SyscallConn()
++	var vfd int
++	raw.Control(func(f uintptr) { vfd = int(f) })
++	if vfd != fd {
++		// Something else took the number; plant the same stale record
++		// (old socket's inode differs from the live one) for vfd instead.
++		var st syscall.Stat_t
++		if err := syscall.Fstat(vfd, &st); err != nil {
++			t.Fatal(err)
++		}
++		g.mu.Lock()
++		delete(g.tracked, fd)
++		g.tracked[vfd] = st.Ino + 1
++		g.mu.Unlock()
++	}
++
++	g.Disable()
++	if r := g.Sweep(); r.Gone != 1 || r.Shutdown != 0 || r.Left != 0 {
++		t.Fatalf("Sweep = %+v", r)
++	}
++	victim.SetDeadline(time.Now().Add(5 * time.Second))
++	if _, err := victim.Write([]byte("x")); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := io.ReadFull(victim, make([]byte, 1)); err != nil {
++		t.Fatalf("socket reusing the fd number was broken: %v", err)
++	}
++}

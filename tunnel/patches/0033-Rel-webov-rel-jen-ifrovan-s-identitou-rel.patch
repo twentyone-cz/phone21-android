@@ -1,0 +1,727 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 17:21:48 +0000
+Subject: [PATCH 33/33] =?UTF-8?q?Rel=C3=A9:=20webov=C3=A9=20rel=C3=A9=20je?=
+ =?UTF-8?q?n=20=C5=A1ifrovan=C4=9B=20s=20identitou=20rel=C3=A9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Webové relé na 127.0.0.1 dosud mluvilo nešifrovaně a appka neměla jak
+poznat, že na portu odpovídá opravdu relé. Když relé na chvíli port
+uvolnilo (restart, výměna rozhraní), mohla ho obsadit cizí appka
+v telefonu a dostat token relé, přístupový token i jednorázovou cestu
+pro nastavení, a appka by její odpověď vzala za odpověď miniserveru.
+
+Port webového relé teď mluví výhradně šifrovaně (nejméně verze 1.2)
+se stejnou serverovou identitou relé, jakou už používá signalizace.
+Nešifrovaný posluchač nezůstal; nešifrovaný požadavek nedostane ani
+bajt odpovědi, jen se počítá v nových statistikách nepovedených
+navázání. Tvar adres, hlavička s tokenem, odmítnutí 403 bez tokenu,
+limity spojení i ochrana běžícího požadavku appky zůstávají. Výsledek
+spuštění relé má nové pole s hodnotou true, podle kterého appka pozná
+šifrované webové relé; bez něj ho nepoužije, takže se starší knihovnou
+nic nepůjde nešifrovaně. K miniserveru jde relé uvnitř tunelu dál jako
+dosud.
+
+Testy webového relé přepsány na šifrované spojení s ověřením přesně
+certifikátu relé; nové testy: nešifrovaný požadavek bez odpovědi
+a bez průchodu, klient s jiným certifikátem nic nepošle, starší verze
+šifrování i druhá verze webového protokolu odmítnuty, identita
+webového relé je identita relé.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21_export.go                |  24 ++-
+ libtailscale/p21internal/relaycfg.go      |   2 +-
+ libtailscale/p21internal/relaycfg_test.go |   1 +
+ libtailscale/p21relay/http.go             |  74 +++++++-
+ libtailscale/p21relay/http_test.go        | 220 +++++++++++++++++++---
+ libtailscale/p21relay/relay.go            |  37 ++--
+ libtailscale/p21relay/relay_test.go       |  17 +-
+ 7 files changed, 326 insertions(+), 49 deletions(-)
+
+diff --git a/libtailscale/p21_export.go b/libtailscale/p21_export.go
+index 11c665c..f47f26e 100644
+--- a/libtailscale/p21_export.go
++++ b/libtailscale/p21_export.go
+@@ -52,7 +52,9 @@ func InternalStatus() string {
+ // between the calling library and the relay on 127.0.0.1, as JSON
+ // {"certPem":"…","keyPem":"…"} (ECDSA P-256, key as SEC1 "EC PRIVATE KEY").
+ // The app generates one for the relay and one for the calling library and
+-// stores them; the result must never be logged.
++// stores them; the result must never be logged. Identitu relé používá
++// i webové relé (httpTls): appka jí ověřuje své šifrované spojení na
++// 127.0.0.1:httpPort.
+ func GenerateRelayIdentity() (string, error) {
+ 	return p21internal.GenerateIdentityJSON()
+ }
+@@ -71,9 +73,23 @@ func GenerateRelayIdentity() (string, error) {
+ // registration binding on the private address then stay valid.
+ //
+ // It returns {"sipPort":int,"httpPort":int,"httpToken":"…","privateSipPort":int,
+-// "clientSrtp":true} (p21relay.Info), or an error when the internal mode is
+-// not up. The relay stops by itself when the interface is replaced or closed
+-// (InternalStatus "relay" false).
++// "clientSrtp":true,"httpTls":true} (p21relay.Info), or an error when the
++// internal mode is not up. The relay stops by itself when the interface is
++// replaced or closed (InternalStatus "relay" false).
++//
++// "httpTls": true = webové relé na 127.0.0.1:httpPort mluví jen TLS (1.2
++// a novější) se serverovou identitou relé, tedy se stejným certifikátem
++// (serverCertPem), který dostává volací knihovna u SIP; nešifrovaný
++// posluchač na tom portu není a nešifrovaný požadavek nedostane žádnou
++// odpověď. Adresa zůstává https://127.0.0.1:<httpPort>/<host>:<port><cesta>
++// ?<dotaz> (IPv6 host jako %5B…%5D) s hlavičkou X-Phone21-Relay: <httpToken>;
++// klientský certifikát se nežádá. Appka musí věřit jen přesně certifikátu
++// relé (porovnání zakódovaného certifikátu, jméno jen "127.0.0.1"), token
++// posílat až po jeho ověření, bez proxy a bez sledování přesměrování. Bez
++// "httpTls": true (starší knihovna) appka webové relé nepoužije. Špatný
++// nebo chybějící token dostane uvnitř šifrovaného spojení 403 "forbidden"
++// a spojení se zavře. K miniserveru jde relé uvnitř tunelu dál obyčejným
++// HTTP jen na adresy z httpHosts.
+ //
+ // "clientSrtp": true = hlas mezi volací knihovnou a relé musí být SRTP
+ // s klíči v SDP (SDES: RTP/SAVP s a=crypto, sady AES_CM_128_HMAC_SHA1_80
+diff --git a/libtailscale/p21internal/relaycfg.go b/libtailscale/p21internal/relaycfg.go
+index 1e37cb5..c40b7b7 100644
+--- a/libtailscale/p21internal/relaycfg.go
++++ b/libtailscale/p21internal/relaycfg.go
+@@ -28,7 +28,7 @@ type relayConfigJSON struct {
+ 	// miniserver's registration binding (Contact on the private address)
+ 	// stay valid. A port that is taken is replaced by a free one.
+ 	SIPPort        int `json:"sipPort"`        // TLS on 127.0.0.1
+-	HTTPPort       int `json:"httpPort"`       // HTTP on 127.0.0.1
++	HTTPPort       int `json:"httpPort"`       // HTTPS (identita relé) on 127.0.0.1
+ 	PrivateSIPPort int `json:"privateSipPort"` // UDP and TCP on the private address
+ }
+ 
+diff --git a/libtailscale/p21internal/relaycfg_test.go b/libtailscale/p21internal/relaycfg_test.go
+index ad82801..3b1ac38 100644
+--- a/libtailscale/p21internal/relaycfg_test.go
++++ b/libtailscale/p21internal/relaycfg_test.go
+@@ -91,6 +91,7 @@ func TestParseRelayConfigPorts(t *testing.T) {
+ 	}
+ 	delete(ports, "httpToken")
+ 	delete(ports, "clientSrtp")
++	delete(ports, "httpTls")
+ 	m = validRelayConfig(t)
+ 	for k, v := range ports {
+ 		m[k] = v
+diff --git a/libtailscale/p21relay/http.go b/libtailscale/p21relay/http.go
+index 11a78e4..b857f74 100644
+--- a/libtailscale/p21relay/http.go
++++ b/libtailscale/p21relay/http.go
+@@ -23,6 +23,7 @@ import (
+ )
+ 
+ // TokenHeader carries Info.HTTPToken on every request to the HTTP relay.
++// Jde vždy jen uvnitř šifrovaného spojení (Info.HTTPTLS).
+ const TokenHeader = "X-Phone21-Relay"
+ 
+ const (
+@@ -38,15 +39,25 @@ const (
+ 	httpSilentTimeout = time.Second
+ )
+ 
+-var errHTTPTarget = fixedErr("target not allowed")
++var (
++	errHTTPTarget    = fixedErr("target not allowed")
++	errHTTPHandshake = fixedErr("TLS handshake failed")
++)
+ 
+ type relayTargetKey struct{}
+ 
+ type relayConnKey struct{}
+ 
+-// httpRelay forwards http://127.0.0.1:P/<host>:<port>/<rest> to
++// httpRelay forwards https://127.0.0.1:P/<host>:<port>/<rest> to
+ // http://<host>:<port>/<rest> in the private network, for requests that
+ // carry the secret token.
++//
++// Port na 127.0.0.1 mluví jen TLS se serverovou identitou relé (týž
++// certifikát jako pro SIP). Appka věří přesně tomuto certifikátu, takže
++// token ani její požadavky nedojdou cizí appce, která port obsadí (např.
++// když se relé restartuje), a odpověď takové appky si nesplete s odpovědí
++// miniserveru. Klientský certifikát se nežádá: oprávnění dává token
++// uvnitř šifrovaného spojení.
+ type httpRelay struct {
+ 	ln      net.Listener
+ 	guard   *connGuard
+@@ -60,7 +71,7 @@ type httpRelay struct {
+ 	rp      *httputil.ReverseProxy
+ }
+ 
+-func newHTTPRelay(ctx context.Context, hosts []netip.Addr, port int, nw Network, cnt *counters, rl *rateLog) (*httpRelay, error) {
++func newHTTPRelay(ctx context.Context, hosts []netip.Addr, port int, cert tls.Certificate, nw Network, cnt *counters, rl *rateLog) (*httpRelay, error) {
+ 	tok := make([]byte, 32)
+ 	if _, err := rand.Read(tok); err != nil {
+ 		return nil, err
+@@ -119,7 +130,11 @@ func newHTTPRelay(ctx context.Context, hosts []netip.Addr, port int, nw Network,
+ 		silentTimeout: httpSilentTimeout,
+ 		cnt:           cnt,
+ 	}
+-	h.ln = guardedListener{Listener: ln, g: h.guard}
++	h.ln = httpsListener{
++		Listener: guardedListener{Listener: ln, g: h.guard},
++		conf:     httpTLSConfig(cert),
++		cnt:      cnt,
++	}
+ 	h.srv = &http.Server{
+ 		Handler:           h,
+ 		ReadHeaderTimeout: httpReadHeaderTimeout,
+@@ -128,7 +143,12 @@ func newHTTPRelay(ctx context.Context, hosts []netip.Addr, port int, nw Network,
+ 		ErrorLog:          log.New(io.Discard, "", 0),
+ 		BaseContext:       func(net.Listener) context.Context { return ctx },
+ 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+-			return context.WithValue(ctx, relayConnKey{}, c)
++			if hc, ok := c.(*httpsConn); ok {
++				if gc, ok := hc.NetConn().(*guardedConn); ok {
++					return context.WithValue(ctx, relayConnKey{}, gc)
++				}
++			}
++			return ctx
+ 		},
+ 	}
+ 	return h, nil
+@@ -215,6 +235,50 @@ func (h *httpRelay) dial(ctx context.Context, network, addr string) (net.Conn, e
+ 	return h.nw.DialTCP(ctx, ap)
+ }
+ 
++// httpTLSConfig: TLS 1.2 a novější se serverovou identitou relé, stejné
++// sady jako pro SIP. Bez ALPN, tedy jen HTTP/1.1.
++func httpTLSConfig(cert tls.Certificate) *tls.Config {
++	return &tls.Config{
++		Certificates: []tls.Certificate{cert},
++		MinVersion:   tls.VersionTLS12,
++		CipherSuites: relayCipherSuites,
++	}
++}
++
++// httpsListener udělá z každého přijatého spojení serverovou stranu TLS.
++// Navázání běží až v gorutině HTTP serveru pro to spojení (omezené
++// ReadHeaderTimeout), ne v Accept.
++type httpsListener struct {
++	net.Listener
++	conf *tls.Config
++	cnt  *counters
++}
++
++func (l httpsListener) Accept() (net.Conn, error) {
++	c, err := l.Listener.Accept()
++	if err != nil {
++		return nil, err
++	}
++	return &httpsConn{Conn: tls.Server(c, l.conf), cnt: l.cnt}, nil
++}
++
++// httpsConn je spojení TLS, jak ho vidí HTTP server. Neúspěšné navázání
++// spojení ukončí bez jediného bajtu odpovědi: s původní chybou TLS by HTTP
++// server klientovi, který mluví nešifrovaně, odpověděl nešifrovaným
++// „400 … HTTPS server“, a nic na tomto portu nešifrovaně neodpovídá.
++type httpsConn struct {
++	*tls.Conn
++	cnt *counters
++}
++
++func (c *httpsConn) HandshakeContext(ctx context.Context) error {
++	if err := c.Conn.HandshakeContext(ctx); err != nil {
++		c.cnt.inc("http.tls_failed")
++		return errHTTPHandshake
++	}
++	return nil
++}
++
+ // listenLoopback listens on 127.0.0.1:port, falling back to any port.
+ func listenLoopback(port int) (net.Listener, error) {
+ 	if port > 0 && port <= 65535 {
+diff --git a/libtailscale/p21relay/http_test.go b/libtailscale/p21relay/http_test.go
+index de18811..d37cf78 100644
+--- a/libtailscale/p21relay/http_test.go
++++ b/libtailscale/p21relay/http_test.go
+@@ -5,7 +5,10 @@ package p21relay
+ 
+ import (
+ 	"bufio"
++	"bytes"
+ 	"context"
++	"crypto/tls"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net"
+@@ -14,6 +17,7 @@ import (
+ 	"net/netip"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"testing"
+ 	"time"
+ )
+@@ -35,24 +39,58 @@ func newHTTPUpstream(t *testing.T, h http.Handler) (*httptest.Server, string) {
+ 
+ type testHTTP struct {
+ 	*httpRelay
+-	cnt *counters
++	cnt  *counters
++	cert testCert // serverová identita relé
+ }
+ 
+ // newTestHTTPRelay runs just the HTTP part of the relay.
+ func newTestHTTPRelay(t *testing.T, hosts ...netip.Addr) testHTTP {
+ 	t.Helper()
+ 	cnt := &counters{}
+-	h, err := newHTTPRelay(context.Background(), hosts, 0, fakeNet{}, cnt, &rateLog{})
++	cert := makeCert(t, "relay")
++	h, err := newHTTPRelay(context.Background(), hosts, 0, cert.tls, fakeNet{}, cnt, &rateLog{})
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	go h.serve()
+ 	t.Cleanup(h.close)
+-	return testHTTP{h, cnt}
++	return testHTTP{h, cnt, cert}
+ }
+ 
+-func relayClient() *http.Client {
+-	return &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 10 * time.Second}
++func (e testHTTP) addr() string { return fmt.Sprintf("127.0.0.1:%d", e.port()) }
++
++func (e testHTTP) url(path string) string { return "https://" + e.addr() + path }
++
++// pinnedTLS věří jako appka jen přesně certifikátu relé: žádná CA, žádné
++// jméno, porovnává se zakódovaný certifikát.
++func pinnedTLS(c testCert) *tls.Config {
++	der := c.tls.Certificate[0]
++	return &tls.Config{
++		InsecureSkipVerify: true, // ověřuje VerifyConnection, ta běží i tak
++		MinVersion:         tls.VersionTLS12,
++		VerifyConnection: func(cs tls.ConnectionState) error {
++			if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, der) {
++				return errors.New("not the relay's certificate")
++			}
++			return nil
++		},
++	}
++}
++
++// relayClient mluví s relé jen přes TLS s certifikátem relé.
++func relayClient(c testCert) *http.Client {
++	return &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: pinnedTLS(c)}, Timeout: 10 * time.Second}
++}
++
++// dialRelayTLS otevře na port relé spojení TLS s ověřeným certifikátem.
++func dialRelayTLS(t *testing.T, addr string, c testCert) *tls.Conn {
++	t.Helper()
++	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: waitLong}, "tcp4", addr, pinnedTLS(c))
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { conn.Close() })
++	return conn
+ }
+ 
+ func TestHTTPRelayStreaming(t *testing.T) {
+@@ -86,7 +124,7 @@ func TestHTTPRelayStreaming(t *testing.T) {
+ 	e := newTestHTTPRelay(t, upIP)
+ 
+ 	pr, pw := io.Pipe()
+-	req, err := http.NewRequest("PROPFIND", fmt.Sprintf("http://127.0.0.1:%d/%s/dav/a%%20b/?depth=1", e.port(), upAddr), pr)
++	req, err := http.NewRequest("PROPFIND", e.url("/"+upAddr+"/dav/a%20b/?depth=1"), pr)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -98,7 +136,7 @@ func TestHTTPRelayStreaming(t *testing.T) {
+ 	}
+ 	done := make(chan result, 1)
+ 	go func() {
+-		resp, err := relayClient().Do(req)
++		resp, err := relayClient(e.cert).Do(req)
+ 		done <- result{resp, err}
+ 	}()
+ 	pw.Write([]byte("part1"))
+@@ -153,18 +191,19 @@ func TestHTTPRelayRejects(t *testing.T) {
+ 
+ 	e := newTestHTTPRelay(t, upIP)
+ 	wrong := strings.Repeat("0", len(e.token))
+-	do := func(path, token string) int {
++	do := func(path, token string) (int, string) {
+ 		t.Helper()
+-		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d%s", e.port(), path), nil)
++		req, _ := http.NewRequest("GET", e.url(path), nil)
+ 		if token != "" {
+ 			req.Header.Set(TokenHeader, token)
+ 		}
+-		resp, err := relayClient().Do(req)
++		resp, err := relayClient(e.cert).Do(req)
+ 		if err != nil {
+ 			t.Fatal(err)
+ 		}
++		body, _ := io.ReadAll(resp.Body)
+ 		resp.Body.Close()
+-		return resp.StatusCode
++		return resp.StatusCode, string(body)
+ 	}
+ 	cases := []struct {
+ 		name, path, token string
+@@ -180,9 +219,14 @@ func TestHTTPRelayRejects(t *testing.T) {
+ 		{"miniserver down", "/" + closedAddr + "/x", e.token, 502},
+ 	}
+ 	for _, c := range cases {
+-		if got := do(c.path, c.token); got != c.want {
++		got, body := do(c.path, c.token)
++		if got != c.want {
+ 			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
+ 		}
++		// Bez tokenu stejné odmítnutí jako dřív bez šifrování.
++		if c.token != e.token && body != "forbidden\n" {
++			t.Errorf("%s: body %q", c.name, body)
++		}
+ 	}
+ 	if n := e.cnt.get("http.forbidden_token"); n != 2 {
+ 		t.Errorf("forbidden_token %d", n)
+@@ -190,10 +234,7 @@ func TestHTTPRelayRejects(t *testing.T) {
+ 
+ 	// Not a forward proxy: absolute-form and CONNECT are refused.
+ 	for _, line := range []string{"GET http://" + upAddr + "/x HTTP/1.1", "CONNECT " + upAddr + " HTTP/1.1"} {
+-		c, err := net.Dial("tcp4", fmt.Sprintf("127.0.0.1:%d", e.port()))
+-		if err != nil {
+-			t.Fatal(err)
+-		}
++		c := dialRelayTLS(t, e.addr(), e.cert)
+ 		fmt.Fprintf(c, "%s\r\nHost: %s\r\n%s: %s\r\n\r\n", line, upAddr, TokenHeader, e.token)
+ 		c.SetReadDeadline(time.Now().Add(waitLong))
+ 		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+@@ -220,11 +261,10 @@ func TestHTTPRelayConnLimit(t *testing.T) {
+ 		io.WriteString(w, "ok")
+ 	}))
+ 	e := newTestHTTPRelay(t, upIP)
+-	addr := fmt.Sprintf("127.0.0.1:%d", e.port())
+ 	get := func(path string) (int, string, error) {
+-		req, _ := http.NewRequest("GET", "http://"+addr+"/"+upAddr+path, nil)
++		req, _ := http.NewRequest("GET", e.url("/"+upAddr+path), nil)
+ 		req.Header.Set(TokenHeader, e.token)
+-		resp, err := relayClient().Do(req)
++		resp, err := relayClient(e.cert).Do(req)
+ 		if err != nil {
+ 			return 0, "", err
+ 		}
+@@ -240,10 +280,16 @@ func TestHTTPRelayConnLimit(t *testing.T) {
+ 		}
+ 		slow <- err
+ 	}()
+-	<-gotSlow
++	select {
++	case <-gotSlow:
++	case err := <-slow:
++		t.Fatalf("running request of the app: %v", err)
++	case <-time.After(waitLong):
++		t.Fatal("request of the app did not reach the miniserver")
++	}
+ 
+ 	dial := func() net.Conn {
+-		c, err := net.Dial("tcp4", addr)
++		c, err := net.Dial("tcp4", e.addr())
+ 		if err != nil {
+ 			t.Fatal(err)
+ 		}
+@@ -253,8 +299,10 @@ func TestHTTPRelayConnLimit(t *testing.T) {
+ 	for i := 0; i < 3*httpMaxSilent; i++ {
+ 		dial()
+ 	}
++	// Navázání šifrování, které nikdy nedoběhne: hlavička záznamu slibuje
++	// 256 bajtů, přijde jich pár. Relé čeká na zbytek, spojení je „busy“.
+ 	for i := 0; i < 2*httpMaxBusy; i++ {
+-		fmt.Fprintf(dial(), "GET /%s/x HTTP/1.1\r\n", upAddr) // the headers never end
++		dial().Write([]byte{0x16, 0x03, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00})
+ 	}
+ 	waitFor(t, func() bool {
+ 		return e.cnt.get("http.conn.evicted_silent") > 0 && e.cnt.get("http.conn.evicted_busy") > 0
+@@ -262,17 +310,30 @@ func TestHTTPRelayConnLimit(t *testing.T) {
+ 	if silent, busy := e.guard.counts(); silent > httpMaxSilent || busy > httpMaxBusy {
+ 		t.Fatalf("tracked %d silent, %d busy", silent, busy)
+ 	}
++	// Šifrované spojení, jehož hlavičky nikdy neskončí, je cizí taky
++	// (šifrovat umí každý, token ne). Navázání může vytlačit jiné.
++	for i := 0; i < httpMaxBusy; i++ {
++		if c, err := tls.DialWithDialer(&net.Dialer{Timeout: waitLong}, "tcp4", e.addr(), pinnedTLS(e.cert)); err == nil {
++			t.Cleanup(func() { c.Close() })
++			fmt.Fprintf(c, "GET /%s/x HTTP/1.1\r\n", upAddr)
++		}
++	}
++	if silent, busy := e.guard.counts(); silent > httpMaxSilent || busy > httpMaxBusy {
++		t.Fatalf("tracked %d silent, %d busy", silent, busy)
++	}
+ 
+ 	if code, body, err := get("/x"); err != nil || code != 200 || body != "ok" {
+ 		t.Fatalf("request of the app: %d %q %v", code, body, err)
+ 	}
+ 	close(finish)
++	// Běžící požadavek appky se nevytlačí ani pod šifrováním (relé ho
++	// pozná jako vlastní i přes vrstvu šifrování).
+ 	if err := <-slow; err != nil {
+ 		t.Fatalf("running request of the app: %v", err)
+ 	}
+ 
+ 	// A request without the token: 403, then the connection closes.
+-	c := dial()
++	c := dialRelayTLS(t, e.addr(), e.cert)
+ 	fmt.Fprintf(c, "GET /%s/x HTTP/1.1\r\nHost: x\r\n\r\n", upAddr)
+ 	c.SetReadDeadline(time.Now().Add(waitLong))
+ 	br := bufio.NewReader(c)
+@@ -291,10 +352,121 @@ func TestHTTPRelayConnLimit(t *testing.T) {
+ 	// Oversized headers are refused before the token is even looked at
+ 	// (431, or a reset when the relay hangs up while they are still
+ 	// arriving).
+-	c = dial()
++	c = dialRelayTLS(t, e.addr(), e.cert)
+ 	fmt.Fprintf(c, "GET /%s/x HTTP/1.1\r\nHost: x\r\nX-Big: %s\r\n\r\n", upAddr, strings.Repeat("a", 4*httpMaxHeaderBytes))
+ 	c.SetReadDeadline(time.Now().Add(waitLong))
+ 	if resp, err := http.ReadResponse(bufio.NewReader(c), nil); err == nil && resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+ 		t.Fatalf("big headers: status %d", resp.StatusCode)
+ 	}
+ }
++
++// Nešifrovaný požadavek na port relé neprojde, ani se správným tokenem,
++// a nedostane žádnou odpověď (ani „400 … HTTPS server“): spojení se
++// zavře bez jediného bajtu a k miniserveru nic nedojde.
++func TestHTTPRelayPlaintextRefused(t *testing.T) {
++	var hits atomic.Int32
++	_, upAddr := newHTTPUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		hits.Add(1)
++		io.WriteString(w, "ok")
++	}))
++	e := newTestHTTPRelay(t, upIP)
++
++	for _, req := range []string{
++		fmt.Sprintf("GET /%s/x HTTP/1.1\r\nHost: 127.0.0.1\r\n%s: %s\r\n\r\n", upAddr, TokenHeader, e.token),
++		fmt.Sprintf("GET /%s/x HTTP/1.0\r\n\r\n", upAddr),
++		"PROPFIND / HTTP/1.1\r\nHost: x\r\n\r\n",
++	} {
++		c, err := net.Dial("tcp4", e.addr())
++		if err != nil {
++			t.Fatal(err)
++		}
++		c.Write([]byte(req))
++		c.SetReadDeadline(time.Now().Add(waitLong))
++		got, err := io.ReadAll(c)
++		c.Close()
++		line, _, _ := strings.Cut(req, "\r\n") // bez tokenu
++		var ne net.Error
++		if errors.As(err, &ne) && ne.Timeout() {
++			t.Fatalf("%q: connection left open", line)
++		}
++		if len(got) != 0 {
++			t.Fatalf("%q: relay answered in plain text: %q", line, got)
++		}
++	}
++	// Totéž běžným klientem: žádná odpověď.
++	req, _ := http.NewRequest("GET", "http://"+e.addr()+"/"+upAddr+"/x", nil)
++	req.Header.Set(TokenHeader, e.token)
++	if resp, err := (&http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: waitLong}).Do(req); err == nil {
++		resp.Body.Close()
++		t.Fatalf("plain HTTP got status %d", resp.StatusCode)
++	}
++	if n := hits.Load(); n != 0 {
++		t.Fatalf("miniserver got %d plain requests", n)
++	}
++	if n := e.cnt.get("http.requests"); n != 0 {
++		t.Fatalf("relay handled %d plain requests", n)
++	}
++	if e.cnt.get("http.tls_failed") == 0 {
++		t.Fatal("failed handshakes not counted")
++	}
++
++	// Šifrovaně se stejným tokenem projde.
++	r2, _ := http.NewRequest("GET", e.url("/"+upAddr+"/x"), nil)
++	r2.Header.Set(TokenHeader, e.token)
++	resp, err := relayClient(e.cert).Do(r2)
++	if err != nil {
++		t.Fatal(err)
++	}
++	body, _ := io.ReadAll(resp.Body)
++	resp.Body.Close()
++	if resp.StatusCode != 200 || string(body) != "ok" || hits.Load() != 1 {
++		t.Fatalf("over TLS: %d %q, miniserver hits %d", resp.StatusCode, body, hits.Load())
++	}
++}
++
++// Šifrování relé: serverová identita relé, nejméně TLS 1.2, bez HTTP/2.
++// Klient, který čeká jiný certifikát (jako appka, když port obsadil někdo
++// jiný), spojení nenaváže a nic nepošle.
++func TestHTTPRelayTLS(t *testing.T) {
++	var hits atomic.Int32
++	_, upAddr := newHTTPUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		hits.Add(1)
++	}))
++	e := newTestHTTPRelay(t, upIP)
++
++	c := dialRelayTLS(t, e.addr(), e.cert)
++	cs := c.ConnectionState()
++	if !bytes.Equal(cs.PeerCertificates[0].Raw, e.cert.tls.Certificate[0]) || cs.Version < tls.VersionTLS12 {
++		t.Fatalf("certificate or version %x not the relay's", cs.Version)
++	}
++	c.Close()
++
++	h2 := pinnedTLS(e.cert)
++	h2.NextProtos = []string{"h2", "http/1.1"}
++	if c, err := tls.DialWithDialer(&net.Dialer{Timeout: waitLong}, "tcp4", e.addr(), h2); err != nil {
++		t.Fatal(err)
++	} else {
++		if p := c.ConnectionState().NegotiatedProtocol; p == "h2" {
++			t.Fatal("relay negotiated HTTP/2")
++		}
++		c.Close()
++	}
++
++	old := pinnedTLS(e.cert)
++	old.MinVersion, old.MaxVersion = tls.VersionTLS10, tls.VersionTLS11
++	if c, err := tls.DialWithDialer(&net.Dialer{Timeout: waitLong}, "tcp4", e.addr(), old); err == nil {
++		c.Close()
++		t.Fatal("relay accepted TLS 1.1")
++	}
++
++	other := makeCert(t, "relay")
++	req, _ := http.NewRequest("GET", e.url("/"+upAddr+"/x"), nil)
++	req.Header.Set(TokenHeader, e.token)
++	if resp, err := relayClient(other).Do(req); err == nil {
++		resp.Body.Close()
++		t.Fatal("client pinned to another certificate got through")
++	}
++	if hits.Load() != 0 || e.cnt.get("http.requests") != 0 {
++		t.Fatalf("request sent despite a certificate mismatch (miniserver %d, relay %d)", hits.Load(), e.cnt.get("http.requests"))
++	}
++}
+diff --git a/libtailscale/p21relay/relay.go b/libtailscale/p21relay/relay.go
+index 72474a3..e5885ab 100644
+--- a/libtailscale/p21relay/relay.go
++++ b/libtailscale/p21relay/relay.go
+@@ -6,7 +6,8 @@
+ // carries SIP, RTP/RTCP and HTTP to the miniserver over the in-process
+ // private-network interface. Nothing here may become reachable for other
+ // apps on the phone: SIP is TLS with a pinned client certificate, RTP is
+-// accepted only from the calling library's own ports, HTTP needs a token.
++// accepted only from the calling library's own ports, HTTP is TLS with the
++// relay's identity (pinned by the app) and needs a token.
+ //
+ // The relay never opens sockets outside 127.0.0.1 and the Network it is
+ // given, so in this mode no traffic bypasses another VPN on the phone.
+@@ -47,7 +48,8 @@ type Config struct {
+ 	UpstreamSIP netip.AddrPort
+ 	// HTTPAllowedHosts are the only targets of the HTTP relay.
+ 	HTTPAllowedHosts []netip.Addr
+-	// ServerCertPEM/ServerKeyPEM: TLS identity of the relay toward the calling library.
++	// ServerCertPEM/ServerKeyPEM: TLS identita relé k volací knihovně (SIP)
++	// i k appce (webové relé).
+ 	ServerCertPEM, ServerKeyPEM []byte
+ 	// ClientCertPEM: the only client certificate accepted (exact match).
+ 	ClientCertPEM []byte
+@@ -66,8 +68,13 @@ type Config struct {
+ // Info tells the app where the relay listens on 127.0.0.1.
+ type Info struct {
+ 	SIPPort   int    `json:"sipPort"`   // TLS
+-	HTTPPort  int    `json:"httpPort"`  // plain HTTP, needs HTTPToken
++	HTTPPort  int    `json:"httpPort"`  // TLS (server identity), needs HTTPToken
+ 	HTTPToken string `json:"httpToken"` // header X-Phone21-Relay
++	// HTTPTLS: webové relé na HTTPPort mluví jen šifrovaně (TLS 1.2+) se
++	// serverovou identitou relé (ServerCertPEM). Appka ověří přesně ten
++	// certifikát a token pošle až po ověření; bez tohoto pole (starší
++	// knihovna s nešifrovaným relé) webové relé nepoužije.
++	HTTPTLS bool `json:"httpTls"`
+ 	// PrivateSIPPort is the relay's SIP port on the private address.
+ 	PrivateSIPPort int `json:"privateSipPort"`
+ 	// ClientSRTP: relé přijímá od volací knihovny jen šifrovaný hlas (SRTP
+@@ -147,7 +154,7 @@ func Start(ctx context.Context, cfg Config, nw Network) (*Relay, Info, error) {
+ 		return fail(err)
+ 	}
+ 	r.sip = p
+-	if r.http, err = newHTTPRelay(ctx, cfg.HTTPAllowedHosts, cfg.HTTPPort, nw, r.cnt, rl); err != nil {
++	if r.http, err = newHTTPRelay(ctx, cfg.HTTPAllowedHosts, cfg.HTTPPort, cert, nw, r.cnt, rl); err != nil {
+ 		return fail(err)
+ 	}
+ 
+@@ -168,6 +175,7 @@ func Start(ctx context.Context, cfg Config, nw Network) (*Relay, Info, error) {
+ 		HTTPToken:      r.http.token,
+ 		PrivateSIPPort: p.upPort,
+ 		ClientSRTP:     true,
++		HTTPTLS:        true,
+ 	}
+ 	if cfg.Logf != nil {
+ 		cfg.Logf("p21relay: started (SIP %d, HTTP %d, private SIP %d)", info.SIPPort, info.HTTPPort, info.PrivateSIPPort)
+@@ -255,8 +263,18 @@ func certDER(pemBytes []byte) ([]byte, error) {
+ 
+ var errClientCert = errors.New("client certificate not accepted")
+ 
++// relayCipherSuites (TLS 1.2) pokrývají, co nabízí TLS volací knihovny
++// i HTTPS klient appky.
++var relayCipherSuites = []uint16{
++	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
++	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
++	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
++	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
++	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
++	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
++}
++
+ // serverTLSConfig requires a client certificate and accepts exactly one.
+-// Suites cover what the calling library's TLS stack offers.
+ func serverTLSConfig(cert tls.Certificate, clientDER []byte) *tls.Config {
+ 	pinned := func(raw []byte) bool {
+ 		return len(raw) == len(clientDER) && subtle.ConstantTimeCompare(raw, clientDER) == 1
+@@ -265,14 +283,7 @@ func serverTLSConfig(cert tls.Certificate, clientDER []byte) *tls.Config {
+ 		Certificates: []tls.Certificate{cert},
+ 		ClientAuth:   tls.RequireAnyClientCert,
+ 		MinVersion:   tls.VersionTLS12,
+-		CipherSuites: []uint16{
+-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+-			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+-		},
++		CipherSuites: relayCipherSuites,
+ 		// Resumed sessions would skip VerifyPeerCertificate.
+ 		SessionTicketsDisabled: true,
+ 		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+index 23ccce4..af5ab64 100644
+--- a/libtailscale/p21relay/relay_test.go
++++ b/libtailscale/p21relay/relay_test.go
+@@ -4,8 +4,10 @@
+ package p21relay
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"crypto/tls"
++	"encoding/json"
+ 	"fmt"
+ 	"io"
+ 	"net"
+@@ -1054,12 +1056,23 @@ func TestStartHTTPRelay(t *testing.T) {
+ 	if len(e.info.HTTPToken) != 64 {
+ 		t.Fatalf("token length %d", len(e.info.HTTPToken))
+ 	}
++	// Appka pozná šifrované webové relé podle pole httpTls.
++	if b, err := json.Marshal(e.info); !e.info.HTTPTLS || err != nil || !strings.Contains(string(b), `"httpTls":true`) {
++		t.Fatalf("Info does not announce the encrypted HTTP relay: %s", b)
++	}
++	// Webové relé má stejnou serverovou identitu jako SIP (ServerCertPEM).
++	addr := "127.0.0.1:" + strconv.Itoa(e.info.HTTPPort)
++	c := dialRelayTLS(t, addr, e.serverCert)
++	if !bytes.Equal(c.ConnectionState().PeerCertificates[0].Raw, e.serverCert.tls.Certificate[0]) {
++		t.Fatal("HTTP relay has another certificate than the relay identity")
++	}
++	c.Close()
+ 	for _, tok := range []string{e.info.HTTPToken, ""} {
+-		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/%s/pristup?x=1", e.info.HTTPPort, upAddr), nil)
++		req, _ := http.NewRequest("GET", fmt.Sprintf("https://%s/%s/pristup?x=1", addr, upAddr), nil)
+ 		if tok != "" {
+ 			req.Header.Set(TokenHeader, tok)
+ 		}
+-		resp, err := relayClient().Do(req)
++		resp, err := relayClient(e.serverCert).Do(req)
+ 		if err != nil {
+ 			t.Fatal(err)
+ 		}

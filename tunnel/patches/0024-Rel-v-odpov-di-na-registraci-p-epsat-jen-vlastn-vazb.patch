@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:54:36 +0000
+Subject: [PATCH 24/33] =?UTF-8?q?Rel=C3=A9:=20v=20odpov=C4=9Bdi=20na=20reg?=
+ =?UTF-8?q?istraci=20p=C5=99epsat=20jen=20vlastn=C3=AD=20vazbu?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Odpověď ústředny na registraci vypisuje všechny vazby účtu. Relé
+přepisovalo na kontakt volací knihovny každou vazbu s adresou telefonu
+v privátní síti bez ohledu na port. Po novém spuštění relé na jiném
+portu (než ústředna starou vazbu zahodí) tak knihovna viděla svůj
+kontakt několikrát s různou platností.
+
+Teď se přepisuje jen vazba na portu tohoto relé (bez portu = 5060),
+vazba dřívějšího relé projde beze změny. Test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/relay_test.go | 18 +++++++++++++++---
+ libtailscale/p21relay/sipproxy.go   |  9 +++++++--
+ 2 files changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+index fe8ee16..ca4f9db 100644
+--- a/libtailscale/p21relay/relay_test.go
++++ b/libtailscale/p21relay/relay_test.go
+@@ -92,19 +92,28 @@ func register(t *testing.T, e *testEnv, c *fakeClient) *sipMsg {
+ 		t.Fatal("new transaction reused the branch")
+ 	}
+ 	e.up.reply(r2, 200, "OK", []string{
+-		fmt.Sprintf("Contact: <sip:%s@%s;x-ast-orig-host=%s>;expires=3600, <sip:%s@100.64.0.9:5060>;expires=120",
+-			testUser, e.privSIP(), e.privSIP(), testUser),
++		fmt.Sprintf("Contact: <sip:%s@%s;x-ast-orig-host=%s>;expires=3600, <sip:%s@100.64.0.9:5060>;expires=120, <sip:%s@%s>;expires=40",
++			testUser, e.privSIP(), e.privSIP(), testUser, testUser, e.stalePrivSIP()),
+ 		"Expires: 3600",
+ 	}, "")
+ 	return c.expectResponse(200, "REGISTER")
+ }
+ 
++// stalePrivSIP is a binding an earlier relay left on another port.
++func (e *testEnv) stalePrivSIP() netip.AddrPort {
++	port := e.info.PrivateSIPPort + 2
++	if port > 65535 {
++		port = e.info.PrivateSIPPort - 2
++	}
++	return netip.AddrPortFrom(privIP, uint16(port))
++}
++
+ func TestRegister(t *testing.T) {
+ 	e := newEnv(t)
+ 	c := newFakeClient(t, e)
+ 	ok := register(t, e, c)
+ 	cs := ok.values("contact")
+-	if len(cs) != 2 {
++	if len(cs) != 3 {
+ 		t.Fatalf("contacts %q", cs)
+ 	}
+ 	if want := "<" + c.contact() + ">;expires=3600"; cs[0] != want {
+@@ -113,6 +122,9 @@ func TestRegister(t *testing.T) {
+ 	if want := "<sip:" + testUser + "@100.64.0.9:5060>;expires=120"; cs[1] != want {
+ 		t.Fatalf("other binding changed: %q", cs[1])
+ 	}
++	if want := "<sip:" + testUser + "@" + e.stalePrivSIP().String() + ">;expires=40"; cs[2] != want {
++		t.Fatalf("binding of an earlier relay changed: %q", cs[2])
++	}
+ }
+ 
+ // call is an established (or ringing) call through the relay.
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+index 896ab45..d13e0f0 100644
+--- a/libtailscale/p21relay/sipproxy.go
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -828,9 +828,11 @@ func (p *sipProxy) contactsToClient(m *sipMsg) {
+ 	})
+ }
+ 
+-// registerContactsToClient maps the relay's bindings in a REGISTER
++// registerContactsToClient maps the relay's binding in a REGISTER
+ // response back to the Contact the calling library sent; other bindings
+-// of the account pass unchanged.
++// of the account pass unchanged. That includes a binding of an earlier
++// relay on another port of this phone's address: the library must see its
++// own binding once, with its own expiry.
+ func (p *sipProxy) registerContactsToClient(m *sipMsg) {
+ 	m.mapValues("contact", func(v string) string {
+ 		na := parseNameAddr(v)
+@@ -838,6 +840,9 @@ func (p *sipProxy) registerContactsToClient(m *sipMsg) {
+ 		if !ok || !u.isHost(p.localIP) {
+ 			return v
+ 		}
++		if port := u.port; port != p.upPort && (port != 0 || p.upPort != 5060) {
++			return v
++		}
+ 		na.uri = p.clientURI(u)
+ 		return na.String()
+ 	})

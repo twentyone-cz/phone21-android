@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:53:49 +0000
+Subject: [PATCH 08/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20re=C5=BEim:=20rozhran?=
+ =?UTF-8?q?=C3=AD=20pro=20appku?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Exportované funkce: RequestInternal, StopInternal, InternalStatus
+(JSON se stavem, generací rozhraní a během relé), GenerateRelayIdentity
+(vlastní identita pro spoj s relé na 127.0.0.1), StartRelay (spuštění
+nebo výměna relé na aktuálním rozhraní), StopRelay a RelayStats.
+Volání se vrací hned, stav si appka čte z InternalStatus. Do logu nejde
+konfigurace relé, klíče, certifikáty ani token.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21_export.go | 99 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 99 insertions(+)
+ create mode 100644 libtailscale/p21_export.go
+
+diff --git a/libtailscale/p21_export.go b/libtailscale/p21_export.go
+new file mode 100644
+index 0000000..005f466
+--- /dev/null
++++ b/libtailscale/p21_export.go
+@@ -0,0 +1,99 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package libtailscale
++
++// Exported (gomobile) API of Phone21's internal tunnel mode and relay.
++// See p21_internal.go for how the mode works.
++
++import (
++	"encoding/json"
++	"log"
++
++	"github.com/tailscale/tailscale-android/libtailscale/p21internal"
++)
++
++// RequestInternal asks for the internal mode: the tunnel runs over an
++// in-process interface and does not occupy the system VPN slot. It returns
++// immediately; poll InternalStatus for "up" and "generation". While a
++// VpnService is active it wins, the request is kept and takes effect after
++// ServiceDisconnect.
++func RequestInternal() {
++	if internalState.SetRequested(true) {
++		log.Printf("internal: requested by the app")
++	}
++	notifyInternalChanged()
++}
++
++// StopInternal withdraws the request. If the internal mode is active, the
++// in-process interface is closed and the relay stopped (the tunnel then has
++// no device until the app starts a VpnService or requests the mode again).
++// It returns immediately.
++func StopInternal() {
++	if internalState.SetRequested(false) {
++		log.Printf("internal: stop requested by the app")
++	}
++	notifyInternalChanged()
++}
++
++// InternalStatus returns the internal mode's state as JSON:
++//
++//	{"requested":bool,"up":bool,"addr":"100.64.0.4","generation":int,
++//	 "relay":bool,"error":"","vpnService":bool,"leftoverSockets":int}
++//
++// A new "generation" means a new in-process interface: start the relay
++// again (StartRelay) and re-register. "relay" is false whenever the relay is
++// not running on the current interface.
++func InternalStatus() string {
++	return internalState.StatusJSON()
++}
++
++// GenerateRelayIdentity returns a new self-signed TLS identity for the link
++// between the calling library and the relay on 127.0.0.1, as JSON
++// {"certPem":"…","keyPem":"…"} (ECDSA P-256, key as SEC1 "EC PRIVATE KEY").
++// The app generates one for the relay and one for the calling library and
++// stores them; the result must never be logged.
++func GenerateRelayIdentity() (string, error) {
++	return p21internal.GenerateIdentityJSON()
++}
++
++// StartRelay starts the relay on the current in-process interface,
++// replacing a relay that is already running. cfgJSON:
++//
++//	{"upstreamSip":"100.64.0.1:5060","httpHosts":["100.64.0.1"],
++//	 "serverCertPem":"…","serverKeyPem":"…","clientCertPem":"…"}
++//
++// It returns {"sipPort":int,"httpPort":int,"httpToken":"…"} (p21relay.Info),
++// or an error when the internal mode is not up. The relay stops by itself
++// when the interface is replaced or closed (InternalStatus "relay" false).
++func StartRelay(cfgJSON string) (string, error) {
++	cfg, err := p21internal.ParseRelayConfig(cfgJSON)
++	if err != nil {
++		return "", err
++	}
++	cfg.Logf = relayLogf
++	info, err := internalState.StartRelay(cfg)
++	if err != nil {
++		log.Printf("internal: relay start failed: %v", err)
++		return "", err
++	}
++	b, err := json.Marshal(info)
++	if err != nil {
++		return "", err
++	}
++	return string(b), nil
++}
++
++// StopRelay stops the relay if it is running.
++func StopRelay() {
++	internalState.StopRelay()
++}
++
++// RelayStats returns the relay's statistics as JSON ("{}" if not running).
++func RelayStats() string {
++	return internalState.RelayStats()
++}
++
++func relayLogf(format string, args ...any) {
++	log.Printf("p21relay: "+format, args...)
++}
