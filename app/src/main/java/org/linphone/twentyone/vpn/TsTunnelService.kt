@@ -9,7 +9,13 @@
  *  - HANDOVER: přepnutí na systémovou VPN — jen zhasnout, NIC nevypínat
  *    (žádost o vnitřní režim zůstává jako záloha pod systémovou VPN),
  *  - bez záměru (systém službu vzkřísil po zabití procesu): pokračovat,
- *    jen když je pořád vnitřní režim a uživatel tunel chce.
+ *    jen když je pořád vnitřní režim (i záložní při miniserveru/síti)
+ *    a uživatel tunel chce.
+ *
+ * Počítadlo instancí se mění až v onCreate/onDestroy na hlavním vlákně,
+ * vlákno jádra ale jedná hned po startu: proto [isStartPending] (start
+ * odeslán, instance ještě nevznikla) a stopSelf(startId) u HANDOVER/STOP
+ * (novější START se nespolkne).
  */
 package org.linphone.twentyone.vpn
 
@@ -30,19 +36,34 @@ class TsTunnelService : Service() {
 
         private val instances = AtomicInteger(0)
 
+        @Volatile
+        private var startPending = false
+
         /** Žije instance služby? (Posílat STOP/HANDOVER jen živé službě —
          *  jinak by ji záměr teprve vytvořil.) */
         fun isRunning(): Boolean = instances.get() > 0
+
+        /** START odešel a instance ještě nevznikla: STOP/HANDOVER poslat
+         *  i tak — systém ho doručí po STARTu téže instanci. */
+        fun isStartPending(): Boolean = startPending
+
+        fun markStartPending() {
+            startPending = true
+        }
     }
 
     private var guardOk = true
     private var startFailed = false
+
+    /** Tahle instance končí předáním (HANDOVER) — viz onDestroy. */
+    private var handedOver = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         instances.incrementAndGet()
+        startPending = false
         // stejná pojistka proti smyčce pád→vzkříšení→pád jako u služby VPN
         guardOk = TunnelStartGuard.registerSystemStart(applicationContext)
         if (guardOk) startBackend()
@@ -80,20 +101,29 @@ class TsTunnelService : Service() {
                 Log.i("$TAG Stopped by the user")
                 TsManager.setWantRunning(false)
                 TsRelay.stopInternal()
-                quit()
+                quit(startId)
                 START_NOT_STICKY
             }
             ACTION_HANDOVER -> {
                 Log.i("$TAG Handing over to the system VPN")
-                quit()
+                handedOver = true
+                quit(startId)
                 START_NOT_STICKY
             }
             null -> {
                 startForegroundNotification()
-                // zrcadlo WantRunning přežívá zabití procesu (TsPreferences)
+                // Zrcadlo WantRunning i uložený režim přežívají zabití
+                // procesu (TsPreferences). Pokračovat i v záložním vnitřním
+                // režimu u miniserveru/sítě (jiná VPN, ztracené místo, bez
+                // souhlasu) — tam je požadovaný režim systémový, ale hovory
+                // jedou vnitřním tunelem. Požadovaný vnitřní pokrývá
+                // aktualizaci z verze bez uloženého režimu.
                 val want = TsManager.wantsRunning()
-                if (want && TsModeController.desiredAccessMode(applicationContext) ==
-                    TsModeController.Mode.INTERNAL
+                if (want && (
+                        TsModeController.modeInUse() == TsModeController.Mode.INTERNAL ||
+                            TsModeController.desiredAccessMode(applicationContext) ==
+                            TsModeController.Mode.INTERNAL
+                        )
                 ) {
                     TwentyOneDiag.log("P21-TUN", "služba vnitřního tunelu vzkříšena systémem po zabití procesu")
                     TsModeController.reconcile("vzkříšení služby vnitřního tunelu")
@@ -107,7 +137,17 @@ class TsTunnelService : Service() {
                 }
             }
             else -> {
+                // START po HANDOVER téže instanci (stopSelf(startId) ji nechal
+                // žít): už nekončí předáním
+                handedOver = false
                 startForegroundNotification()
+                // Start, který předběhl vypnutí (Odpojit/odhlášení ve stejném
+                // kroku vlákna jádra), nesmí nechat běžet službu bez tunelu.
+                if (!TsManager.wantsRunning()) {
+                    Log.i("$TAG Started, but the tunnel is not wanted any more")
+                    quit(startId)
+                    return START_NOT_STICKY
+                }
                 Log.i("$TAG Running")
                 START_STICKY
             }
@@ -130,18 +170,23 @@ class TsTunnelService : Service() {
         }
     }
 
-    private fun quit() {
+    /** [startId] = skončit jen tehdy, když po tomhle pokynu nepřišel
+     *  novější START (ten pak službu drží dál). */
+    private fun quit(startId: Int? = null) {
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {
         }
-        stopSelf()
+        if (startId != null) stopSelf(startId) else stopSelf()
     }
 
     override fun onDestroy() {
         instances.decrementAndGet()
         // Vnitřní režim se tu NEVYPÍNÁ: STOP ho stáhl sám, předání ho
         // nechává jako zálohu pod systémovou VPN. Stav cesty hlásí relé.
+        // Po předání se mohl režim mezitím vrátit na vnitřní a start nové
+        // instance se přeskočil (tahle se ještě počítala).
+        if (handedOver) TsModeController.onTunnelServiceHandedOver()
         super.onDestroy()
     }
 }

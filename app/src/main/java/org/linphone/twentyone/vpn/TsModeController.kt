@@ -245,6 +245,22 @@ object TsModeController {
         reconcile("ztráta místa pro VPN", forced = true)
     }
 
+    /**
+     * Instance služby vnitřního tunelu, která dostala HANDOVER, skončila.
+     * Když se mezitím režim vrátil na vnitřní (rychlý návrat ze systémové
+     * VPN), start služby se mohl přeskočit, protože končící instance se
+     * ještě počítala — pustit ji znovu, bez brzdy.
+     */
+    fun onTunnelServiceHandedOver() {
+        if (!coreContext.isReady()) return
+        coreContext.postOnCoreThread {
+            if (switching || !TsManager.wantsRunning() || modeInUse() != Mode.INTERNAL) return@postOnCoreThread
+            if (TsTunnelService.isRunning()) return@postOnCoreThread
+            TwentyOneDiag.log("P21-TUN", "služba vnitřního tunelu skončila po předání, ale režim je vnitřní — spouštím znovu")
+            startTunnelService(force = true)
+        }
+    }
+
     private fun isApprovedNow(): Boolean {
         val at = approvedAt
         return at != 0L && android.os.SystemClock.elapsedRealtime() - at < APPROVAL_VALID_MS
@@ -474,6 +490,8 @@ object TsModeController {
     }
 
     private fun startTunnelService(force: Boolean) {
+        // Končící instance (HANDOVER) se ještě počítá: když se tím start
+        // přeskočí, pustí službu znovu onTunnelServiceHandedOver.
         if (TsTunnelService.isRunning()) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (!force && lastTunnelServiceStart != 0L && now - lastTunnelServiceStart < SERVICE_START_BRAKE_MS) {
