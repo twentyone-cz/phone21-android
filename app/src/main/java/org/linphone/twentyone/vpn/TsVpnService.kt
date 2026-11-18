@@ -37,6 +37,21 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
     private var guardOk = true
     private var startFailed = false
 
+    /** Výsledek posledního Builder.establish(): null = zatím žádný, false =
+     *  vrátil null (místo pro VPN drží jiná aplikace / souhlas odebrán).
+     *  Knihovna tunelu hlásí updateVpnStatus(true) DŘÍV, než zkontroluje, že
+     *  establish něco vrátil — bez téhle stráže by appka krátce tvrdila, že
+     *  rozhraní stojí. */
+    @Volatile
+    private var establishOk: Boolean? = null
+
+    /** Systém tuhle instanci odvolal (onRevoke, binder vlákno). Knihovna
+     *  tunelu volá establish a updateVpnStatus z vlastního vlákna, takže
+     *  úspěch establish, který doběhl až po odvolání, nesmí ztracené místo
+     *  zrušit. Nuluje ho jen nový pokyn uživatele (requestInterface). */
+    @Volatile
+    private var revoked = false
+
     override fun id(): String = randomId
 
     override fun onCreate() {
@@ -111,10 +126,28 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
                 // nenastartovala" od „rozhraní se nepostavilo"
                 org.linphone.twentyone.TwentyOneDiag.log(
                     "P21-TUN", "služba běží, žádám o rozhraní")
-                libtailscale.Libtailscale.requestVPN(this)
+                requestInterface()
                 START_STICKY
             }
         }
+    }
+
+    /**
+     * Po neúspěšném establish zůstává TAHLE instance v knihovně tunelu
+     * zaregistrovaná, poslední konfigurace se nezapsala a nový requestVPN se
+     * stejným ID knihovna ignoruje („still the same VPN instance“) — návrat
+     * na pokyn uživatele by pak nic nepostavil. Proto se nejdřív odregistruje
+     * (CloseTUNs smaže poslední konfiguraci) a pak přihlásí znovu: rozhraní
+     * se staví nanovo s uloženou konfigurací.
+     */
+    private fun requestInterface() {
+        revoked = false
+        if (establishOk == false && !closed) {
+            Log.w("$TAG Last establish failed, re-registering this instance")
+            libtailscale.Libtailscale.serviceDisconnect(this)
+            establishOk = null
+        }
+        libtailscale.Libtailscale.requestVPN(this)
     }
 
     /** Systémové „Blokovat připojení bez VPN" u tunelu, který vede jen
@@ -165,7 +198,30 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
     }
 
     override fun updateVpnStatus(status: Boolean) {
+        if (status && (revoked || establishOk == false)) {
+            Log.w("$TAG Ignoring VPN status [up], last establish failed or VPN was revoked")
+            return
+        }
         TsManager.onVpnStatusChanged(status)
+        if (status) {
+            // Ztracené místo pro VPN se ruší JEN tady: rozhraní opravdu stojí.
+            // Podmínka se ověří znovu pod zámkem — odvolání, které přišlo
+            // mezitím, vyhraje.
+            TsManager.clearSlotLost(applicationContext) { !revoked && establishOk == true }
+            // onRevoke doběhl mezi kontrolou nahoře a ohlášením: nenechat
+            // viset „rozhraní stojí“
+            if (revoked) TsManager.onVpnStatusChanged(false)
+        }
+    }
+
+    /** Volá TsVpnBuilder synchronně, ještě než establish() vrátí výsledek. */
+    private fun onEstablishResult(ok: Boolean) {
+        establishOk = ok && !revoked
+        if (!ok) {
+            Log.e("$TAG Builder.establish() returned null, VPN slot is not ours")
+            TsManager.markSlotLost(
+                applicationContext, "rozhraní nejde postavit (establish vrátil nic)")
+        }
     }
 
     override fun onDestroy() {
@@ -175,6 +231,14 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
     }
 
     override fun onRevoke() {
+        // Opožděné updateVpnStatus(true) z knihovny (establish proběhl těsně
+        // před odebráním) nesmí ztracené místo hned zase zrušit.
+        revoked = true
+        establishOk = false
+        // PRVNÍ: od téhle chvíle si appka místo pro VPN sama nevezme
+        // (jinak by ho přes VpnService.prepare() potichu sebrala jiné VPN)
+        TsManager.markSlotLost(
+            applicationContext, "systém odebral rozhraní (jiná VPN nebo vypnutí v nastavení)")
         TsManager.setWantRunning(false)
         close()
         updateVpnStatus(false)
@@ -227,12 +291,15 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
             Log.i("$TAG Tunnel is open to all apps (access=$access)")
         }
 
-        return TsVpnBuilder(builder)
+        return TsVpnBuilder(builder) { ok -> onEstablishResult(ok) }
     }
 }
 
-private class TsVpnBuilder(private val builder: VpnService.Builder) :
-    libtailscale.VPNServiceBuilder {
+private class TsVpnBuilder(
+    private val builder: VpnService.Builder,
+    /** výsledek establish() (true = rozhraní vzniklo), hlášený PŘED návratem */
+    private val onEstablished: (Boolean) -> Unit
+) : libtailscale.VPNServiceBuilder {
     override fun addAddress(address: String, prefixLength: Int) {
         builder.addAddress(address, prefixLength)
     }
@@ -260,7 +327,9 @@ private class TsVpnBuilder(private val builder: VpnService.Builder) :
     }
 
     override fun establish(): libtailscale.ParcelFileDescriptor? {
-        return builder.establish()?.let { TsParcelFileDescriptor(it) }
+        val pfd = builder.establish()
+        onEstablished(pfd != null)
+        return pfd?.let { TsParcelFileDescriptor(it) }
     }
 }
 

@@ -79,6 +79,10 @@ class TwentyOneTunnelFragment : Fragment() {
             }
         } else {
             Log.w("$TAG VPN permission was refused")
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "souhlas s VPN odmítnut — tunel zůstává vypnutý")
+            // trvale zapnutá jiná VPN: systém souhlas zamítne sám — říct proč
+            if (isAdded) TsConsentActivity.explainRefusal(requireContext()) { }
         }
     }
 
@@ -291,6 +295,7 @@ class TwentyOneTunnelFragment : Fragment() {
         TsManager.tailnetAddress.observe(viewLifecycleOwner) { updateState() }
         TsManager.networkPaused.observe(viewLifecycleOwner) { updateState() }
         TsManager.gatewayState.observe(viewLifecycleOwner) { updateState() }
+        TsManager.slotLost.observe(viewLifecycleOwner) { updateState() }
         // Věta o provozu ven se opírá o poslední stav sítě (je uzel opravdu
         // nasazený?) — bez tohohle pozorovatele by zůstala viset na tom, co
         // platilo při otevření obrazovky.
@@ -415,6 +420,8 @@ class TwentyOneTunnelFragment : Fragment() {
         }
         if (::accessServerSwitch.isInitialized) {
             pullAccess()
+            // jiná VPN se mohla mezitím zapnout/vypnout (věta pod stavem)
+            updateState()
         }
     }
 
@@ -542,8 +549,38 @@ class TwentyOneTunnelFragment : Fragment() {
         startActivity(Intent(requireContext(), AssistantActivity::class.java))
     }
 
+    /**
+     * VpnService.prepare() vezme místo pro VPN a VPN jiné aplikace tím vypne
+     * (Android dovolí jen jednu). Běží-li nějaká (nebo Phone21 o místo
+     * přišlo), nejdřív se zeptat — viz TsConsentActivity.takeoverConfirmTexts.
+     * Detekce jiné VPN slouží jen k tomuhle dotazu, nikdy jako zábrana.
+     */
+    private fun confirmOtherVpn(action: () -> Unit) {
+        val ctx = requireContext()
+        val texts = TsConsentActivity.takeoverConfirmTexts(ctx)
+        if (texts == null) {
+            action()
+            return
+        }
+        android.app.AlertDialog.Builder(ctx)
+            .setTitle(texts.first)
+            .setMessage(texts.second)
+            .setPositiveButton(R.string.twentyone_slot_lost_action) { _, _ ->
+                if (!isAdded) return@setPositiveButton
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "uživatel potvrdil převzetí místa pro VPN")
+                action()
+            }
+            .setNegativeButton(R.string.twentyone_other_vpn_confirm_cancel, null)
+            .show()
+    }
+
     /** Přihlášení přes Moji síť: odkaz se otevře v prohlížeči (browseToUrl). */
     private fun webLogin() {
+        confirmOtherVpn { doWebLogin() }
+    }
+
+    private fun doWebLogin() {
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-TUN", "telefon mimo síť — přihlášení přes Moji síť v prohlížeči"
         )
@@ -562,6 +599,12 @@ class TwentyOneTunnelFragment : Fragment() {
             startNewCode()
             return
         }
+        // Ztracené místo pro VPN se tu NEruší: zruší ho až služba, když
+        // rozhraní opravdu stojí.
+        confirmOtherVpn { doConnect() }
+    }
+
+    private fun doConnect() {
         val intent = VpnService.prepare(requireContext())
         if (intent != null) {
             vpnPermission.launch(intent)
@@ -580,10 +623,14 @@ class TwentyOneTunnelFragment : Fragment() {
         // síti (viz isPaused) — mimo RUNNING je příznak nevěrohodný.
         val paused = isPaused(state)
         val needsCode = needsNewCode()
+        // Jádro může běžet i bez rozhraní (místo pro VPN drží jiná
+        // aplikace): pak „Připojeno“ ani trasa neplatí — hovory nechodí.
+        val noSlot = TsManager.slotLost.value == true && TsManager.vpnActive.value != true
 
         stateView.text = getString(
             when {
                 paused -> R.string.twentyone_tunnel_state_paused
+                noSlot && !needsCode -> R.string.twentyone_tunnel_state_stopped
                 state == TsManager.State.RUNNING -> R.string.twentyone_tunnel_state_connected
                 state == TsManager.State.STARTING -> R.string.twentyone_tunnel_state_connecting
                 needsCode -> R.string.twentyone_tunnel_state_needs_login
@@ -593,7 +640,7 @@ class TwentyOneTunnelFragment : Fragment() {
 
         // Trasa se měří k bráně; při odříznutí není ke komu a věta o přímém
         // spojení by lhala, proto řádek zmizí celý.
-        routeView.visibility = if (state == TsManager.State.RUNNING && !paused) {
+        routeView.visibility = if (state == TsManager.State.RUNNING && !paused && !noSlot) {
             View.VISIBLE
         } else {
             View.GONE
@@ -617,7 +664,7 @@ class TwentyOneTunnelFragment : Fragment() {
         webLoginButton?.visibility = if (needsCode) View.VISIBLE else View.GONE
 
         val address = TsManager.tailnetAddress.value
-        addressView.visibility = if (address.isNullOrEmpty()) View.GONE else View.VISIBLE
+        addressView.visibility = if (address.isNullOrEmpty() || noSlot) View.GONE else View.VISIBLE
         if (!address.isNullOrEmpty()) {
             addressView.text = getString(R.string.twentyone_tunnel_address, address)
         }
@@ -633,8 +680,8 @@ class TwentyOneTunnelFragment : Fragment() {
     }
 
     /**
-     * Věta pod stavem. Pořadí: odříznutí → telefon mimo síť → co appka ví
-     * o bráně (to zajímá jen toho, kdo chce provoz ven přes miniserver).
+     * Věta pod stavem. Pořadí: odříznutí → telefon mimo síť → ztracené
+     * místo pro VPN → co appka ví o bráně (to zajímá jen toho, kdo chce provoz ven přes miniserver).
      */
     private fun hintFor(
         state: TsManager.State,
@@ -652,6 +699,15 @@ class TwentyOneTunnelFragment : Fragment() {
         if (needsCode) {
             return getString(R.string.twentyone_tunnel_needs_login_hint) + "\n" +
                 getString(R.string.twentyone_tunnel_needs_login_no_code)
+        }
+        if (TsManager.slotLost.value == true) {
+            return getString(
+                if (TsManager.otherVpnActive(requireContext())) {
+                    R.string.twentyone_slot_lost_hint_other_vpn
+                } else {
+                    R.string.twentyone_slot_lost_hint
+                }
+            )
         }
         if (state != TsManager.State.RUNNING ||
             TsManager.prefs.tunnelAccess != TsPreferences.TunnelAccess.INTERNET

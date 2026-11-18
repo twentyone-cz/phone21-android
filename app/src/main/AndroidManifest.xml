@@ -236,7 +236,12 @@
             android:exported="false"
             android:noHistory="true"
             android:excludeFromRecents="true"
-            android:theme="@style/TwentyOneTranslucent" />
+            android:theme="@style/TwentyOneTranslucent"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
+
+        <receiver
+            android:name="org.linphone.twentyone.vpn.TsSlotLostDismissReceiver"
+            android:exported="false" />
 
         <service
             android:name="org.linphone.twentyone.vpn.TsVpnService"

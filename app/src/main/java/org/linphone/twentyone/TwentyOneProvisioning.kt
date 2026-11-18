@@ -108,6 +108,11 @@ object TwentyOneProvisioning {
             if (viaTunnel && !org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
                 if (!joinNetwork(joinKey)) {
                     TwentyOneDiag.log("P21-E18", "cíl=%s %s".format(target, networkFacts()))
+                    if (org.linphone.twentyone.vpn.TsManager.otherVpnActive(coreContext.context)) {
+                        onError(coreContext.context.getString(
+                            org.linphone.R.string.twentyone_qr_join_other_vpn))
+                        return@execute
+                    }
                     onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
                         "potvrdil jsi souhlas s VPN? Klíč v QR platí jen jednou, " +
                         "vygeneruj nový QR a zkus to znovu.")
@@ -180,10 +185,26 @@ object TwentyOneProvisioning {
                 Pair(org.linphone.R.string.twentyone_qr_joining, org.linphone.R.drawable.info)
             )
         )
-        if (org.linphone.twentyone.vpn.TsManager.isLoggedIn()) {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        val tm = org.linphone.twentyone.vpn.TsManager
+        if (tm.isLoggedIn() && (tm.isSlotLost() || tm.otherVpnActive(context))) {
+            // Místo pro VPN drží jiná aplikace (nebo o něj Phone21 přišlo):
+            // samotné spuštění služby by rozhraní nepostavilo. Zpátky přes
+            // potvrzení a souhlas, stejně jako tlačítko ve výstraze.
+            TwentyOneDiag.log("P21-TUN", "telefon už v síti je, ale místo pro VPN nemá — ptám se na převzetí")
+            val intent = android.content.Intent(
+                context, org.linphone.twentyone.vpn.TsConsentActivity::class.java
+            ).apply {
+                putExtra(org.linphone.twentyone.vpn.TsConsentActivity.EXTRA_RECLAIM, true)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                context.startActivity(intent)
+            }
+        } else if (tm.isLoggedIn()) {
             // přihlášený telefon: klíč se nepoužije, jen se spustí rozhraní
             TwentyOneDiag.log("P21-TUN", "telefon už v síti je — klíč z QR nepoužit, čekám na rozhraní")
-            org.linphone.twentyone.vpn.TsManager.startService()
+            tm.startService()
         } else {
             val intent = android.content.Intent(
                 context, org.linphone.twentyone.vpn.TsConsentActivity::class.java
@@ -200,6 +221,11 @@ object TwentyOneProvisioning {
             if (org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
                 TwentyOneDiag.log("P21-TUN", "telefon je v síti — stahuji konfiguraci tunelem")
                 return true
+            }
+            // uživatel souhlas / převzetí místa odmítl: nečekat celou lhůtu
+            if (org.linphone.twentyone.vpn.TsConsentActivity.lastGaveUpAt >= startedAt) {
+                Log.w("$TAG Tunnel consent was not given, giving up on joining")
+                return false
             }
             Thread.sleep(1_000)
         }
@@ -300,8 +326,13 @@ object TwentyOneProvisioning {
             false -> "vypnutá"
             null -> "?"
         }
-        return "tunel=%s blokace-mimo-vpn=%s".format(
-            if (vpnUp()) "běží" else "ne", lockdown)
+        // Vlastní tunel a cizí VPN zvlášť: dřív se jako „tunel=běží“ počítala
+        // jakákoli VPN v telefonu, i ta, která Phone21 vzala místo.
+        val tm = org.linphone.twentyone.vpn.TsManager
+        return "tunel=%s jiná-vpn=%s blokace-mimo-vpn=%s".format(
+            if (tm.isTunnelUp()) "běží" else "ne",
+            if (tm.otherVpnActive(coreContext.context)) "ano" else "ne",
+            lockdown)
     }
 
     private fun vpnUp(): Boolean {

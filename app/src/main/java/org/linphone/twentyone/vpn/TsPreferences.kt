@@ -16,6 +16,10 @@ class TsPreferences(context: Context) {
         private const val KEY_GATEWAY_ADDRESS = "gateway_address"
         private const val KEY_GATEWAY_STABLE_ID = "gateway_stable_id"
         private const val KEY_ACCESS_TOKEN = "access_token"
+        private const val KEY_SLOT_LOST = "slot_lost"
+        private const val KEY_SLOT_LOST_REASON = "slot_lost_reason"
+        private const val KEY_SLOT_LOST_AT = "slot_lost_at"
+        private const val KEY_SLOT_LOST_DISMISSED_BOOT = "slot_lost_dismissed_boot"
     }
 
     /**
@@ -103,4 +107,47 @@ class TsPreferences(context: Context) {
         set(value) {
             prefs.edit().putString(KEY_ACCESS_TOKEN, value).commit()
         }
+
+    /**
+     * Phone21 přišlo o místo pro VPN (Android dovolí jen jednu): systém
+     * zrušil naše rozhraní, nebo se rozhraní nepodařilo postavit. Dokud
+     * příznak platí, appka si místo sama NEBERE — zpátky jen na pokyn
+     * uživatele. Zapisuje se synchronně: musí přežít zabití procesu hned
+     * po odebrání.
+     */
+    val slotLost: Boolean
+        get() = prefs.getBoolean(KEY_SLOT_LOST, false)
+
+    /** Proč (do deníku a Diagnostiky), a kdy (System.currentTimeMillis). */
+    val slotLostReason: String
+        get() = prefs.getString(KEY_SLOT_LOST_REASON, "").orEmpty()
+
+    val slotLostAt: Long
+        get() = prefs.getLong(KEY_SLOT_LOST_AT, 0L)
+
+    fun setSlotLost(reason: String) {
+        prefs.edit()
+            .putBoolean(KEY_SLOT_LOST, true)
+            .putString(KEY_SLOT_LOST_REASON, reason)
+            .putLong(KEY_SLOT_LOST_AT, System.currentTimeMillis())
+            .commit()
+    }
+
+    /** Ve kterém startu telefonu (TsManager.bootId) uživatel výstrahu o
+     *  ztraceném místě odsunul. Do restartu telefonu se pak sama nevrací;
+     *  výstraha, kterou smazal systém (aktualizace, zastavení), ano. */
+    var slotLostDismissedBoot: Long
+        get() = prefs.getLong(KEY_SLOT_LOST_DISMISSED_BOOT, Long.MIN_VALUE)
+        set(value) {
+            prefs.edit().putLong(KEY_SLOT_LOST_DISMISSED_BOOT, value).apply()
+        }
+
+    fun clearSlotLost() {
+        prefs.edit()
+            .putBoolean(KEY_SLOT_LOST, false)
+            .remove(KEY_SLOT_LOST_REASON)
+            .remove(KEY_SLOT_LOST_AT)
+            .remove(KEY_SLOT_LOST_DISMISSED_BOOT)
+            .commit()
+    }
 }
