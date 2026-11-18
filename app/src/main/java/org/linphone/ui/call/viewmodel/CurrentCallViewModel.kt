@@ -141,6 +141,9 @@ class CurrentCallViewModel
 
     val isMediaEncrypted = MutableLiveData<Boolean>()
 
+    // fork: hlas šifruje tunel privátní sítě až do miniserveru
+    val isViaPrivateNetwork = MutableLiveData<Boolean>()
+
     val hideVideo = MutableLiveData<Boolean>()
 
     val callStatsModel = CallStatsModel()
@@ -1063,6 +1066,10 @@ class CurrentCallViewModel
                 isZrtp.postValue(false)
             }
         }
+        isViaPrivateNetwork.postValue(
+            currentCall.currentParams.mediaEncryption == MediaEncryption.None &&
+                org.linphone.twentyone.TwentyOneCallPrivacy.viaPrivateNetwork(currentCall)
+        )
         waitingForEncryptionInfo.postValue(false)
         callMediaEncryptionModel.update(currentCall)
     }
@@ -1082,7 +1089,9 @@ class CurrentCallViewModel
 
         val state = call.state
         if (LinphoneUtils.isCallOutgoing(state) || LinphoneUtils.isCallIncoming(state)) {
-            if (call.currentParams.mediaEncryption == MediaEncryption.None) {
+            if (call.currentParams.mediaEncryption == MediaEncryption.None &&
+                !org.linphone.twentyone.TwentyOneCallPrivacy.viaPrivateNetwork(call)
+            ) {
                 waitingForEncryptionInfo.postValue(true)
                 isMediaEncrypted.postValue(false)
             } else {

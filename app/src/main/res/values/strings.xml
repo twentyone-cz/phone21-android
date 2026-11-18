@@ -224,6 +224,7 @@
     <string name="twentyone_diag_clear">Vymazat</string>
     <string name="twentyone_diag_copied">Zkopírováno do schránky.</string>
     <string name="twentyone_diag_empty">Zatím žádné chyby. Dobré znamení.</string>
+    <string name="twentyone_call_private_network">Šifrováno do miniserveru</string>
     <string name="twentyone_diag_save_log">Uložit podrobný log do souboru</string>
     <string name="twentyone_diag_save_log_done">Log je uložený. Obsahuje i čísla a průběh hovorů — dej ho jen tomu, komu věříš.</string>
     <string name="twentyone_diag_save_log_failed">Log se nepodařilo uložit.</string>
