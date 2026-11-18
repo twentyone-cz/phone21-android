@@ -605,7 +605,7 @@ class MainActivity : GenericActivity() {
         val extras = intent.extras
         val hasExtra = extras != null && !extras.isEmpty
         Log.i(
-            "$TAG Handling intent action [${intent.action}], type [${intent.type}], data [${intent.data}] and has ${if (hasExtra) "extras" else "no extra"}"
+            "$TAG Handling intent action [${intent.action}], type [${intent.type}], data [${TwentyOneProvisioning.redact(intent.data?.toString().orEmpty())}] and has ${if (hasExtra) "extras" else "no extra"}"
         )
 
         val action = intent.action ?: return

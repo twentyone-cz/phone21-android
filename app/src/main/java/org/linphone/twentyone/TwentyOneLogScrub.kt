@@ -8,6 +8,8 @@
  * ukládání do souboru, který odchází z telefonu, ještě jednou projde:
  *  - bloky soukromých klíčů PEM (-----BEGIN … PRIVATE KEY----- … END),
  *  - „Bearer <token>“ a hlavička tokenu webového relé,
+ *  - jednorázový token konfigurace v cestě (/p/<token>, /prov/<token>.xml)
+ *    a klíč do sítě z QR (#k=…),
  *  - klíče šifrování hlasu za „inline:“,
  *  - tajné hodnoty, které appka zná (token relé v paměti, token pro
  *    miniserver), kdekoli v textu.
@@ -39,6 +41,8 @@ object TwentyOneLogScrub {
     private val bearer = Regex("""(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+""")
     private val relayHeader = Regex("""(?i)(X-Phone21-Relay\s*:\s*)\S+""")
     private val srtpInline = Regex("""(inline:)[A-Za-z0-9+/=]+(\|[0-9^:]+)*""")
+    private val provPathToken = Regex("""(/p/|/prov/)[^/?#.\s\]"'<>]+""")
+    private val joinKey = Regex("""([#&]k=)[^&\s\]"'<>]+""")
 
     /** Kolik čeho se nahradilo (do deníku — bez hodnot). */
     class Result(var keys: Int = 0, var tokens: Int = 0, var srtp: Int = 0)
@@ -109,6 +113,14 @@ object TwentyOneLogScrub {
         if (relayHeader.containsMatchIn(l)) {
             result.tokens++
             l = relayHeader.replace(l, "$1$REDACTED")
+        }
+        if (provPathToken.containsMatchIn(l)) {
+            result.tokens++
+            l = provPathToken.replace(l, "$1$REDACTED")
+        }
+        if (joinKey.containsMatchIn(l)) {
+            result.tokens++
+            l = joinKey.replace(l, "$1$REDACTED")
         }
         if (srtpInline.containsMatchIn(l)) {
             result.srtp++

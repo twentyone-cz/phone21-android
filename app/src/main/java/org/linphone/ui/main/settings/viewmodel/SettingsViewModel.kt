@@ -1066,7 +1066,7 @@ class SettingsViewModel
         coreContext.postOnCoreThread { core ->
             val newProvisioningUri = remoteProvisioningUrl.value.orEmpty().trim()
             if (newProvisioningUri != core.provisioningUri) {
-                Log.i("$TAG Updating remote provisioning URI to [$newProvisioningUri]")
+                Log.i("$TAG Updating remote provisioning URI to [${org.linphone.twentyone.TwentyOneProvisioning.redact(newProvisioningUri)}]")
                 if (newProvisioningUri.isEmpty()) {
                     core.provisioningUri = null
                 } else {

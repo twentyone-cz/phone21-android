@@ -40,9 +40,14 @@ object TwentyOneProvisioning {
     private const val TUNNEL_DOWNLOAD_ATTEMPTS = 4
     private const val TUNNEL_RETRY_MS = 3_000L
 
-    /** Odkaz z QR bez klíče do sítě — do logů. */
+    /** Jednorázový token v cestě (miniserver: /p/<token>, /prov/<token>.xml). */
+    private val pathTokenRegex = Regex("(/p/|/prov/)[^/?#.\\s]+")
+    private val joinKeyParamRegex = Regex("([#&]k=)[^&\\s]*")
+
+    /** Odkaz z QR bez klíče do sítě a bez jednorázového tokenu v cestě —
+     *  do logů (oba otevírají účet, dokud platí). */
     fun redact(url: String): String =
-        url.replace(Regex("([#&]k=)[^&]*"), "$1…")
+        url.replace(pathTokenRegex, "$1…").replace(joinKeyParamRegex, "$1…")
 
     /** Odkaz bez části za # a klíč do sítě z ní (prázdný, když tam není). */
     internal fun splitJoinKey(url: String): Pair<String, String> {
