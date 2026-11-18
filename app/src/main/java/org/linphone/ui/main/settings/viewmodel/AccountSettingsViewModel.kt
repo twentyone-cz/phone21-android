@@ -339,6 +339,9 @@ class AccountSettingsViewModel
 
                 account.params = newParams
                 Log.i("$TAG Changes have been saved")
+                // fork: trasa a transporty účtu znovu podle režimu tunelu
+                // (prázdná obchozí proxy by smazala trasu na relé)
+                org.linphone.twentyone.vpn.TsSipTransport.reapply(core, "nastavení účtu")
             }
         }
     }

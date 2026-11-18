@@ -492,6 +492,9 @@ class TunnelReadinessManager {
     @WorkerThread
     private fun reconcileAccounts(available: Boolean, facts: String) {
         val core = this.core ?: return
+        // Trasa a transporty účtu podle režimu (mohlo je přepsat nastavení
+        // účtu); změněná trasa registraci vypnula a zapne ji vyhodnocení.
+        if (TsSipTransport.reapply(core, "pravidelná kontrola")) return
         if (core.accountList.none { it.params.isRegisterEnabled != available }) return
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-NET", "registrace nesouhlasila se stavem sítě — srovnávám na %s (%s)"

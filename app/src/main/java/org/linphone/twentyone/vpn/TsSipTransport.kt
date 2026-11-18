@@ -12,7 +12,10 @@
  * (provoz k miniserveru jde systémovou VPN).
  *
  * Vlákno jádra, idempotentní: volá se při startu jádra, přidání účtu, po
- * konfiguraci z QR, při přepnutí režimu a když relé změní port.
+ * konfiguraci z QR, při přepnutí režimu, když relé změní port, po uložení
+ * nastavení účtu a v pravidelné kontrole připravenosti (trasu účtu může
+ * přepsat i obrazovka nastavení — prázdná obchozí proxy trasu na relé
+ * smaže a uložený stav [applied] by to neviděl).
  *
  * Stojí na chování volací knihovny 5.5.13 (rozbor v interní dokumentaci):
  * klientský certifikát a připnutý certifikát relé (setTlsCert/setTlsKey,
@@ -108,6 +111,18 @@ object TsSipTransport {
         // stačí obnova — relé se z ní dozví šifrované spojení knihovny.
         if (!reRegistering) core.refreshRegisters()
         coreContext.tunnelReadinessManager.reevaluate("relé běží")
+    }
+
+    /**
+     * Účet se mohl změnit mimo nás (uložené nastavení účtu, pravidelná
+     * kontrola): znovu podle používaného režimu. Během přepínání nic —
+     * přepnutí nastaví cílový režim samo a starý by ho tu přebil. Vrací
+     * totéž co [apply].
+     */
+    @WorkerThread
+    fun reapply(core: Core, reason: String): Boolean {
+        if (TsModeController.isSwitching()) return false
+        return apply(core, TsModeController.modeInUse(), reason)
     }
 
     /** Vrací true, když kvůli změně trasy vypnulo registraci (zapne ji
