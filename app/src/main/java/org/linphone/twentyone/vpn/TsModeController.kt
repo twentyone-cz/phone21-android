@@ -317,6 +317,15 @@ object TsModeController {
     private fun ensurePath(mode: Mode) {
         when (mode) {
             Mode.INTERNAL -> {
+                // Zatoulaná služba VPN (spuštěná uprostřed přepínání nebo
+                // opožděným startem): mimo přepínání vedle vnitřního režimu
+                // nikdy legitimně neběží a knihovna by jí dala přednost —
+                // relé by nenaběhlo a hovory by stály. Předat, nikdy
+                // WantRunning=false.
+                if (TsVpnService.isRunning()) {
+                    TwentyOneDiag.log("P21-TUN", "služba VPN běží ve vnitřním režimu — předávám ji vnitřnímu tunelu")
+                    TsManager.handOverVpnService()
+                }
                 TsRelay.requestInternal()
                 TsRelay.setRelayWanted(true)
                 startTunnelService(force = false)

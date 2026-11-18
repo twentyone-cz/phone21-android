@@ -302,6 +302,18 @@ class TunnelReadinessManager {
             otherVpnSeenAt = 0L
             return
         }
+        // Jen když systémová VPN opravdu platí a nic ji neblokuje. Během
+        // přepnutí na „jen hovory“ HANDOVER shodí rozhraní dřív, než se
+        // uloží nový režim — start tady by postavil systémovou VPN do
+        // vnitřního režimu (relé by nenaběhlo, hovory by stály). Požadovaný
+        // režim se čte z už uložené volby, takže nezávisí na načasování.
+        if (TsModeController.isSwitching() ||
+            TsModeController.desired() != TsModeController.Mode.SYSTEM ||
+            TsModeController.modeInUse() != TsModeController.Mode.SYSTEM ||
+            TsModeController.systemBlockNow() != TsModeController.SystemBlock.NONE
+        ) {
+            return
+        }
         val now = android.os.SystemClock.elapsedRealtime()
         val ctx = coreContext.context
         if (TsManager.otherVpnActive(ctx)) {

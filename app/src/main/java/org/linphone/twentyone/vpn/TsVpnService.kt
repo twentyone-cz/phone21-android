@@ -171,6 +171,25 @@ class TsVpnService : VpnService(), libtailscale.IPNService {
             }
             else -> {
                 startForegroundNotification()
+                if (TsModeController.desiredAccessMode(applicationContext) !=
+                    TsModeController.Mode.SYSTEM
+                ) {
+                    // Opožděný nebo zatoulaný start (automatický start během
+                    // přepnutí na „jen hovory“, přestavba s odstupem): stupeň
+                    // jede vnitřním tunelem. Rozhraní nežádat — knihovna by
+                    // mu dala přednost, relé by nenaběhlo a hovory by stály.
+                    // Jako vzkříšení výš: místo uvolnit, WantRunning nechat.
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN",
+                        "start služby VPN, ale stupeň jede vnitřním tunelem — rozhraní nežádám, systémové místo uvolněno")
+                    try {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    } catch (_: Exception) {
+                    }
+                    stopSelf()
+                    TsModeController.reconcile("start služby VPN mimo systémový stupeň")
+                    return START_NOT_STICKY
+                }
                 warnIfLockdown()
                 TsManager.setWantRunning(true)
                 // stopa do deníku: bez ní nejde rozlišit „služba vůbec

@@ -856,9 +856,21 @@ object TsManager {
         }
         // Nová instance až s odstupem, po vzoru upstreamu — restart na téže
         // instanci (close + reset příznaku) končil dvojím odpojením Go
-        // strany a tunel po přestavbě zůstal dole.
+        // strany a tunel po přestavbě zůstal dole. Za ten odstup se mohl
+        // změnit režim (přepnutí na vnitřní tunel, ztráta místa): služba
+        // VPN by pak ve vnitřním režimu vzala místo a relé by nenaběhlo.
         android.os.Handler(android.os.Looper.getMainLooper())
-            .postDelayed({ startVpnServiceNow() }, 1200)
+            .postDelayed({
+                if (TsModeController.modeInUse() != TsModeController.Mode.SYSTEM ||
+                    TsModeController.desired() != TsModeController.Mode.SYSTEM ||
+                    TsModeController.isSwitching() || isSlotLost()
+                ) {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN", "přestavba tunelu: systémová VPN už neplatí — novou službu nespouštím")
+                } else {
+                    startVpnServiceNow()
+                }
+            }, 1200)
     }
 
     /**
