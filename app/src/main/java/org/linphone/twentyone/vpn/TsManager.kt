@@ -368,7 +368,7 @@ object TsManager {
             // stav vnitřního tunelu a relé (jen když má relé běžet)
             TsRelay.poke()
             // stupeň přístupu, který se po změně na miniserver nezapsal
-            TsServerAccess.retryPending(prefs)
+            TsServerAccess.reconcile(prefs, verify = false)
         }, STATUS_POLL_SECONDS, STATUS_POLL_SECONDS, TimeUnit.SECONDS)
 
         // srovnat režim (vnitřní / systémový) s požadovaným
@@ -998,8 +998,11 @@ object TsManager {
             transportUpNow = up
             transportUp.postValue(up)
         }
-        // cesta právě naběhla: čekající stupeň přístupu hned zkusit
-        if (transportUpNow && ::appContext.isInitialized) TsServerAccess.retryPending(prefs)
+        // cesta právě naběhla: čekající stupeň přístupu zapsat, jinak ověřit,
+        // že ho miniserver pořád má (telefon je jediný zdroj pravdy)
+        if (transportUpNow && ::appContext.isInitialized) {
+            TsServerAccess.reconcile(prefs, verify = true)
+        }
     }
 
     fun onServiceClosing() {

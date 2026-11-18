@@ -23,6 +23,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.widget.SwitchCompat
@@ -53,7 +55,6 @@ class TwentyOneTunnelFragment : Fragment() {
         // rozepsaný souhlas s VPN přes otočení obrazovky
         private const val STATE_PENDING = "twentyone_pending_consent"
         private const val STATE_PENDING_ACCESS = "twentyone_pending_access"
-        private const val STATE_PENDING_FROM_SERVER = "twentyone_pending_from_server"
     }
 
     /** Na co se čeká v systémovém dialogu souhlasu s VPN. */
@@ -77,8 +78,11 @@ class TwentyOneTunnelFragment : Fragment() {
     // POZOR: v AppCompat/Material aktivitě se <Switch> v layoutu nafoukne jako
     // SwitchCompat, což NENÍ potomek android.widget.Switch — findViewById<Switch>
     // proto padalo na ClassCastException hned při otevření obrazovky
-    private lateinit var accessServerSwitch: SwitchCompat
-    private lateinit var accessInternetSwitch: SwitchCompat
+    private lateinit var accessGroup: RadioGroup
+    private lateinit var accessButtons: Map<TsPreferences.TunnelAccess, RadioButton>
+    private lateinit var accessSyncRow: View
+    private lateinit var accessSyncProgress: View
+    private lateinit var accessSyncText: TextView
     private lateinit var toggleButton: Button
     private lateinit var carLogSwitch: SwitchCompat
     private lateinit var carSmsButton: Button
@@ -99,22 +103,14 @@ class TwentyOneTunnelFragment : Fragment() {
     // souhlas s VPN, na který se čeká (systémový dialog vrací výsledek sem)
     private var pending: Pending? = null
     private var pendingAccess: TsPreferences.TunnelAccess? = null
-    private var pendingFromServer = false
-
-    /** Běží dotaz na vyšší stupeň (potvrzení nebo souhlas) — převzetí
-     *  stupně z miniserveru se mezitím neptá podruhé. */
-    private var askingAccess = false
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val what = pending ?: Pending.CONNECT
         val access = pendingAccess
-        val fromServer = pendingFromServer
         pending = null
         pendingAccess = null
-        pendingFromServer = false
-        askingAccess = false
         val ok = result.resultCode == Activity.RESULT_OK
         when (what) {
             Pending.CONNECT, Pending.WEB_LOGIN -> if (ok) {
@@ -149,9 +145,9 @@ class TwentyOneTunnelFragment : Fragment() {
                 }
             }
             Pending.ACCESS -> if (ok && access != null) {
-                commitAccess(access, fromServer)
+                commitAccess(access)
             } else {
-                refuseAccess(fromServer)
+                refuseAccess()
             }
             Pending.SYNC -> if (ok) commitSync() else refuseSync()
         }
@@ -199,7 +195,6 @@ class TwentyOneTunnelFragment : Fragment() {
             pendingAccess = st.getString(STATE_PENDING_ACCESS)?.let { n ->
                 runCatching { TsPreferences.TunnelAccess.valueOf(n) }.getOrNull()
             }
-            pendingFromServer = st.getBoolean(STATE_PENDING_FROM_SERVER, false)
         }
     }
 
@@ -207,7 +202,6 @@ class TwentyOneTunnelFragment : Fragment() {
         super.onSaveInstanceState(outState)
         pending?.let { outState.putString(STATE_PENDING, it.name) }
         pendingAccess?.let { outState.putString(STATE_PENDING_ACCESS, it.name) }
-        outState.putBoolean(STATE_PENDING_FROM_SERVER, pendingFromServer)
     }
 
     override fun onCreateView(
@@ -225,36 +219,32 @@ class TwentyOneTunnelFragment : Fragment() {
         routeView = view.findViewById(R.id.tunnel_route)
         addressView = view.findViewById(R.id.tunnel_address)
         scopeLabel = view.findViewById(R.id.tunnel_scope_label)
-        accessServerSwitch = view.findViewById(R.id.access_server_switch)
-        accessInternetSwitch = view.findViewById(R.id.access_internet_switch)
+        accessGroup = view.findViewById(R.id.access_group)
+        accessButtons = mapOf(
+            TsPreferences.TunnelAccess.APP_ONLY to view.findViewById(R.id.access_app_only),
+            TsPreferences.TunnelAccess.SERVER to view.findViewById(R.id.access_server),
+            TsPreferences.TunnelAccess.INTERNET to view.findViewById(R.id.access_internet)
+        )
+        accessSyncRow = view.findViewById(R.id.access_sync_row)
+        accessSyncProgress = view.findViewById(R.id.access_sync_progress)
+        accessSyncText = view.findViewById(R.id.access_sync_text)
         toggleButton = view.findViewById(R.id.tunnel_toggle)
         installExtraViews()
 
         TsManager.ensureStarted(requireContext().applicationContext)
 
-        // dva stupně nad výchozím stavem; vyšší v sobě obsahuje nižší
-        accessServerSwitch.setOnCheckedChangeListener { view2, checked ->
-            if (!view2.isPressed) return@setOnCheckedChangeListener
-            requestAccess(
-                if (checked) {
-                    TsPreferences.TunnelAccess.SERVER
-                } else {
-                    TsPreferences.TunnelAccess.APP_ONLY
-                },
-                fromServer = false
-            )
+        // tři stupně, platí jeden. Kliknutí, ne změna zaškrtnutí: tu dělá
+        // i obnova stavu (updateAccessViews, odmítnutý souhlas) a ta nesmí
+        // nic spouštět. Volba se mění jen tady — ovládání miniserveru ji
+        // jen ukazuje (TsServerAccess).
+        for ((access, button) in accessButtons) {
+            button.setOnClickListener {
+                if (access == TsManager.prefs.tunnelAccess) return@setOnClickListener
+                requestAccess(access)
+            }
         }
-        accessInternetSwitch.setOnCheckedChangeListener { view2, checked ->
-            if (!view2.isPressed) return@setOnCheckedChangeListener
-            requestAccess(
-                if (checked) {
-                    TsPreferences.TunnelAccess.INTERNET
-                } else {
-                    TsPreferences.TunnelAccess.SERVER
-                },
-                fromServer = false
-            )
-        }
+        // zápis na miniserver: kolečko a zašedlé volby (TsServerAccess)
+        TsServerAccess.syncChanged.observe(viewLifecycleOwner) { updateAccessViews() }
 
         // fork: kam se ukládají nové kontakty
         contactsLabel = view.findViewById(R.id.contacts_target_label)
@@ -541,8 +531,11 @@ class TwentyOneTunnelFragment : Fragment() {
         if (::batteryLabel.isInitialized) {
             updateBattery()
         }
-        if (::accessServerSwitch.isInitialized) {
-            pullAccess()
+        if (::accessGroup.isInitialized) {
+            // telefon je jediný zdroj pravdy: čekající volbu zapsat, jinak
+            // ověřit, že ji miniserver pořád má
+            TsServerAccess.reconcile(TsManager.prefs, verify = true)
+            updateAccessViews()
             // jiná VPN se mohla mezitím zapnout/vypnout (věta pod stavem)
             updateState()
         }
@@ -825,53 +818,41 @@ class TwentyOneTunnelFragment : Fragment() {
     }
 
     /**
-     * Změna stupně přístupu (přepínač, nebo převzetí z miniserveru). Z „jen
+     * Změna stupně přístupu (volba v telefonu — jinde se nemění). Z „jen
      * hovory“ na miniserver/síť jen se souhlasem s VPN (a potvrzením, když
      * běží jiná VPN); zpátky na „jen hovory“ bez ptaní.
      */
-    private fun requestAccess(access: TsPreferences.TunnelAccess, fromServer: Boolean) {
+    private fun requestAccess(access: TsPreferences.TunnelAccess) {
         if (!crossesToSystem(access = access)) {
-            applyAccess(access, push = !fromServer)
-            if (fromServer) toast(R.string.twentyone_access_sync_pulled, Toast.LENGTH_SHORT)
+            applyAccess(access)
             return
         }
-        askingAccess = true
         org.linphone.twentyone.TwentyOneDiag.log(
-            "P21-TUN",
-            "stupeň %s (%s) chce systémovou VPN — ptám se na souhlas".format(
-                access, if (fromServer) "z miniserveru" else "volba uživatele"))
-        confirmOtherVpn(onCancel = { refuseAccess(fromServer) }) {
+            "P21-TUN", "stupeň %s chce systémovou VPN — ptám se na souhlas".format(access))
+        confirmOtherVpn(onCancel = { refuseAccess() }) {
             val intent = VpnService.prepare(requireContext())
             if (intent != null) {
                 pending = Pending.ACCESS
                 pendingAccess = access
-                pendingFromServer = fromServer
                 vpnPermission.launch(intent)
             } else {
-                commitAccess(access, fromServer)
+                commitAccess(access)
             }
         }
     }
 
     /** Souhlas je: stupeň platí a systémové místo se smí vzít. */
-    private fun commitAccess(access: TsPreferences.TunnelAccess, fromServer: Boolean) {
-        askingAccess = false
+    private fun commitAccess(access: TsPreferences.TunnelAccess) {
         // NAPŘED: srovnání režimu (posluchač předvoleb) jinak místo nevezme
         TsModeController.approveSystem()
-        applyAccess(access, push = !fromServer)
-        if (fromServer && isAdded) toast(R.string.twentyone_access_sync_pulled, Toast.LENGTH_SHORT)
+        applyAccess(access)
     }
 
-    /** Bez souhlasu: zůstává „jen hovory“; převzatý stupeň se na
-     *  miniserveru vrátí, ať sdílená volba odpovídá skutečnosti. */
-    private fun refuseAccess(fromServer: Boolean) {
-        askingAccess = false
+    /** Bez souhlasu: zůstává dosavadní stupeň (volba se vrátí). */
+    private fun refuseAccess() {
         val kept = TsManager.prefs.tunnelAccess
         org.linphone.twentyone.TwentyOneDiag.log(
-            "P21-TUN",
-            "souhlas se systémovou VPN nedán — stupeň zůstává %s%s".format(
-                kept, if (fromServer) ", zapisuji ho zpátky na miniserver" else ""))
-        if (fromServer) pushAccess(kept)
+            "P21-TUN", "souhlas se systémovou VPN nedán — stupeň zůstává %s".format(kept))
         if (!isAdded) return
         updateAccessViews()
         toast(R.string.twentyone_access_refused)
@@ -1088,8 +1069,8 @@ class TwentyOneTunnelFragment : Fragment() {
     private fun exitNodeInUse(): Boolean =
         TsManager.gatewayPeer(TsManager.netDiag.value)?.isExitNode == true
 
-    /** Stupeň přístupu v telefonu; push = zapsat ho i na miniserver. */
-    private fun applyAccess(access: TsPreferences.TunnelAccess, push: Boolean = true) {
+    /** Stupeň přístupu v telefonu; zapíše se i na miniserver. */
+    private fun applyAccess(access: TsPreferences.TunnelAccess) {
         TsManager.prefs.tunnelAccess = access
         // Uzel se nasazuje podle stupně, který OPRAVDU platí (přes
         // přenosový uzel se nejvyšší stupeň snižuje) — a až PO uložení
@@ -1111,18 +1092,18 @@ class TwentyOneTunnelFragment : Fragment() {
         if (TsManager.vpnActive.value == true) {
             TsManager.restartService()
         }
-        if (push) pushAccess(access)
+        pushAccess(access)
     }
 
-    /** Zapsat stupeň na miniserver (sdílená volba). */
+    /** Zapsat stupeň na miniserver. Průběh a čekající zápis ukazuje řádek
+     *  nad volbami (syncChanged); hláška jen tam, kde musí jednat uživatel. */
     private fun pushAccess(access: TsPreferences.TunnelAccess) {
         TsServerAccess.push(TsManager.prefs, access) { result ->
             val msg = when (result) {
-                TsServerAccess.Result.OK -> null
+                TsServerAccess.Result.OK, TsServerAccess.Result.FAILED -> null
                 TsServerAccess.Result.NO_TOKEN, TsServerAccess.Result.NO_GATEWAY ->
                     R.string.twentyone_access_sync_no_token
                 TsServerAccess.Result.UNAUTHORIZED -> R.string.twentyone_access_sync_unauthorized
-                TsServerAccess.Result.FAILED -> R.string.twentyone_access_sync_failed
             }
             if (msg != null && isAdded) {
                 Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
@@ -1130,36 +1111,24 @@ class TwentyOneTunnelFragment : Fragment() {
         }
     }
 
-    /**
-     * Volba změněná v ovládání miniserveru se při návratu na obrazovku
-     * převezme. Stupeň, který potřebuje systémovou VPN, se místo nevezme
-     * potichu: zeptá se (requestAccess) a odmítnutí zapíše zpátky.
-     */
-    private fun pullAccess() {
-        if (askingAccess || pending != null) return
-        // Volba z telefonu na miniserver ještě nedošla: miniserver drží
-        // starší stupeň a převzetí by novější volbu z telefonu přepsalo.
-        // Místo čtení ji zkusit zapsat znovu.
-        if (TsServerAccess.hasPending(TsManager.prefs)) {
-            TsServerAccess.retryPending(TsManager.prefs)
-            return
-        }
-        TsServerAccess.pull(TsManager.prefs) { result, level ->
-            if (result != TsServerAccess.Result.OK || level == null || !isAdded) return@pull
-            if (askingAccess || pending != null) return@pull
-            if (TsServerAccess.hasPending(TsManager.prefs)) return@pull
-            if (level != TsManager.prefs.tunnelAccess) {
-                requestAccess(level, fromServer = true)
-            }
-        }
-    }
-
     private fun updateAccessViews() {
         val wanted = TsManager.prefs.tunnelAccess
         val effective = TsManager.effectiveTunnelAccess()
-        accessServerSwitch.isChecked = wanted != TsPreferences.TunnelAccess.APP_ONLY
-        accessInternetSwitch.isChecked = wanted == TsPreferences.TunnelAccess.INTERNET
-        accessInternetSwitch.isEnabled = wanted != TsPreferences.TunnelAccess.APP_ONLY
+        accessButtons[wanted]?.let { if (!it.isChecked) accessGroup.check(it.id) }
+        // zápis na miniserver: kolečko, volby zašedlé; čekající zápis jen větou
+        val sync = TsServerAccess.syncState(TsManager.prefs)
+        val writing = sync == TsServerAccess.SyncState.WRITING
+        for (button in accessButtons.values) button.isEnabled = !writing
+        accessSyncRow.visibility =
+            if (sync == TsServerAccess.SyncState.SYNCED) View.GONE else View.VISIBLE
+        accessSyncProgress.visibility = if (writing) View.VISIBLE else View.GONE
+        accessSyncText.setText(
+            if (writing) {
+                R.string.twentyone_access_sync_writing
+            } else {
+                R.string.twentyone_access_sync_pending
+            }
+        )
         // synchronizace kontaktů jen u „jen hovory“ (vyšší stupně pouštějí
         // do sítě všechny appky) a jen s nainstalovanou synchronizační appkou
         val syncVisible = wanted == TsPreferences.TunnelAccess.APP_ONLY &&
