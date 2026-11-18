@@ -26,6 +26,9 @@
  * pokynu volá jen tam, kde 21p.45: jádro tunelu běží, síť je ověřená a jiná
  * VPN jistě není vidět (neznámý stav sítě = místo nebrat).
  *
+ * Když systém VPN odebere během hovoru, hovor do privátní sítě se ukončí:
+ * jeho hlas by jinak šel dál mimo tunel (výchozí sítí, nešifrovaně).
+ *
  * Knihovna tunelu má vnitřní režim vyžádaný vždy, když uživatel tunel chce
  * (i pod systémovou VPN, která má přednost): když VPN odebere systém nebo
  * selže, tunel se do vnitřního režimu vrátí sám a knihovna přitom
@@ -39,11 +42,13 @@ import android.net.VpnService
 import androidx.annotation.WorkerThread
 import androidx.lifecycle.MutableLiveData
 import org.linphone.LinphoneApplication.Companion.coreContext
+import org.linphone.R
 import org.linphone.core.Call
 import org.linphone.core.Core
 import org.linphone.core.CoreListenerStub
 import org.linphone.core.RegistrationState
 import org.linphone.core.tools.Log
+import org.linphone.twentyone.TwentyOneCallPrivacy
 import org.linphone.twentyone.TwentyOneDiag
 import org.linphone.twentyone.contacts.TwentyOneContactsTarget
 
@@ -509,11 +514,84 @@ object TsModeController {
         // Cesta zmizela (odebraná VPN): nejdřív zavřít cestu účtu, ať
         // odhlášení neodejde výchozí sítí nešifrovaně.
         if (forced && from == Mode.SYSTEM && to == Mode.INTERNAL) {
+            // Běžící hovor do privátní sítě by posílal hlas dál výchozí
+            // sítí (cizí VPN, operátor) nešifrovaně — jeho hlas není vázaný
+            // na 127.0.0.1 (platí až od dalšího hovoru). Mikrofon hned,
+            // ukončit až po zavření cesty účtu (BYE pak nemá kudy ven).
+            val calls = privateNetworkCalls(core)
+            for (call in calls) {
+                try {
+                    call.microphoneMuted = true
+                } catch (_: Exception) {
+                }
+            }
             TsSipTransport.apply(core, Mode.INTERNAL, reason)
+            if (calls.isNotEmpty()) endCallsOutsideTunnel(core, calls)
         }
         coreContext.tunnelReadinessManager.holdForSwitch(core)
         val deadline = android.os.SystemClock.elapsedRealtime() + UNREGISTER_WAIT_MS
         waitUnregistered(core, deadline) { finishSwitch(core, from, to, reason) }
+    }
+
+    /** Hovory, jejichž účet (nebo protistrana) je v privátní síti. */
+    @WorkerThread
+    private fun privateNetworkCalls(core: Core): List<Call> = core.calls.filter { call ->
+        val account = call.params.account ?: core.defaultAccount
+        val server = account?.params?.serverAddress?.domain
+        val remote = call.remoteAddress.domain
+        (server != null && TwentyOneCallPrivacy.isPrivateNetworkAddress(server)) ||
+            (remote != null && TwentyOneCallPrivacy.isPrivateNetworkAddress(remote))
+    }
+
+    /**
+     * Ukončit hovory, které by po odebrání VPN šly mimo tunel. Volá se po
+     * TsSipTransport.apply(INTERNAL): bez účtu mimo privátní síť pak volací
+     * knihovna nemá UDP ani TCP a BYE (míří na ústřednu v privátní síti, ne
+     * na relé) nemá kudy odejít. S cizím účtem UDP/TCP běží — na dobu
+     * ukončení se zavřou a hned vrátí (cizí účet se jen znovu zaregistruje).
+     * „Síť nedostupná“ (isNetworkReachable=false) by nepomohlo: knihovna
+     * jen zavře otevřená spojení a BYE pošle novým.
+     */
+    @WorkerThread
+    private fun endCallsOutsideTunnel(core: Core, calls: List<Call>) {
+        val t = core.transports
+        val udp = t.udpPort
+        val tcp = t.tcpPort
+        val tls = t.tlsPort
+        val plainOpen = udp != 0 || tcp != 0
+        if (plainOpen) {
+            t.udpPort = 0
+            t.tcpPort = 0
+            // všechny tři nulové knihovna přepíše na UDP 5060
+            if (tls == 0) t.tlsPort = -2
+            core.setTransports(t)
+        }
+        for (call in calls) {
+            try {
+                call.terminate()
+            } catch (e: Exception) {
+                Log.e("$TAG Failed to terminate call outside the tunnel: $e")
+            }
+        }
+        if (plainOpen) {
+            val back = core.transports
+            back.udpPort = udp
+            back.tcpPort = tcp
+            back.tlsPort = tls
+            core.setTransports(back)
+        }
+        TwentyOneDiag.log(
+            "P21-TUN",
+            "systém odebral VPN během hovoru — hovor do privátní sítě ukončen (%d), jinak by hlas šel mimo tunel"
+                .format(calls.size))
+        val ctx = context()
+        coreContext.postOnMainThread {
+            try {
+                android.widget.Toast.makeText(
+                    ctx, R.string.twentyone_call_ended_vpn_lost, android.widget.Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+            }
+        }
     }
 
     @WorkerThread
