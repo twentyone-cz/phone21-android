@@ -1,0 +1,1331 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:49:55 +0000
+Subject: [PATCH 04/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20re=C5=BEim:=20identit?=
+ =?UTF-8?q?a=20rel=C3=A9,=20konfigurace=20rel=C3=A9=20a=20stav=20pro=20app?=
+ =?UTF-8?q?ku?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Části vnitřního režimu testovatelné mimo telefon:
+- identita pro spoj volací knihovna <-> relé na 127.0.0.1 (vlastní
+  podpis, P-256, 20 let, serverové i klientské použití);
+- kontrola konfigurace relé z appky (ústředna jen IPv4, cíle HTTP jen
+  jako adresy, chyby nikdy necitují klíče ani certifikáty);
+- napojení relé na vnitřní rozhraní tunelu (vlastní adresa telefonu
+  v privátní síti);
+- stav pro appku: požadavek, rozhraní a jeho generace, běh relé;
+  relé patří jedné generaci rozhraní a při její výměně se samo zastaví,
+  aby ho appka spustila znovu.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21internal/identity.go      |  94 +++++++
+ libtailscale/p21internal/identity_test.go | 124 ++++++++++
+ libtailscale/p21internal/network.go       |  53 ++++
+ libtailscale/p21internal/network_test.go  | 189 ++++++++++++++
+ libtailscale/p21internal/relaycfg.go      | 104 ++++++++
+ libtailscale/p21internal/relaycfg_test.go | 109 +++++++++
+ libtailscale/p21internal/state.go         | 283 +++++++++++++++++++++
+ libtailscale/p21internal/state_test.go    | 286 ++++++++++++++++++++++
+ 8 files changed, 1242 insertions(+)
+ create mode 100644 libtailscale/p21internal/identity.go
+ create mode 100644 libtailscale/p21internal/identity_test.go
+ create mode 100644 libtailscale/p21internal/network.go
+ create mode 100644 libtailscale/p21internal/network_test.go
+ create mode 100644 libtailscale/p21internal/relaycfg.go
+ create mode 100644 libtailscale/p21internal/relaycfg_test.go
+ create mode 100644 libtailscale/p21internal/state.go
+ create mode 100644 libtailscale/p21internal/state_test.go
+
+diff --git a/libtailscale/p21internal/identity.go b/libtailscale/p21internal/identity.go
+new file mode 100644
+index 0000000..4f61a53
+--- /dev/null
++++ b/libtailscale/p21internal/identity.go
+@@ -0,0 +1,94 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++// Package p21internal holds the host-testable parts of Phone21's internal
++// tunnel mode ("calls only" access level without the system VPN slot): the
++// relay identity, relay configuration, the adapter from the in-process
++// interface to the relay, the state reported to the app and the guard that
++// finds sockets which were marked to bypass the VPN while the system VPN was
++// in use.
++package p21internal
++
++import (
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/json"
++	"encoding/pem"
++	"fmt"
++	"math/big"
++	"net"
++	"time"
++)
++
++// IdentityCommonName is the subject CN of every relay identity.
++const IdentityCommonName = "Phone21 relay"
++
++// identityValidity is long on purpose: the identity lives only inside the
++// app (pinned by exact match on both sides), there is no CA to renew it with.
++const identityValidity = 20 * 365 * 24 * time.Hour
++
++// Identity is a self-signed TLS identity for one side of the 127.0.0.1 link
++// between the calling library and the relay.
++type Identity struct {
++	CertPEM string `json:"certPem"`
++	KeyPEM  string `json:"keyPem"`
++}
++
++// GenerateIdentity creates an ECDSA P-256 self-signed certificate valid for
++// IP 127.0.0.1, usable both as a TLS server and a TLS client certificate.
++// It is marked as a CA so that TLS stacks that insist on verifying the peer
++// against a trust anchor can be given the certificate itself as the anchor.
++func GenerateIdentity() (Identity, error) {
++	return generateIdentity(time.Now())
++}
++
++func generateIdentity(now time.Time) (Identity, error) {
++	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if err != nil {
++		return Identity{}, fmt.Errorf("generate key: %w", err)
++	}
++	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
++	if err != nil {
++		return Identity{}, fmt.Errorf("serial: %w", err)
++	}
++	notBefore := now.Add(-time.Hour) // tolerate a phone clock that is slightly behind
++	tmpl := &x509.Certificate{
++		SerialNumber:          serial,
++		Subject:               pkix.Name{CommonName: IdentityCommonName},
++		NotBefore:             notBefore,
++		NotAfter:              notBefore.Add(identityValidity),
++		IsCA:                  true,
++		BasicConstraintsValid: true,
++		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
++		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
++		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
++	}
++	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
++	if err != nil {
++		return Identity{}, fmt.Errorf("create certificate: %w", err)
++	}
++	keyDER, err := x509.MarshalECPrivateKey(key) // SEC1
++	if err != nil {
++		return Identity{}, fmt.Errorf("marshal key: %w", err)
++	}
++	return Identity{
++		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
++		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
++	}, nil
++}
++
++// GenerateIdentityJSON returns GenerateIdentity as {"certPem":…,"keyPem":…}.
++func GenerateIdentityJSON() (string, error) {
++	id, err := GenerateIdentity()
++	if err != nil {
++		return "", err
++	}
++	b, err := json.Marshal(id)
++	if err != nil {
++		return "", err
++	}
++	return string(b), nil
++}
+diff --git a/libtailscale/p21internal/identity_test.go b/libtailscale/p21internal/identity_test.go
+new file mode 100644
+index 0000000..ee4a41c
+--- /dev/null
++++ b/libtailscale/p21internal/identity_test.go
+@@ -0,0 +1,124 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/tls"
++	"crypto/x509"
++	"encoding/json"
++	"encoding/pem"
++	"maps"
++	"net"
++	"slices"
++	"testing"
++	"time"
++)
++
++func TestGenerateIdentity(t *testing.T) {
++	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
++	id, err := generateIdentity(now)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	cb, rest := pem.Decode([]byte(id.CertPEM))
++	if cb == nil || cb.Type != "CERTIFICATE" || len(rest) != 0 {
++		t.Fatalf("certificate PEM: block=%v rest=%d", cb, len(rest))
++	}
++	cert, err := x509.ParseCertificate(cb.Bytes)
++	if err != nil {
++		t.Fatal(err)
++	}
++	kb, rest := pem.Decode([]byte(id.KeyPEM))
++	if kb == nil || kb.Type != "EC PRIVATE KEY" || len(rest) != 0 {
++		t.Fatalf("key PEM: block=%v rest=%d", kb, len(rest))
++	}
++	key, err := x509.ParseECPrivateKey(kb.Bytes) // SEC1
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if key.Curve != elliptic.P256() {
++		t.Errorf("curve = %v, want P-256", key.Curve.Params().Name)
++	}
++	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
++	if !ok || !pub.Equal(&key.PublicKey) {
++		t.Error("certificate does not match the key")
++	}
++	if cert.Subject.CommonName != "Phone21 relay" || cert.Issuer.CommonName != "Phone21 relay" {
++		t.Errorf("subject/issuer = %q/%q", cert.Subject.CommonName, cert.Issuer.CommonName)
++	}
++	if err := cert.CheckSignatureFrom(cert); err != nil {
++		t.Errorf("not self-signed: %v", err)
++	}
++	if !cert.IsCA || !cert.BasicConstraintsValid {
++		t.Errorf("IsCA=%v BasicConstraintsValid=%v", cert.IsCA, cert.BasicConstraintsValid)
++	}
++	if want := x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign; cert.KeyUsage != want {
++		t.Errorf("KeyUsage = %v, want %v", cert.KeyUsage, want)
++	}
++	if !slices.Equal(cert.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}) {
++		t.Errorf("ExtKeyUsage = %v", cert.ExtKeyUsage)
++	}
++	if len(cert.IPAddresses) != 1 || !cert.IPAddresses[0].Equal(net.IPv4(127, 0, 0, 1)) || len(cert.DNSNames) != 0 {
++		t.Errorf("SAN IPs=%v DNS=%v", cert.IPAddresses, cert.DNSNames)
++	}
++	if want := now.Add(-time.Hour); !cert.NotBefore.Equal(want) {
++		t.Errorf("NotBefore = %v, want %v", cert.NotBefore, want)
++	}
++	if years := cert.NotAfter.Sub(cert.NotBefore).Hours() / 24 / 365; years < 19.99 || years > 20.01 {
++		t.Errorf("validity = %.2f years", years)
++	}
++	if cert.SerialNumber.Sign() <= 0 {
++		t.Errorf("serial = %v", cert.SerialNumber)
++	}
++
++	// Usable as a TLS identity, verifiable with itself as the only root,
++	// for 127.0.0.1 both as server and client.
++	if _, err := tls.X509KeyPair([]byte(id.CertPEM), []byte(id.KeyPEM)); err != nil {
++		t.Fatal(err)
++	}
++	roots := x509.NewCertPool()
++	roots.AddCert(cert)
++	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
++		if _, err := cert.Verify(x509.VerifyOptions{
++			DNSName:     "127.0.0.1",
++			Roots:       roots,
++			CurrentTime: now,
++			KeyUsages:   []x509.ExtKeyUsage{usage},
++		}); err != nil {
++			t.Errorf("verify for %v: %v", usage, err)
++		}
++	}
++}
++
++func TestGenerateIdentityUnique(t *testing.T) {
++	a, err := GenerateIdentity()
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, err := GenerateIdentity()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if a.CertPEM == b.CertPEM || a.KeyPEM == b.KeyPEM {
++		t.Fatal("two identities are equal")
++	}
++}
++
++func TestGenerateIdentityJSON(t *testing.T) {
++	s, err := GenerateIdentityJSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	var m map[string]string
++	if err := json.Unmarshal([]byte(s), &m); err != nil {
++		t.Fatal(err)
++	}
++	if len(m) != 2 || m["certPem"] == "" || m["keyPem"] == "" {
++		t.Fatalf("keys = %v", slices.Sorted(maps.Keys(m)))
++	}
++}
+diff --git a/libtailscale/p21internal/network.go b/libtailscale/p21internal/network.go
+new file mode 100644
+index 0000000..962ae90
+--- /dev/null
++++ b/libtailscale/p21internal/network.go
+@@ -0,0 +1,53 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"context"
++	"net"
++	"net/netip"
++
++	"github.com/tailscale/tailscale-android/libtailscale/internaltun"
++	"github.com/tailscale/tailscale-android/libtailscale/p21relay"
++)
++
++// relayNetwork adapts one in-process interface to p21relay.Network.
++type relayNetwork struct {
++	n    *internaltun.Net
++	addr netip.Addr // this phone's IPv4 address in the private network
++}
++
++var _ p21relay.Network = relayNetwork{}
++
++// NewRelayNetwork returns the relay's view of the in-process interface n,
++// whose IPv4 address in the private network is addr.
++func NewRelayNetwork(n *internaltun.Net, addr netip.Addr) p21relay.Network {
++	return relayNetwork{n: n, addr: addr}
++}
++
++func (r relayNetwork) LocalAddr() netip.Addr { return r.addr }
++
++func (r relayNetwork) ListenUDP(port uint16) (net.PacketConn, error) {
++	c, err := r.n.ListenUDPAddrPort(netip.AddrPortFrom(r.addr, port))
++	if err != nil {
++		return nil, err // never a typed nil inside the interface
++	}
++	return c, nil
++}
++
++func (r relayNetwork) ListenTCP(port uint16) (net.Listener, error) {
++	l, err := r.n.ListenTCPAddrPort(netip.AddrPortFrom(r.addr, port))
++	if err != nil {
++		return nil, err
++	}
++	return l, nil
++}
++
++func (r relayNetwork) DialTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, error) {
++	c, err := r.n.DialContextTCPAddrPort(ctx, addr)
++	if err != nil {
++		return nil, err
++	}
++	return c, nil
++}
+diff --git a/libtailscale/p21internal/network_test.go b/libtailscale/p21internal/network_test.go
+new file mode 100644
+index 0000000..e6d0944
+--- /dev/null
++++ b/libtailscale/p21internal/network_test.go
+@@ -0,0 +1,189 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"os"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/tailscale/tailscale-android/libtailscale/internaltun"
++	"github.com/tailscale/wireguard-go/tun"
++)
++
++var serverAddr = netip.MustParseAddr("100.64.0.1")
++
++func pump(src, dst tun.Device, wg *sync.WaitGroup) {
++	defer wg.Done()
++	slab := make([]byte, 2*tun.ReadPacketSpacing+65535)
++	packets := make([]tun.ReadPacket, 1)
++	for {
++		n, err := src.Read(slab, packets)
++		if err != nil {
++			return
++		}
++		for _, p := range packets[:n] {
++			buf := append([]byte(nil), slab[p.Offset:p.Offset+p.Size]...)
++			dst.Write([][]byte{buf}, 0)
++		}
++	}
++}
++
++// phoneAndServer returns the relay's network on the phone side and the
++// miniserver's in-process interface, wired back to back.
++func phoneAndServer(t *testing.T) (phoneDev tun.Device, phone *internaltun.Net, server *internaltun.Net) {
++	t.Helper()
++	devA, netA, err := internaltun.CreateNetTUN([]netip.Addr{phoneAddr, netip.MustParseAddr("fd7a:115c:a1e0::4")}, nil, 1280)
++	if err != nil {
++		t.Fatal(err)
++	}
++	devB, netB, err := internaltun.CreateNetTUN([]netip.Addr{serverAddr}, nil, 1280)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var wg sync.WaitGroup
++	wg.Add(2)
++	go pump(devA, devB, &wg)
++	go pump(devB, devA, &wg)
++	t.Cleanup(func() {
++		devA.Close()
++		devB.Close()
++		wg.Wait()
++	})
++	return devA, netA, netB
++}
++
++func TestRelayNetwork(t *testing.T) {
++	_, phone, server := phoneAndServer(t)
++	nw := NewRelayNetwork(phone, phoneAddr)
++	if nw.LocalAddr() != phoneAddr {
++		t.Fatalf("LocalAddr = %v", nw.LocalAddr())
++	}
++
++	// UDP: the relay's port toward the miniserver, as for SIP and RTP.
++	pc, err := nw.ListenUDP(0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer pc.Close()
++	la := pc.LocalAddr().(*net.UDPAddr).AddrPort()
++	if la.Addr().Unmap() != phoneAddr || la.Port() == 0 {
++		t.Fatalf("UDP local addr = %v", la)
++	}
++	srvUDP, err := server.ListenUDPAddrPort(netip.AddrPortFrom(serverAddr, 5060))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer srvUDP.Close()
++	if _, err := pc.WriteTo([]byte("REGISTER"), net.UDPAddrFromAddrPort(netip.AddrPortFrom(serverAddr, 5060))); err != nil {
++		t.Fatal(err)
++	}
++	srvUDP.SetDeadline(time.Now().Add(5 * time.Second))
++	buf := make([]byte, 100)
++	n, from, err := srvUDP.ReadFrom(buf)
++	if err != nil || string(buf[:n]) != "REGISTER" {
++		t.Fatalf("server read %q, %v", buf[:n], err)
++	}
++	if got := from.(*net.UDPAddr).AddrPort(); got != la {
++		t.Fatalf("server saw source %v, want %v", got, la)
++	}
++
++	// Fixed UDP port (RTP).
++	rtp, err := nw.ListenUDP(10002)
++	if err != nil {
++		t.Fatal(err)
++	}
++	rtp.Close()
++
++	// TCP dial (HTTP relay to the miniserver).
++	ln, err := server.ListenTCPAddrPort(netip.AddrPortFrom(serverAddr, 80))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	go func() {
++		c, err := ln.Accept()
++		if err != nil {
++			return
++		}
++		defer c.Close()
++		io.WriteString(c, "HTTP/1.0 200 OK\r\n\r\n")
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	c, err := nw.DialTCP(ctx, netip.AddrPortFrom(serverAddr, 80))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := c.LocalAddr().(*net.TCPAddr).AddrPort().Addr().Unmap(); got != phoneAddr {
++		t.Fatalf("TCP source = %v", got)
++	}
++	b, _ := io.ReadAll(c)
++	c.Close()
++	if string(b) != "HTTP/1.0 200 OK\r\n\r\n" {
++		t.Fatalf("got %q", b)
++	}
++
++	// TCP listen (SIP over TCP from the miniserver, if ever needed).
++	pl, err := nw.ListenTCP(0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer pl.Close()
++	go func() {
++		c, err := pl.Accept()
++		if err == nil {
++			io.WriteString(c, "hi")
++			c.Close()
++		}
++	}()
++	sc, err := server.DialContextTCPAddrPort(ctx, pl.Addr().(*net.TCPAddr).AddrPort())
++	if err != nil {
++		t.Fatal(err)
++	}
++	b, _ = io.ReadAll(sc)
++	sc.Close()
++	if string(b) != "hi" {
++		t.Fatalf("got %q", b)
++	}
++}
++
++func TestRelayNetworkErrorsAreUntypedNil(t *testing.T) {
++	dev, phone, _ := phoneAndServer(t)
++	nw := NewRelayNetwork(phone, phoneAddr)
++	a, err := nw.ListenUDP(10004)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer a.Close()
++	if pc, err := nw.ListenUDP(10004); err == nil || pc != nil {
++		t.Fatalf("second bind: pc=%v err=%v", pc, err)
++	}
++	l, err := nw.ListenTCP(5061)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer l.Close()
++	if l2, err := nw.ListenTCP(5061); err == nil || l2 != nil {
++		t.Fatalf("second listen: l=%v err=%v", l2, err)
++	}
++
++	// After the interface is closed (replaced), dials fail and do not hang.
++	dev.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	c, err := nw.DialTCP(ctx, netip.AddrPortFrom(serverAddr, 80))
++	if err == nil || c != nil {
++		t.Fatalf("dial on closed interface: c=%v err=%v", c, err)
++	}
++	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("dial hung until the deadline: %v", err)
++	}
++}
+diff --git a/libtailscale/p21internal/relaycfg.go b/libtailscale/p21internal/relaycfg.go
+new file mode 100644
+index 0000000..5f3eb49
+--- /dev/null
++++ b/libtailscale/p21internal/relaycfg.go
+@@ -0,0 +1,104 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/netip"
++	"strings"
++
++	"github.com/tailscale/tailscale-android/libtailscale/p21relay"
++)
++
++// relayConfigJSON is what the app passes to StartRelay.
++type relayConfigJSON struct {
++	UpstreamSIP   string   `json:"upstreamSip"`   // "100.64.0.1:5060"
++	HTTPHosts     []string `json:"httpHosts"`     // ["100.64.0.1"]
++	ServerCertPEM string   `json:"serverCertPem"` // relay identity toward the calling library
++	ServerKeyPEM  string   `json:"serverKeyPem"`
++	ClientCertPEM string   `json:"clientCertPem"` // the only accepted client certificate
++}
++
++// ParseRelayConfig parses and validates the app's relay configuration.
++// Errors never quote the certificates or keys.
++func ParseRelayConfig(s string) (p21relay.Config, error) {
++	var j relayConfigJSON
++	dec := json.NewDecoder(strings.NewReader(s))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(&j); err != nil {
++		var syn *json.SyntaxError
++		var typ *json.UnmarshalTypeError
++		switch {
++		case errors.As(err, &syn):
++			return p21relay.Config{}, fmt.Errorf("relay config: invalid JSON at offset %d", syn.Offset)
++		case errors.As(err, &typ):
++			return p21relay.Config{}, fmt.Errorf("relay config: field %q has wrong type", typ.Field)
++		case strings.HasPrefix(err.Error(), "json: unknown field "):
++			return p21relay.Config{}, fmt.Errorf("relay config: %s", strings.TrimPrefix(err.Error(), "json: "))
++		default:
++			return p21relay.Config{}, errors.New("relay config: invalid JSON")
++		}
++	}
++	if dec.More() {
++		return p21relay.Config{}, errors.New("relay config: trailing data after JSON object")
++	}
++
++	up, err := netip.ParseAddrPort(j.UpstreamSIP)
++	if err != nil {
++		return p21relay.Config{}, fmt.Errorf("relay config: upstreamSip: %w", err)
++	}
++	up = netip.AddrPortFrom(up.Addr().Unmap(), up.Port())
++	if !up.Addr().Is4() || up.Port() == 0 {
++		// The relay speaks from this phone's IPv4 address in the private
++		// network, so the miniserver must be reached over IPv4 too.
++		return p21relay.Config{}, fmt.Errorf("relay config: upstreamSip %v must be IPv4 address:port", up)
++	}
++
++	cfg := p21relay.Config{UpstreamSIP: up}
++	for _, h := range j.HTTPHosts {
++		a, err := netip.ParseAddr(h)
++		if err != nil {
++			return p21relay.Config{}, fmt.Errorf("relay config: httpHosts: %w", err)
++		}
++		cfg.HTTPAllowedHosts = append(cfg.HTTPAllowedHosts, a.Unmap())
++	}
++
++	for _, f := range []struct {
++		name, pemType, val string
++		dst                *[]byte
++	}{
++		{"serverCertPem", "CERTIFICATE", j.ServerCertPEM, &cfg.ServerCertPEM},
++		{"serverKeyPem", "PRIVATE KEY", j.ServerKeyPEM, &cfg.ServerKeyPEM},
++		{"clientCertPem", "CERTIFICATE", j.ClientCertPEM, &cfg.ClientCertPEM},
++	} {
++		if !looksLikePEM(f.val, f.pemType) {
++			return p21relay.Config{}, fmt.Errorf("relay config: %s is missing or not a PEM %s", f.name, f.pemType)
++		}
++		*f.dst = []byte(f.val)
++	}
++	return cfg, nil
++}
++
++// looksLikePEM is a cheap sanity check; the relay parses the blocks itself.
++// wantType "PRIVATE KEY" also matches "EC PRIVATE KEY" and similar.
++func looksLikePEM(s, wantType string) bool {
++	b := []byte(s)
++	i := bytes.Index(b, []byte("-----BEGIN "))
++	if i < 0 {
++		return false
++	}
++	rest := b[i+len("-----BEGIN "):]
++	j := bytes.Index(rest, []byte("-----"))
++	if j < 0 {
++		return false
++	}
++	typ := string(rest[:j])
++	if wantType == "PRIVATE KEY" {
++		return strings.HasSuffix(typ, "PRIVATE KEY")
++	}
++	return typ == wantType
++}
+diff --git a/libtailscale/p21internal/relaycfg_test.go b/libtailscale/p21internal/relaycfg_test.go
+new file mode 100644
+index 0000000..5aad7b8
+--- /dev/null
++++ b/libtailscale/p21internal/relaycfg_test.go
+@@ -0,0 +1,109 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"encoding/json"
++	"net/netip"
++	"strings"
++	"testing"
++)
++
++func validRelayConfig(t *testing.T) map[string]any {
++	t.Helper()
++	srv, err := GenerateIdentity()
++	if err != nil {
++		t.Fatal(err)
++	}
++	cli, err := GenerateIdentity()
++	if err != nil {
++		t.Fatal(err)
++	}
++	return map[string]any{
++		"upstreamSip":   "100.64.0.1:5060",
++		"httpHosts":     []string{"100.64.0.1"},
++		"serverCertPem": srv.CertPEM,
++		"serverKeyPem":  srv.KeyPEM,
++		"clientCertPem": cli.CertPEM,
++	}
++}
++
++func marshal(t *testing.T, m map[string]any) string {
++	t.Helper()
++	b, err := json.Marshal(m)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return string(b)
++}
++
++func TestParseRelayConfig(t *testing.T) {
++	m := validRelayConfig(t)
++	cfg, err := ParseRelayConfig(marshal(t, m))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if cfg.UpstreamSIP != netip.MustParseAddrPort("100.64.0.1:5060") {
++		t.Errorf("UpstreamSIP = %v", cfg.UpstreamSIP)
++	}
++	if len(cfg.HTTPAllowedHosts) != 1 || cfg.HTTPAllowedHosts[0] != netip.MustParseAddr("100.64.0.1") {
++		t.Errorf("HTTPAllowedHosts = %v", cfg.HTTPAllowedHosts)
++	}
++	if string(cfg.ServerCertPEM) != m["serverCertPem"] || string(cfg.ServerKeyPEM) != m["serverKeyPem"] ||
++		string(cfg.ClientCertPEM) != m["clientCertPem"] {
++		t.Error("PEM fields not copied")
++	}
++	if cfg.Logf != nil {
++		t.Error("Logf must be set by the caller")
++	}
++}
++
++func TestParseRelayConfigErrors(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		edit func(m map[string]any)
++		raw  string
++	}{
++		{name: "not json", raw: "nope"},
++		{name: "trailing", raw: `{"upstreamSip":"100.64.0.1:5060"} {}`},
++		{name: "unknown field", edit: func(m map[string]any) { m["sipUpstream"] = "x" }},
++		{name: "wrong type", edit: func(m map[string]any) { m["httpHosts"] = "100.64.0.1" }},
++		{name: "no upstream", edit: func(m map[string]any) { delete(m, "upstreamSip") }},
++		{name: "upstream no port", edit: func(m map[string]any) { m["upstreamSip"] = "100.64.0.1" }},
++		{name: "upstream port 0", edit: func(m map[string]any) { m["upstreamSip"] = "100.64.0.1:0" }},
++		{name: "upstream v6", edit: func(m map[string]any) { m["upstreamSip"] = "[fd7a:115c:a1e0::1]:5060" }},
++		{name: "upstream hostname", edit: func(m map[string]any) { m["upstreamSip"] = "miniserver:5060" }},
++		{name: "bad http host", edit: func(m map[string]any) { m["httpHosts"] = []string{"miniserver"} }},
++		{name: "no server cert", edit: func(m map[string]any) { delete(m, "serverCertPem") }},
++		{name: "key as cert", edit: func(m map[string]any) { m["serverCertPem"] = m["serverKeyPem"] }},
++		{name: "cert as key", edit: func(m map[string]any) { m["serverKeyPem"] = m["serverCertPem"] }},
++		{name: "no client cert", edit: func(m map[string]any) { m["clientCertPem"] = "" }},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			m := validRelayConfig(t)
++			raw := tc.raw
++			if tc.edit != nil {
++				tc.edit(m)
++				raw = marshal(t, m)
++			}
++			_, err := ParseRelayConfig(raw)
++			if err == nil {
++				t.Fatal("no error")
++			}
++			// Errors must never quote key material.
++			if strings.Contains(err.Error(), "BEGIN") || strings.Contains(err.Error(), "MII") {
++				t.Fatalf("error leaks PEM: %v", err)
++			}
++		})
++	}
++}
++
++func TestParseRelayConfigWrongTypeDoesNotLeak(t *testing.T) {
++	m := validRelayConfig(t)
++	m["serverKeyPem"] = []string{m["serverKeyPem"].(string)}
++	_, err := ParseRelayConfig(marshal(t, m))
++	if err == nil || strings.Contains(err.Error(), "PRIVATE") {
++		t.Fatalf("err = %v", err)
++	}
++}
+diff --git a/libtailscale/p21internal/state.go b/libtailscale/p21internal/state.go
+new file mode 100644
+index 0000000..e17c0b4
+--- /dev/null
++++ b/libtailscale/p21internal/state.go
+@@ -0,0 +1,283 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/netip"
++	"sync"
++	"sync/atomic"
++
++	"github.com/tailscale/tailscale-android/libtailscale/internaltun"
++	"github.com/tailscale/tailscale-android/libtailscale/p21relay"
++)
++
++// Relay is the part of *p21relay.Relay the state needs (fakeable in tests).
++type Relay interface {
++	Close() error
++	Stats() string
++}
++
++// StartFunc starts a relay on nw. Production code wraps p21relay.Start.
++type StartFunc func(ctx context.Context, cfg p21relay.Config, nw p21relay.Network) (Relay, p21relay.Info, error)
++
++// StartP21Relay is the production StartFunc.
++func StartP21Relay(ctx context.Context, cfg p21relay.Config, nw p21relay.Network) (Relay, p21relay.Info, error) {
++	r, info, err := p21relay.Start(ctx, cfg, nw)
++	if err != nil {
++		return nil, p21relay.Info{}, err
++	}
++	return r, info, nil
++}
++
++// Iface is one instance ("generation") of the in-process interface.
++type Iface struct {
++	Net  *internaltun.Net
++	Addr netip.Addr // IPv4 address of this phone in the private network
++	Gen  int
++}
++
++// ErrNotUp is returned by StartRelay when there is no in-process interface.
++var ErrNotUp = errors.New("internal tunnel is not up")
++
++// State is the internal-mode state shared between the tunnel's backend
++// goroutine (which installs and invalidates interfaces) and the app (which
++// requests the mode, starts the relay and polls the status).
++//
++// Lock order: relayMu before mu. mu is never held while calling out.
++type State struct {
++	start StartFunc
++	logf  func(format string, args ...any)
++
++	mu         sync.Mutex
++	requested  bool
++	vpnService bool
++	lastErr    string
++	gen        int
++	iface      *Iface
++
++	// relayOn is the interface the running relay belongs to (nil if none);
++	// readable without relayMu so that Status never waits for a relay start.
++	relayOn atomic.Pointer[Iface]
++
++	relayMu     sync.Mutex // serializes relay start/stop
++	relay       Relay
++	relayIface  *Iface
++	relayCancel context.CancelFunc
++
++	// leftover, if set, reports how many sockets that were marked to bypass
++	// the VPN are still open (see Guard.Leftover).
++	leftover func() int
++}
++
++// NewState returns a State that starts relays with start and logs with logf.
++// logf must never be given certificates, keys or tokens (State never does).
++func NewState(start StartFunc, logf func(format string, args ...any)) *State {
++	return &State{start: start, logf: logf}
++}
++
++// SetLeftoverFunc sets the source of Status.LeftoverSockets.
++func (s *State) SetLeftoverFunc(f func() int) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.leftover = f
++}
++
++// SetRequested records whether the app wants the internal mode. It reports
++// whether the value changed.
++func (s *State) SetRequested(v bool) bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	changed := s.requested != v
++	s.requested = v
++	return changed
++}
++
++// Requested reports whether the app wants the internal mode.
++func (s *State) Requested() bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return s.requested
++}
++
++// SetVPNService records whether a system VpnService currently carries the tunnel.
++func (s *State) SetVPNService(v bool) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.vpnService = v
++}
++
++// SetError records the last internal-mode error ("" clears it).
++func (s *State) SetError(err error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if err == nil {
++		s.lastErr = ""
++	} else {
++		s.lastErr = err.Error()
++	}
++}
++
++// Current returns the current interface, or nil.
++func (s *State) Current() *Iface {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return s.iface
++}
++
++// Install makes n (with IPv4 address addr) the current interface under a new
++// generation and clears the last error. A relay running on the previous
++// interface is stopped in the background.
++func (s *State) Install(n *internaltun.Net, addr netip.Addr) *Iface {
++	s.mu.Lock()
++	s.gen++
++	i := &Iface{Net: n, Addr: addr, Gen: s.gen}
++	s.iface = i
++	s.lastErr = ""
++	s.mu.Unlock()
++	s.logf("internal: interface generation %d up", i.Gen)
++	go s.stopStaleRelay("interface replaced")
++	return i
++}
++
++// Invalidate forgets the current interface (it is being closed or replaced
++// by the system VPN). A relay running on it is stopped in the background;
++// the app sees relay=false and restarts it once a new interface is up.
++func (s *State) Invalidate(why string) {
++	s.mu.Lock()
++	had := s.iface != nil
++	s.iface = nil
++	s.mu.Unlock()
++	if had {
++		s.logf("internal: interface down (%s)", why)
++	}
++	go s.stopStaleRelay(why)
++}
++
++// stopStaleRelay stops the relay if it does not belong to the current
++// interface. It runs in the background so that the tunnel's backend never
++// waits for the relay's shutdown.
++func (s *State) stopStaleRelay(why string) {
++	s.relayMu.Lock()
++	defer s.relayMu.Unlock()
++	if s.relay != nil && s.relayIface != s.Current() {
++		s.closeRelayLocked(why)
++	}
++}
++
++func (s *State) closeRelayLocked(why string) {
++	if s.relay == nil {
++		return
++	}
++	s.relayOn.Store(nil)
++	if err := s.relay.Close(); err != nil {
++		s.logf("internal: relay close: %v", err)
++	}
++	s.relayCancel()
++	s.logf("internal: relay stopped (%s)", why)
++	s.relay, s.relayIface, s.relayCancel = nil, nil, nil
++}
++
++// StartRelay starts the relay on the current interface, replacing a relay
++// that is already running.
++func (s *State) StartRelay(cfg p21relay.Config) (p21relay.Info, error) {
++	s.relayMu.Lock()
++	defer s.relayMu.Unlock()
++	s.closeRelayLocked("replaced by a new relay")
++
++	cur := s.Current()
++	if cur == nil {
++		return p21relay.Info{}, ErrNotUp
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	r, info, err := s.start(ctx, cfg, NewRelayNetwork(cur.Net, cur.Addr))
++	if err != nil {
++		cancel()
++		return p21relay.Info{}, err
++	}
++	s.relay, s.relayIface, s.relayCancel = r, cur, cancel
++	if s.Current() != cur {
++		// The interface went away while the relay was starting.
++		s.closeRelayLocked("interface replaced while starting")
++		return p21relay.Info{}, ErrNotUp
++	}
++	s.relayOn.Store(cur)
++	s.logf("internal: relay started on generation %d", cur.Gen)
++	return info, nil
++}
++
++// StopRelay stops the relay if one is running.
++func (s *State) StopRelay() {
++	s.relayMu.Lock()
++	defer s.relayMu.Unlock()
++	s.closeRelayLocked("stopped by the app")
++}
++
++// RelayStats returns the running relay's statistics, or "{}".
++func (s *State) RelayStats() string {
++	s.relayMu.Lock()
++	defer s.relayMu.Unlock()
++	if s.relay == nil {
++		return "{}"
++	}
++	return s.relay.Stats()
++}
++
++// Status is what the app polls via InternalStatus.
++type Status struct {
++	// Requested: the app asked for the internal mode (RequestInternal).
++	Requested bool `json:"requested"`
++	// Up: the in-process interface exists and carries the tunnel.
++	Up bool `json:"up"`
++	// Addr: this phone's IPv4 address in the private network ("" if !Up).
++	Addr string `json:"addr"`
++	// Generation increases with every new in-process interface; after a
++	// change the relay must be started again and the account re-registered.
++	Generation int `json:"generation"`
++	// Relay: a relay runs on the current interface.
++	Relay bool `json:"relay"`
++	// Error: last internal-mode error, "" if none.
++	Error string `json:"error"`
++	// VPNService: the system VpnService carries the tunnel (it wins over the
++	// internal mode; Requested stays as the app set it).
++	VPNService bool `json:"vpnService"`
++	// LeftoverSockets: sockets marked to bypass the VPN during the system-VPN
++	// period that are still open (datagram sockets the tunnel could not
++	// break itself). Non-zero only briefly after a switch, see Guard.
++	LeftoverSockets int `json:"leftoverSockets"`
++}
++
++// Status returns the current status.
++func (s *State) Status() Status {
++	s.mu.Lock()
++	st := Status{
++		Requested:  s.requested,
++		Generation: s.gen,
++		Error:      s.lastErr,
++		VPNService: s.vpnService,
++	}
++	cur := s.iface
++	leftover := s.leftover
++	s.mu.Unlock()
++	if cur != nil {
++		st.Up = true
++		st.Addr = cur.Addr.String()
++		st.Relay = s.relayOn.Load() == cur
++	}
++	if leftover != nil {
++		st.LeftoverSockets = leftover()
++	}
++	return st
++}
++
++// StatusJSON returns Status as JSON.
++func (s *State) StatusJSON() string {
++	b, err := json.Marshal(s.Status())
++	if err != nil {
++		return `{"error":"status: ` + err.Error() + `"}`
++	}
++	return string(b)
++}
+diff --git a/libtailscale/p21internal/state_test.go b/libtailscale/p21internal/state_test.go
+new file mode 100644
+index 0000000..a92248b
+--- /dev/null
++++ b/libtailscale/p21internal/state_test.go
+@@ -0,0 +1,286 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21internal
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/netip"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/tailscale/tailscale-android/libtailscale/p21relay"
++)
++
++type fakeRelay struct {
++	id     int
++	closed atomic.Bool
++	ctx    context.Context
++	nw     p21relay.Network
++}
++
++func (r *fakeRelay) Close() error  { r.closed.Store(true); return nil }
++func (r *fakeRelay) Stats() string { return `{"fake":1}` }
++
++type fakeStarter struct {
++	mu     sync.Mutex
++	relays []*fakeRelay
++	err    error
++	during func() // runs inside start, before returning
++}
++
++func (f *fakeStarter) start(ctx context.Context, cfg p21relay.Config, nw p21relay.Network) (Relay, p21relay.Info, error) {
++	if f.during != nil {
++		f.during()
++	}
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	if f.err != nil {
++		return nil, p21relay.Info{}, f.err
++	}
++	r := &fakeRelay{id: len(f.relays) + 1, ctx: ctx, nw: nw}
++	f.relays = append(f.relays, r)
++	return r, p21relay.Info{SIPPort: 40000 + r.id, HTTPPort: 41000 + r.id, HTTPToken: "secret-token"}, nil
++}
++
++// logRecorder collects log lines to check that no secrets are logged.
++type logRecorder struct {
++	mu    sync.Mutex
++	lines []string
++}
++
++func (l *logRecorder) logf(format string, args ...any) {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	b, _ := json.Marshal(args)
++	l.lines = append(l.lines, format+" "+string(b))
++}
++
++func (l *logRecorder) all() string {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return strings.Join(l.lines, "\n")
++}
++
++func waitFor(t *testing.T, what string, cond func() bool) {
++	t.Helper()
++	deadline := time.Now().Add(5 * time.Second)
++	for !cond() {
++		if time.Now().After(deadline) {
++			t.Fatalf("timed out waiting for %s", what)
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++}
++
++var phoneAddr = netip.MustParseAddr("100.64.0.4")
++
++func TestStateLifecycle(t *testing.T) {
++	fs := &fakeStarter{}
++	logs := &logRecorder{}
++	s := NewState(fs.start, logs.logf)
++
++	st := s.Status()
++	if st.Requested || st.Up || st.Relay || st.Generation != 0 || st.Addr != "" || st.Error != "" {
++		t.Fatalf("initial status = %+v", st)
++	}
++	if _, err := s.StartRelay(p21relay.Config{}); !errors.Is(err, ErrNotUp) {
++		t.Fatalf("StartRelay without interface: %v", err)
++	}
++	if !s.SetRequested(true) || s.SetRequested(true) {
++		t.Fatal("SetRequested change reporting")
++	}
++	s.SetError(errors.New("boom"))
++	if st := s.Status(); st.Error != "boom" || !st.Requested {
++		t.Fatalf("status = %+v", st)
++	}
++
++	// Interface up: error cleared, generation 1, relay can start.
++	i1 := s.Install(nil, phoneAddr)
++	if i1.Gen != 1 {
++		t.Fatalf("gen = %d", i1.Gen)
++	}
++	st = s.Status()
++	if !st.Up || st.Addr != "100.64.0.4" || st.Generation != 1 || st.Error != "" || st.Relay {
++		t.Fatalf("status after Install = %+v", st)
++	}
++	info, err := s.StartRelay(p21relay.Config{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if info.SIPPort != 40001 {
++		t.Fatalf("info = %+v", info)
++	}
++	r1 := fs.relays[0]
++	if r1.nw.LocalAddr() != phoneAddr {
++		t.Fatalf("relay network addr = %v", r1.nw.LocalAddr())
++	}
++	if !s.Status().Relay || s.RelayStats() != `{"fake":1}` {
++		t.Fatal("relay not reported")
++	}
++
++	// Second StartRelay replaces the first.
++	if _, err := s.StartRelay(p21relay.Config{}); err != nil {
++		t.Fatal(err)
++	}
++	r2 := fs.relays[1]
++	if !r1.closed.Load() || r1.ctx.Err() == nil || r2.closed.Load() {
++		t.Fatal("first relay not replaced")
++	}
++
++	// New interface generation: the relay on the old one stops by itself.
++	i2 := s.Install(nil, phoneAddr)
++	if i2.Gen != 2 {
++		t.Fatalf("gen = %d", i2.Gen)
++	}
++	if s.Status().Relay {
++		t.Fatal("relay reported on new generation")
++	}
++	waitFor(t, "relay stop after Install", r2.closed.Load)
++	if s.RelayStats() != "{}" {
++		t.Fatal("stats after stop")
++	}
++
++	// Relay on gen 2, then invalidate (system VPN took over).
++	if _, err := s.StartRelay(p21relay.Config{}); err != nil {
++		t.Fatal(err)
++	}
++	r3 := fs.relays[2]
++	s.Invalidate("system VPN")
++	st = s.Status()
++	if st.Up || st.Relay || st.Addr != "" || st.Generation != 2 {
++		t.Fatalf("status after Invalidate = %+v", st)
++	}
++	waitFor(t, "relay stop after Invalidate", r3.closed.Load)
++	if _, err := s.StartRelay(p21relay.Config{}); !errors.Is(err, ErrNotUp) {
++		t.Fatalf("StartRelay after Invalidate: %v", err)
++	}
++
++	// Explicit StopRelay.
++	s.Install(nil, phoneAddr)
++	if _, err := s.StartRelay(p21relay.Config{}); err != nil {
++		t.Fatal(err)
++	}
++	s.StopRelay()
++	if !fs.relays[3].closed.Load() || s.Status().Relay {
++		t.Fatal("StopRelay")
++	}
++	s.StopRelay() // idempotent
++
++	if l := logs.all(); strings.Contains(l, "secret-token") {
++		t.Fatalf("token logged:\n%s", l)
++	}
++}
++
++func TestStartRelayError(t *testing.T) {
++	fs := &fakeStarter{err: errors.New("listen failed")}
++	s := NewState(fs.start, t.Logf)
++	s.Install(nil, phoneAddr)
++	if _, err := s.StartRelay(p21relay.Config{}); err == nil || err.Error() != "listen failed" {
++		t.Fatalf("err = %v", err)
++	}
++	if s.Status().Relay {
++		t.Fatal("relay reported after failed start")
++	}
++}
++
++func TestInterfaceReplacedWhileStarting(t *testing.T) {
++	fs := &fakeStarter{}
++	s := NewState(fs.start, t.Logf)
++	s.Install(nil, phoneAddr)
++	fs.during = func() { s.Invalidate("gone during start") }
++	if _, err := s.StartRelay(p21relay.Config{}); !errors.Is(err, ErrNotUp) {
++		t.Fatalf("err = %v", err)
++	}
++	if !fs.relays[0].closed.Load() || s.Status().Relay {
++		t.Fatal("relay started on a vanished interface stays running")
++	}
++}
++
++func TestStatusJSONShape(t *testing.T) {
++	s := NewState((&fakeStarter{}).start, t.Logf)
++	s.SetRequested(true)
++	s.SetVPNService(true)
++	s.SetLeftoverFunc(func() int { return 2 })
++	var m map[string]any
++	if err := json.Unmarshal([]byte(s.StatusJSON()), &m); err != nil {
++		t.Fatal(err)
++	}
++	want := map[string]any{
++		"requested":       true,
++		"up":              false,
++		"addr":            "",
++		"generation":      float64(0),
++		"relay":           false,
++		"error":           "",
++		"vpnService":      true,
++		"leftoverSockets": float64(2),
++	}
++	if len(m) != len(want) {
++		t.Fatalf("keys: got %v", m)
++	}
++	for k, v := range want {
++		if m[k] != v {
++			t.Errorf("%s = %v, want %v", k, m[k], v)
++		}
++	}
++}
++
++func TestStateConcurrent(t *testing.T) {
++	fs := &fakeStarter{}
++	s := NewState(fs.start, func(string, ...any) {})
++	var wg sync.WaitGroup
++	stop := make(chan struct{})
++	wg.Add(3)
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 200; i++ {
++			s.Install(nil, phoneAddr)
++			if i%3 == 0 {
++				s.Invalidate("test")
++			}
++		}
++		close(stop)
++	}()
++	go func() {
++		defer wg.Done()
++		for {
++			select {
++			case <-stop:
++				return
++			default:
++			}
++			s.StartRelay(p21relay.Config{})
++			s.RelayStats()
++		}
++	}()
++	go func() {
++		defer wg.Done()
++		for {
++			select {
++			case <-stop:
++				return
++			default:
++			}
++			s.StatusJSON()
++		}
++	}()
++	wg.Wait()
++	s.Invalidate("end")
++	// Every relay except possibly none is closed eventually.
++	waitFor(t, "all relays closed", func() bool {
++		fs.mu.Lock()
++		defer fs.mu.Unlock()
++		for _, r := range fs.relays {
++			if !r.closed.Load() {
++				return false
++			}
++		}
++		return true
++	})
++}

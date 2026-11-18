@@ -1,0 +1,328 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:57:04 +0000
+Subject: [PATCH 25/33] =?UTF-8?q?Rel=C3=A9:=20po=C5=BEadavek=20ztracen?=
+ =?UTF-8?q?=C3=BD=20na=20spojen=C3=AD=20k=20=C3=BAst=C5=99edn=C4=9B=20posl?=
+ =?UTF-8?q?at=20znovu=20nebo=20hned=20odm=C3=ADtnout?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Velké požadavky (typicky INVITE s mnoha kodeky) jdou k ústředně po
+TCP. Když spojení spadlo dřív, než přišla odpověď (ústředna se
+restartovala a staré spojení zresetovala), nebo se nedalo navázat,
+požadavek se tiše ztratil. Volací knihovna po šifrovaném spojení
+neopakuje, takže hovor 32 s visel a skončil chybou, i když by další
+pokus prošel.
+
+Požadavek poslaný po TCP si relé teď drží, dokud nepřijde jakákoli
+odpověď. Když spojení zanikne nebo se nenaváže, pošle ho jednou znovu
+novým spojením. Když ani to nejde (nebo je fronta plná), odpoví
+knihovně hned 503 a uvolní hlas hovoru, který nevznikl. Na TCP se nic
+neopakuje časovačem. Testy na reset spojení a selhání navázání.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/harness_test.go |  7 ++-
+ libtailscale/p21relay/netfake_test.go | 15 +++++
+ libtailscale/p21relay/relay_test.go   | 86 +++++++++++++++++++++++++++
+ libtailscale/p21relay/sipproxy.go     | 76 +++++++++++++++++++++--
+ 4 files changed, 178 insertions(+), 6 deletions(-)
+
+diff --git a/libtailscale/p21relay/harness_test.go b/libtailscale/p21relay/harness_test.go
+index 9735b3e..6130878 100644
+--- a/libtailscale/p21relay/harness_test.go
++++ b/libtailscale/p21relay/harness_test.go
+@@ -399,6 +399,11 @@ type testEnv struct {
+ }
+ 
+ func newEnv(t *testing.T, hosts ...netip.Addr) *testEnv {
++	t.Helper()
++	return newEnvNet(t, fakeNet{}, hosts...)
++}
++
++func newEnvNet(t *testing.T, nw Network, hosts ...netip.Addr) *testEnv {
+ 	t.Helper()
+ 	e := &testEnv{t: t, up: newFakeUpstream(t), serverCert: makeCert(t, "relay"), clientCert: makeCert(t, "client"), logs: &logBuf{}}
+ 	if len(hosts) == 0 {
+@@ -412,7 +417,7 @@ func newEnv(t *testing.T, hosts ...netip.Addr) *testEnv {
+ 		ClientCertPEM:    e.clientCert.certPEM,
+ 		Logf:             e.logs.logf,
+ 	}
+-	r, info, err := Start(context.Background(), cfg, fakeNet{})
++	r, info, err := Start(context.Background(), cfg, nw)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+diff --git a/libtailscale/p21relay/netfake_test.go b/libtailscale/p21relay/netfake_test.go
+index 246f2be..d283186 100644
+--- a/libtailscale/p21relay/netfake_test.go
++++ b/libtailscale/p21relay/netfake_test.go
+@@ -6,8 +6,10 @@ package p21relay
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"net"
+ 	"net/netip"
++	"sync/atomic"
+ 	"testing"
+ 	"time"
+ )
+@@ -38,6 +40,19 @@ func (fakeNet) DialTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, erro
+ 	return d.DialContext(ctx, "tcp4", addr.String())
+ }
+ 
++// failDialNet is fakeNet whose next `fails` TCP dials fail.
++type failDialNet struct {
++	fakeNet
++	fails atomic.Int32
++}
++
++func (n *failDialNet) DialTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, error) {
++	if n.fails.Add(-1) >= 0 {
++		return nil, errors.New("test: dial failed")
++	}
++	return n.fakeNet.DialTCP(ctx, addr)
++}
++
+ // ---- RTP endpoints ----
+ 
+ type rtpPair struct {
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+index ca4f9db..fa4459d 100644
+--- a/libtailscale/p21relay/relay_test.go
++++ b/libtailscale/p21relay/relay_test.go
+@@ -512,6 +512,92 @@ func TestLargeMessagesOverTCP(t *testing.T) {
+ 	}
+ }
+ 
++// bigMessage is a MESSAGE from the calling library too big for UDP.
++func bigMessage(c *fakeClient) string {
++	text := strings.Repeat("x", 1500)
++	return "MESSAGE sip:" + testNumber + "@" + upIP.String() + " SIP/2.0\r\n" + c.via(newBranch()) + "\r\nMax-Forwards: 70\r\n" +
++		"From: <sip:" + testUser + "@" + upIP.String() + ">;tag=m1\r\nTo: <sip:" + testNumber + "@" + upIP.String() + ">\r\n" +
++		"Call-ID: msg-" + newBranch() + "\r\nCSeq: 1 MESSAGE\r\nContent-Type: text/plain\r\n" +
++		"Content-Length: " + strconv.Itoa(len(text)) + "\r\n\r\n" + text
++}
++
++// A request sent over a TCP connection that breaks before any answer
++// (the miniserver restarted and answers the old connection with a reset)
++// goes again over a new connection.
++func TestTCPRequestResentAfterReset(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	c.send(bigMessage(c))
++	first := e.up.expectRequest("MESSAGE")
++	if first.conn == nil {
++		t.Fatal("big MESSAGE went over UDP")
++	}
++	first.conn.(*net.TCPConn).SetLinger(0)
++	first.conn.Close() // reset, no answer
++	var again upMsg
++	select {
++	case again = <-e.up.in: // identical bytes, so not via recv
++	case <-time.After(waitLong):
++		t.Fatal("request not sent again")
++	}
++	if string(again.raw) != string(first.raw) || again.conn == nil || again.conn == first.conn {
++		t.Fatalf("sent again over %v (first %v):\n%s", again.conn, first.conn, again.raw)
++	}
++	e.up.reply(again, 200, "OK", nil, "")
++	c.expectResponse(200, "MESSAGE")
++	if e.counter("upstream.tcp_resent") != 1 {
++		t.Fatalf("tcp_resent %d", e.counter("upstream.tcp_resent"))
++	}
++
++	// After an answer, a broken connection sends nothing again.
++	c.send(bigMessage(c))
++	m := e.up.expectRequest("MESSAGE")
++	e.up.reply(m, 200, "OK", nil, "")
++	c.expectResponse(200, "MESSAGE")
++	m.conn.(*net.TCPConn).SetLinger(0)
++	m.conn.Close()
++	e.up.expectNothing()
++	if e.counter("upstream.tcp_resent") != 1 {
++		t.Fatalf("tcp_resent %d", e.counter("upstream.tcp_resent"))
++	}
++}
++
++// When the connection cannot be made, the request is tried once more,
++// and then the calling library gets 503 at once instead of waiting 32 s.
++func TestTCPDialFailure(t *testing.T) {
++	nw := &failDialNet{}
++	e := newEnvNet(t, nw)
++	c := newFakeClient(t, e)
++
++	nw.fails.Store(2)
++	cl := &call{callID: "tcpfail-" + newBranch(), cli: newRTPPair(t, loopback4), cseq: 5}
++	hdrs := append(cl.clientHeaders(c, newBranch(), cl.cseq, "INVITE", false), e.relayRoute(), "Subject: "+strings.Repeat("s", 1200))
++	start := time.Now()
++	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), hdrs, sdpBody("127.0.0.1", cl.cli.port)))
++	r := c.expectResponse(503, "INVITE")
++	if d := time.Since(start); d > 2*time.Second {
++		t.Fatalf("503 after %v", d)
++	}
++	if !strings.Contains(r.get("to"), "tag=") || len(r.values("via")) != 1 {
++		t.Fatalf("503 headers: To %q, Vias %q", r.get("to"), r.values("via"))
++	}
++	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
++	if e.counter("upstream.tcp_failed") != 1 {
++		t.Fatalf("tcp_failed %d", e.counter("upstream.tcp_failed"))
++	}
++	e.up.expectNothing()
++
++	// Only the first attempt fails: the request gets through.
++	nw.fails.Store(1)
++	c.send(bigMessage(c))
++	m := e.up.expectRequest("MESSAGE")
++	e.up.reply(m, 200, "OK", nil, "")
++	c.expectResponse(200, "MESSAGE")
++	if e.counter("upstream.tcp_failed") != 1 || e.counter("upstream.tcp_resent") != 2 {
++		t.Fatalf("tcp_failed %d, tcp_resent %d", e.counter("upstream.tcp_failed"), e.counter("upstream.tcp_resent"))
++	}
++}
++
+ func TestRetransmissionsOverUDP(t *testing.T) {
+ 	e := newEnv(t)
+ 	c := newFakeClient(t, e)
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+index d13e0f0..b8d4f74 100644
+--- a/libtailscale/p21relay/sipproxy.go
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -27,6 +27,7 @@ const (
+ 	maxTxEntries         = 256
+ 	maxCachedAnswers     = 64 // of maxTxEntries
+ 	maxUpstreamTCP       = 8
++	maxTCPSends          = 2 // connections a request without an answer is sent over
+ 	maxRememberedContact = 16
+ 	maxPendingHandshakes = 16 // handshakes that have sent data
+ 	maxSilentHandshakes  = 64 // accepted, nothing received yet
+@@ -159,6 +160,9 @@ func (t *tcpConn) close() {
+ // txEntry makes the UDP leg toward the miniserver reliable: the calling
+ // library talks TLS and therefore never retransmits.
+ //
++// Requests that went over TCP have an entry too (tcp set, no timer): when
++// the connection fails before any answer, tcpLost sends them again.
++//
+ // Entries under ansKey hold the final answer to a non-INVITE request from
+ // the miniserver for its retransmissions (no timer, just expire).
+ type txEntry struct {
+@@ -167,6 +171,9 @@ type txEntry struct {
+ 	invite    bool // INVITE client transaction: Timer A is not capped at T2
+ 	response  bool // final response to an INVITE from the miniserver, until its ACK
+ 	completed bool // final response seen (request entries only)
++	answered  bool // any response seen (request entries only)
++	tcp       *tcpConn
++	tcpSends  int // connections tried
+ 	ack       []byte
+ 	next      time.Time // zero: no more retransmissions
+ 	interval  time.Duration
+@@ -566,7 +573,49 @@ func (p *sipProxy) handle(ev sipEvent) {
+ 		if p.outTCP == ev.tc {
+ 			p.outTCP = nil
+ 		}
++		p.tcpLost(ev.tc)
++	}
++}
++
++// tcpLost deals with requests of the calling library that went over a TCP
++// connection which failed (or never came up) before any answer: the
++// miniserver may never have got them, and the library (TLS) does not
++// repeat them. Each goes once more over a new connection; after that the
++// library gets 503 at once instead of waiting for its 32 s timeout.
++func (p *sipProxy) tcpLost(tc *tcpConn) {
++	for k, tx := range p.txs {
++		if tx.tcp != tc || tx.answered {
++			continue
++		}
++		if tx.tcpSends < maxTCPSends {
++			tx.tcpSends++
++			tx.tcp = p.upstreamTCP()
++			p.cnt.inc("upstream.tcp_resent")
++			if p.sendTCP(tx.tcp, tx.data) {
++				continue
++			}
++		}
++		delete(p.txs, k)
++		p.cnt.inc("upstream.tcp_failed")
++		p.failRequest(tx.data)
++	}
++}
++
++// failRequest answers a request of the calling library that the relay
++// forwarded (data, with the relay's Via on top) with 503.
++func (p *sipProxy) failRequest(data []byte) {
++	m, err := parseSIP(data)
++	if err != nil || !m.isReq || m.method == "ACK" {
++		return
+ 	}
++	m.popTopValue("via")
++	if _, ok := m.topValue("via"); !ok {
++		return
++	}
++	resp := newResponse(m, 503, "Service Unavailable", p.toTag(m))
++	p.mediaOnResponse(resp, m.method)
++	p.cnt.inc("sip.local_reply_503")
++	p.sendClient(resp.bytes())
+ }
+ 
+ // trimTCP closes the oldest accepted connections above the limit.
+@@ -623,12 +672,13 @@ func (p *sipProxy) sendUDP(b []byte, dst netip.AddrPort) {
+ 	p.cnt.inc("sip.to_upstream_udp")
+ }
+ 
+-func (p *sipProxy) sendTCP(tc *tcpConn, b []byte) {
++func (p *sipProxy) sendTCP(tc *tcpConn, b []byte) bool {
+ 	if !tc.send(b) {
+ 		p.drop("tcp_queue")
+-		return
++		return false
+ 	}
+ 	p.cnt.inc("sip.to_upstream_tcp")
++	return true
+ }
+ 
+ // viaDest is where a response to the request with this Via goes
+@@ -951,7 +1001,20 @@ func (p *sipProxy) clientRequest(m *sipMsg, cc *clientConn) {
+ 	if len(out) > maxUDPRequest && m.method != "REGISTER" {
+ 		via.transport = "TCP"
+ 		m.setTopValue("via", via.String())
+-		p.sendTCP(p.upstreamTCP(), m.bytes())
++		out = m.bytes()
++		tc := p.upstreamTCP()
++		sent := p.sendTCP(tc, out)
++		if m.method == "ACK" {
++			return
++		}
++		if !sent {
++			p.failRequest(out)
++			return
++		}
++		p.addTx("req|"+branch+"|"+m.method, &txEntry{
++			data: out, dest: p.upstream, invite: m.method == "INVITE",
++			tcp: tc, tcpSends: 1, expire: now.Add(sipTxTimeout),
++		})
+ 		return
+ 	}
+ 	p.sendUDP(out, p.upstream)
+@@ -1147,14 +1210,17 @@ func (p *sipProxy) upstreamResponse(m *sipMsg) {
+ 	}
+ 	_, method, _ := m.cseq()
+ 	if tx := p.txs["req|"+v.branch()+"|"+method]; tx != nil {
++		tx.answered = true
+ 		switch {
+ 		case m.status < 200 && tx.completed:
+ 			p.drop("late_provisional")
+ 			return
+ 		case m.status < 200:
+-			if tx.invite {
++			switch {
++			case tx.tcp != nil: // nothing to repeat on TCP
++			case tx.invite:
+ 				tx.next = time.Time{}
+-			} else {
++			default:
+ 				tx.interval, tx.next = sipT2, now.Add(sipT2)
+ 			}
+ 		case !tx.completed:

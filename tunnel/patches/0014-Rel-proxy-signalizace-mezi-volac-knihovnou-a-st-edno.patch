@@ -1,0 +1,3020 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:07:25 +0000
+Subject: [PATCH 14/33] =?UTF-8?q?Rel=C3=A9:=20proxy=20signalizace=20mezi?=
+ =?UTF-8?q?=20volac=C3=AD=20knihovnou=20a=20=C3=BAst=C5=99ednou?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Volací knihovna se připojuje šifrovaně na 127.0.0.1 a projde jen
+s připnutým klientským certifikátem (bez obnovy relací, nejnovější
+spojení vyhrává, rozpracovaná spojení cizích appek nikoho nevytlačí).
+K ústředně z jednoho portu v privátní síti po UDP, větší zprávy než
+1200 B po TCP (registrace vždy po UDP, jinak by se vázala na krátké
+spojení); TCP od ústředny na stejném portu, cizí zdroje se zahodí.
+
+Bezstavové větve (zrušení a potvrzení neúspěchu mají větev svého
+pozvání), přepis kontaktů, cílových adres a vlastních tras, odpočet
+skoků, odpovědi zpět stejnou cestou, bez klienta 480. Volací knihovna
+po šifrovaném spojení nic neopakuje, proto relé po UDP opakuje
+žádosti do odpovědi a konečné odpovědi na pozvání do potvrzení.
+
+Start, Close a Stats (počty bez osobních údajů); preferované porty
+v konfiguraci a port v privátní síti v Info. Testy scénářů nad
+smyčkou: registrace s výzvou, odchozí hovor s hlasem před přijetím,
+příchozí hovor, kvalifikace, zrušení, podržení, ukončení z obou
+stran, velké zprávy oběma směry, vadný vstup a bezpečnost.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/harness_test.go  |  560 +++++++++++
+ libtailscale/p21relay/relay.go         |  258 ++++-
+ libtailscale/p21relay/relay_test.go    |  861 +++++++++++++++++
+ libtailscale/p21relay/sipproxy.go      | 1199 ++++++++++++++++++++++++
+ libtailscale/p21relay/sipproxy_test.go |   38 +
+ 5 files changed, 2911 insertions(+), 5 deletions(-)
+ create mode 100644 libtailscale/p21relay/harness_test.go
+ create mode 100644 libtailscale/p21relay/relay_test.go
+ create mode 100644 libtailscale/p21relay/sipproxy.go
+ create mode 100644 libtailscale/p21relay/sipproxy_test.go
+
+diff --git a/libtailscale/p21relay/harness_test.go b/libtailscale/p21relay/harness_test.go
+new file mode 100644
+index 0000000..9735b3e
+--- /dev/null
++++ b/libtailscale/p21relay/harness_test.go
+@@ -0,0 +1,560 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"context"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/tls"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/json"
++	"encoding/pem"
++	"fmt"
++	"math/big"
++	"net"
++	"net/netip"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++)
++
++// Synthetic test identities only.
++const (
++	testUser   = "test"
++	testNumber = "+420000000000"
++)
++
++// ---- certificates ----
++
++type testCert struct {
++	certPEM, keyPEM []byte
++	tls             tls.Certificate
++}
++
++func makeCert(t *testing.T, cn string) testCert {
++	t.Helper()
++	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	tmpl := &x509.Certificate{
++		SerialNumber: big.NewInt(time.Now().UnixNano()),
++		Subject:      pkix.Name{CommonName: cn},
++		NotBefore:    time.Now().Add(-time.Hour),
++		NotAfter:     time.Now().Add(time.Hour),
++		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
++		KeyUsage:     x509.KeyUsageDigitalSignature,
++		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
++	}
++	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
++	if err != nil {
++		t.Fatal(err)
++	}
++	kb, err := x509.MarshalECPrivateKey(key)
++	if err != nil {
++		t.Fatal(err)
++	}
++	c := testCert{
++		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
++		keyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}),
++	}
++	if c.tls, err = tls.X509KeyPair(c.certPEM, c.keyPEM); err != nil {
++		t.Fatal(err)
++	}
++	return c
++}
++
++// ---- log capture ----
++
++type logBuf struct {
++	mu sync.Mutex
++	b  strings.Builder
++}
++
++func (l *logBuf) logf(format string, args ...any) {
++	l.mu.Lock()
++	fmt.Fprintf(&l.b, format+"\n", args...)
++	l.mu.Unlock()
++}
++
++func (l *logBuf) String() string {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	return l.b.String()
++}
++
++// ---- the fake miniserver ----
++
++type upMsg struct {
++	m    *sipMsg
++	raw  []byte
++	src  netip.AddrPort
++	conn net.Conn // nil: UDP
++}
++
++type fakeUpstream struct {
++	t    *testing.T
++	udp  *net.UDPConn
++	ln   net.Listener
++	addr netip.AddrPort
++	in   chan upMsg
++	mu   sync.Mutex
++	seen map[string]bool
++	dups int
++}
++
++func newFakeUpstream(t *testing.T) *fakeUpstream {
++	t.Helper()
++	u := &fakeUpstream{t: t, in: make(chan upMsg, 64), seen: make(map[string]bool)}
++	for _, port := range []int{5060, 0, 0, 0} {
++		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: upIP.AsSlice(), Port: port})
++		if err != nil {
++			continue
++		}
++		p := udp.LocalAddr().(*net.UDPAddr).Port
++		ln, err := net.Listen("tcp4", netip.AddrPortFrom(upIP, uint16(p)).String())
++		if err != nil {
++			udp.Close()
++			continue
++		}
++		u.udp, u.ln, u.addr = udp, ln, netip.AddrPortFrom(upIP, uint16(p))
++		break
++	}
++	if u.udp == nil {
++		t.Fatal("cannot bind fake miniserver")
++	}
++	t.Cleanup(func() { u.udp.Close(); u.ln.Close() })
++	go func() {
++		buf := make([]byte, 65536)
++		for {
++			n, a, err := u.udp.ReadFromUDPAddrPort(buf)
++			if err != nil {
++				return
++			}
++			u.deliver(append([]byte(nil), buf[:n]...), a, nil)
++		}
++	}()
++	go func() {
++		for {
++			c, err := u.ln.Accept()
++			if err != nil {
++				return
++			}
++			go u.readStream(c)
++		}
++	}()
++	return u
++}
++
++func (u *fakeUpstream) readStream(c net.Conn) {
++	r := newSIPStreamReader(c)
++	src := addrPortOf(c.RemoteAddr())
++	for {
++		msg, ping, err := r.next()
++		if err != nil {
++			return
++		}
++		if !ping {
++			u.deliver(msg, src, c)
++		}
++	}
++}
++
++func (u *fakeUpstream) deliver(raw []byte, src netip.AddrPort, c net.Conn) {
++	m, err := parseSIP(raw)
++	if err != nil {
++		u.t.Errorf("miniserver got unparsable message: %v\n%s", err, raw)
++		return
++	}
++	u.in <- upMsg{m: m, raw: raw, src: netip.AddrPortFrom(src.Addr().Unmap(), src.Port()), conn: c}
++}
++
++// recv returns the next message that is not an exact retransmission.
++func (u *fakeUpstream) recv() upMsg {
++	u.t.Helper()
++	deadline := time.After(waitLong)
++	for {
++		select {
++		case m := <-u.in:
++			u.mu.Lock()
++			dup := u.seen[string(m.raw)]
++			u.seen[string(m.raw)] = true
++			if dup {
++				u.dups++
++			}
++			u.mu.Unlock()
++			if dup {
++				continue
++			}
++			return m
++		case <-deadline:
++			u.t.Fatal("miniserver: timeout waiting for a message")
++			return upMsg{}
++		}
++	}
++}
++
++func (u *fakeUpstream) expectRequest(method string) upMsg {
++	u.t.Helper()
++	m := u.recv()
++	if !m.m.isReq || m.m.method != method {
++		u.t.Fatalf("miniserver: want %s, got:\n%s", method, m.raw)
++	}
++	return m
++}
++
++func (u *fakeUpstream) expectResponse(status int, method string) upMsg {
++	u.t.Helper()
++	m := u.recv()
++	_, cm, _ := m.m.cseq()
++	if m.m.isReq || m.m.status != status || cm != method {
++		u.t.Fatalf("miniserver: want %d %s, got:\n%s", status, method, m.raw)
++	}
++	return m
++}
++
++func (u *fakeUpstream) expectNothing() {
++	u.t.Helper()
++	select {
++	case m := <-u.in:
++		u.mu.Lock()
++		dup := u.seen[string(m.raw)]
++		u.mu.Unlock()
++		if !dup {
++			u.t.Fatalf("miniserver: unexpected message:\n%s", m.raw)
++		}
++	case <-time.After(waitShort):
++	}
++}
++
++// reply answers a request the way the miniserver does: over the same TCP
++// connection, or over UDP to the packet's source (rport).
++func (u *fakeUpstream) reply(req upMsg, status int, reason string, extra []string, body string) {
++	u.t.Helper()
++	u.sendTo(req, responseText(req.m, status, reason, "up-tag", extra, body))
++}
++
++func (u *fakeUpstream) sendTo(req upMsg, s string) {
++	u.t.Helper()
++	if req.conn != nil {
++		if _, err := req.conn.Write([]byte(s)); err != nil {
++			u.t.Fatal(err)
++		}
++		return
++	}
++	if _, err := u.udp.WriteToUDPAddrPort([]byte(s), req.src); err != nil {
++		u.t.Fatal(err)
++	}
++}
++
++func (u *fakeUpstream) sendUDP(to netip.AddrPort, s string) {
++	u.t.Helper()
++	if _, err := u.udp.WriteToUDPAddrPort([]byte(s), to); err != nil {
++		u.t.Fatal(err)
++	}
++}
++
++// dialTCP opens a connection from the miniserver to the phone.
++func (u *fakeUpstream) dialTCP(to netip.AddrPort) net.Conn {
++	u.t.Helper()
++	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: upIP.AsSlice()}}
++	c, err := d.Dial("tcp4", to.String())
++	if err != nil {
++		u.t.Fatal(err)
++	}
++	u.t.Cleanup(func() { c.Close() })
++	go u.readStream(c)
++	return c
++}
++
++// ---- the fake calling library ----
++
++type fakeClient struct {
++	t    *testing.T
++	conn *tls.Conn
++	port int
++	in   chan *sipMsg
++	raw  chan []byte
++}
++
++func dialClient(t *testing.T, sipPort int, cert *tls.Certificate) (*tls.Conn, error) {
++	cfg := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
++	if cert != nil {
++		cfg.Certificates = []tls.Certificate{*cert}
++	}
++	c, err := tls.DialWithDialer(&net.Dialer{Timeout: waitLong}, "tcp4", "127.0.0.1:"+strconv.Itoa(sipPort), cfg)
++	if err != nil {
++		return nil, err
++	}
++	t.Cleanup(func() { c.Close() })
++	return c, nil
++}
++
++func newFakeClient(t *testing.T, e *testEnv) *fakeClient {
++	t.Helper()
++	conn, err := dialClient(t, e.info.SIPPort, &e.clientCert.tls)
++	if err != nil {
++		t.Fatal(err)
++	}
++	c := &fakeClient{t: t, conn: conn, port: conn.LocalAddr().(*net.TCPAddr).Port, in: make(chan *sipMsg, 64), raw: make(chan []byte, 64)}
++	go func() {
++		r := newSIPStreamReader(conn)
++		for {
++			msg, _, err := r.next()
++			if err != nil {
++				close(c.in)
++				return
++			}
++			m, err := parseSIP(msg)
++			if err != nil {
++				t.Errorf("client got unparsable message: %v\n%s", err, msg)
++				continue
++			}
++			c.raw <- msg
++			c.in <- m
++		}
++	}()
++	// The relay registers the connection asynchronously.
++	waitFor(t, func() bool { return e.relay.sip.clientOn.Load() })
++	return c
++}
++
++func (c *fakeClient) send(s string) {
++	c.t.Helper()
++	if _, err := c.conn.Write([]byte(s)); err != nil {
++		c.t.Fatal(err)
++	}
++}
++
++func (c *fakeClient) recv() (*sipMsg, []byte) {
++	c.t.Helper()
++	select {
++	case m, ok := <-c.in:
++		if !ok {
++			c.t.Fatal("client: connection closed")
++		}
++		return m, <-c.raw
++	case <-time.After(waitLong):
++		c.t.Fatal("client: timeout waiting for a message")
++	}
++	return nil, nil
++}
++
++func (c *fakeClient) expectRequest(method string) *sipMsg {
++	c.t.Helper()
++	m, raw := c.recv()
++	if !m.isReq || m.method != method {
++		c.t.Fatalf("client: want %s, got:\n%s", method, raw)
++	}
++	return m
++}
++
++func (c *fakeClient) expectResponse(status int, method string) *sipMsg {
++	c.t.Helper()
++	m, raw := c.recv()
++	_, cm, _ := m.cseq()
++	if m.isReq || m.status != status || cm != method {
++		c.t.Fatalf("client: want %d %s, got:\n%s", status, method, raw)
++	}
++	return m
++}
++
++func (c *fakeClient) expectNothing() {
++	c.t.Helper()
++	select {
++	case m, ok := <-c.in:
++		if ok {
++			<-c.raw
++			c.t.Fatalf("client: unexpected message %+v", m)
++		}
++	case <-time.After(waitShort):
++	}
++}
++
++func (c *fakeClient) via(branch string) string {
++	return fmt.Sprintf("Via: SIP/2.0/TLS 127.0.0.1:%d;branch=%s;rport", c.port, branch)
++}
++
++func (c *fakeClient) contact() string {
++	return fmt.Sprintf("sip:%s@127.0.0.1:%d;transport=tls", testUser, c.port)
++}
++
++// ---- environment ----
++
++type testEnv struct {
++	t          *testing.T
++	relay      *Relay
++	info       Info
++	up         *fakeUpstream
++	serverCert testCert
++	clientCert testCert
++	logs       *logBuf
++	httpHosts  []netip.Addr
++}
++
++func newEnv(t *testing.T, hosts ...netip.Addr) *testEnv {
++	t.Helper()
++	e := &testEnv{t: t, up: newFakeUpstream(t), serverCert: makeCert(t, "relay"), clientCert: makeCert(t, "client"), logs: &logBuf{}}
++	if len(hosts) == 0 {
++		hosts = []netip.Addr{upIP}
++	}
++	cfg := Config{
++		UpstreamSIP:      e.up.addr,
++		HTTPAllowedHosts: hosts,
++		ServerCertPEM:    e.serverCert.certPEM,
++		ServerKeyPEM:     e.serverCert.keyPEM,
++		ClientCertPEM:    e.clientCert.certPEM,
++		Logf:             e.logs.logf,
++	}
++	r, info, err := Start(context.Background(), cfg, fakeNet{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	e.relay, e.info = r, info
++	t.Cleanup(func() {
++		r.Close()
++		e.checkLogs()
++	})
++	return e
++}
++
++// checkLogs asserts that no personal data or secrets reached the log.
++func (e *testEnv) checkLogs() {
++	l := e.logs.String()
++	for _, bad := range []string{testUser + "@", testNumber, e.info.HTTPToken, "BEGIN", "v=0", "branch="} {
++		if strings.Contains(l, bad) {
++			e.t.Errorf("log contains %q:\n%s", bad, l)
++		}
++	}
++}
++
++func (e *testEnv) privSIP() netip.AddrPort {
++	return netip.AddrPortFrom(privIP, uint16(e.info.PrivateSIPPort))
++}
++
++func (e *testEnv) stats() map[string]any {
++	var m map[string]any
++	if err := json.Unmarshal([]byte(e.relay.Stats()), &m); err != nil {
++		e.t.Fatal(err)
++	}
++	return m
++}
++
++func (e *testEnv) counter(name string) int64 { return e.relay.cnt.get(name) }
++
++func (e *testEnv) mediaStat(name string) int64 {
++	return e.relay.media.stats()[name]
++}
++
++func waitFor(t *testing.T, cond func() bool) {
++	t.Helper()
++	deadline := time.Now().Add(waitLong)
++	for !cond() {
++		if time.Now().After(deadline) {
++			t.Fatal("condition not reached")
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++}
++
++// ---- message helpers ----
++
++var branchSeq struct {
++	sync.Mutex
++	n int
++}
++
++func newBranch() string {
++	branchSeq.Lock()
++	defer branchSeq.Unlock()
++	branchSeq.n++
++	return fmt.Sprintf("z9hG4bKtest%d", branchSeq.n)
++}
++
++func requestText(method, ruri string, hdrs []string, body string) string {
++	var b strings.Builder
++	fmt.Fprintf(&b, "%s %s SIP/2.0\r\n", method, ruri)
++	for _, h := range hdrs {
++		b.WriteString(h + "\r\n")
++	}
++	if body != "" {
++		b.WriteString("Content-Type: application/sdp\r\n")
++	}
++	fmt.Fprintf(&b, "Content-Length: %d\r\n\r\n%s", len(body), body)
++	return b.String()
++}
++
++// responseText builds a response the way a UA does: Vias, From, Call-ID,
++// CSeq copied, To tagged.
++func responseText(req *sipMsg, status int, reason, tag string, extra []string, body string) string {
++	var b strings.Builder
++	fmt.Fprintf(&b, "SIP/2.0 %d %s\r\n", status, reason)
++	for _, h := range req.hdrs {
++		switch h.key {
++		case "via", "from", "call-id", "cseq":
++			fmt.Fprintf(&b, "%s: %s\r\n", h.name, h.value)
++		case "to":
++			v := h.value
++			if !strings.Contains(v, "tag=") && status > 100 {
++				v += ";tag=" + tag
++			}
++			fmt.Fprintf(&b, "%s: %s\r\n", h.name, v)
++		}
++	}
++	for _, h := range extra {
++		b.WriteString(h + "\r\n")
++	}
++	if body != "" {
++		b.WriteString("Content-Type: application/sdp\r\n")
++	}
++	fmt.Fprintf(&b, "Content-Length: %d\r\n\r\n%s", len(body), body)
++	return b.String()
++}
++
++func sdpBody(addr string, port int, extra ...string) string {
++	s := "v=0\r\no=- 1 1 IN IP4 " + addr + "\r\ns=-\r\nc=IN IP4 " + addr + "\r\nt=0 0\r\n" +
++		"m=audio " + strconv.Itoa(port) + " RTP/AVP 0 101\r\na=rtpmap:101 telephone-event/8000\r\n"
++	for _, x := range extra {
++		s += x + "\r\n"
++	}
++	return s
++}
++
++// sdpMedia returns the c= address and the first m= port of an SDP body.
++func sdpMedia(t *testing.T, body []byte) (string, int) {
++	t.Helper()
++	var addr string
++	port := -1
++	for _, l := range strings.Split(string(body), "\r\n") {
++		if strings.HasPrefix(l, "c=IN IP4 ") && addr == "" {
++			addr = strings.TrimPrefix(l, "c=IN IP4 ")
++		}
++		if strings.HasPrefix(l, "m=") && port < 0 {
++			p, err := strconv.Atoi(strings.Fields(l)[1])
++			if err != nil {
++				t.Fatal(err)
++			}
++			port = p
++		}
++	}
++	if addr == "" || port < 0 {
++		t.Fatalf("no media in SDP:\n%s", body)
++	}
++	return addr, port
++}
++
++func topVia(t *testing.T, m *sipMsg) *sipVia {
++	t.Helper()
++	top, _ := m.topValue("via")
++	v, ok := parseVia(top)
++	if !ok {
++		t.Fatalf("bad top Via %q", top)
++	}
++	return v
++}
+diff --git a/libtailscale/p21relay/relay.go b/libtailscale/p21relay/relay.go
+index 95315ba..f0f7c0f 100644
+--- a/libtailscale/p21relay/relay.go
++++ b/libtailscale/p21relay/relay.go
+@@ -7,13 +7,26 @@
+ // private-network interface. Nothing here may become reachable for other
+ // apps on the phone: SIP is TLS with a pinned client certificate, RTP is
+ // accepted only from the calling library's own ports, HTTP needs a token.
++//
++// The relay never opens sockets outside 127.0.0.1 and the Network it is
++// given, so in this mode no traffic bypasses another VPN on the phone.
+ package p21relay
+ 
+ import (
++	"bytes"
+ 	"context"
++	"crypto/rand"
++	"crypto/subtle"
++	"crypto/tls"
++	"crypto/x509"
++	"encoding/json"
++	"encoding/pem"
+ 	"errors"
++	"fmt"
+ 	"net"
+ 	"net/netip"
++	"sync"
++	"time"
+ )
+ 
+ // Network is the private-network side (in-process interface of the tunnel).
+@@ -40,6 +53,14 @@ type Config struct {
+ 	ClientCertPEM []byte
+ 	// Logf receives diagnostics; must never get SIP bodies, numbers or tokens.
+ 	Logf func(format string, args ...any)
++
++	// SIPPort and HTTPPort are preferred ports on 127.0.0.1 (0 = any).
++	// When taken, a free port is used instead; Info tells which.
++	SIPPort, HTTPPort int
++	// PrivateSIPPort is the preferred UDP/TCP port on the private address
++	// (0 = any). Keeping it across restarts keeps the miniserver's
++	// registration binding valid.
++	PrivateSIPPort uint16
+ }
+ 
+ // Info tells the app where the relay listens on 127.0.0.1.
+@@ -47,18 +68,245 @@ type Info struct {
+ 	SIPPort   int    `json:"sipPort"`   // TLS
+ 	HTTPPort  int    `json:"httpPort"`  // plain HTTP, needs HTTPToken
+ 	HTTPToken string `json:"httpToken"` // header X-Phone21-Relay
++	// PrivateSIPPort is the relay's SIP port on the private address.
++	PrivateSIPPort int `json:"privateSipPort"`
+ }
+ 
+ // Relay is a running relay.
+-type Relay struct{}
++type Relay struct {
++	cancel    context.CancelFunc
++	closeOnce sync.Once
++	wg        sync.WaitGroup
++	cnt       *counters
++	sip       *sipProxy
++	media     *mediaManager
++	http      *httpRelay
++	started   time.Time
++}
+ 
+-// Start starts the relay. Skeleton: replaced by the implementation.
++// Start starts the relay. It stops when ctx is cancelled or Close is called.
+ func Start(ctx context.Context, cfg Config, nw Network) (*Relay, Info, error) {
+-	return nil, Info{}, errors.New("p21relay: not implemented")
++	if nw == nil {
++		return nil, Info{}, errors.New("p21relay: no network")
++	}
++	if !cfg.UpstreamSIP.IsValid() || !cfg.UpstreamSIP.Addr().Unmap().Is4() || cfg.UpstreamSIP.Port() == 0 {
++		return nil, Info{}, errors.New("p21relay: upstream SIP address must be IPv4:port")
++	}
++	cfg.UpstreamSIP = netip.AddrPortFrom(cfg.UpstreamSIP.Addr().Unmap(), cfg.UpstreamSIP.Port())
++	local := nw.LocalAddr().Unmap()
++	if !local.IsValid() || !local.Is4() {
++		return nil, Info{}, errors.New("p21relay: no IPv4 address in the private network")
++	}
++	cert, err := tls.X509KeyPair(cfg.ServerCertPEM, cfg.ServerKeyPEM)
++	if err != nil {
++		return nil, Info{}, fmt.Errorf("p21relay: server certificate: %w", err)
++	}
++	clientDER, err := certDER(cfg.ClientCertPEM)
++	if err != nil {
++		return nil, Info{}, fmt.Errorf("p21relay: client certificate: %w", err)
++	}
++	secret := make([]byte, 32)
++	if _, err := rand.Read(secret); err != nil {
++		return nil, Info{}, err
++	}
++
++	ctx, cancel := context.WithCancel(ctx)
++	r := &Relay{cancel: cancel, cnt: &counters{}, started: time.Now()}
++	rl := &rateLog{logf: cfg.Logf, interval: 30 * time.Second}
++	r.media = newMediaManager(nw, cfg.UpstreamSIP.Addr(), r.cnt, rl)
++
++	p := &sipProxy{
++		cfg:      &cfg,
++		nw:       nw,
++		cnt:      r.cnt,
++		log:      rl,
++		media:    r.media,
++		ctx:      ctx,
++		wg:       &r.wg,
++		tlsConf:  serverTLSConfig(cert, clientDER),
++		localIP:  local,
++		upstream: cfg.UpstreamSIP,
++		secret:   secret,
++	}
++	fail := func(err error) (*Relay, Info, error) {
++		cancel()
++		r.closeListeners(p)
++		r.media.closeAll()
++		return nil, Info{}, fmt.Errorf("p21relay: %w", err)
++	}
++	if p.tlsLn, err = listenLoopback(cfg.SIPPort); err != nil {
++		return fail(err)
++	}
++	p.sipPort = p.tlsLn.Addr().(*net.TCPAddr).Port
++	if p.udp, p.tcpLn, p.upPort, err = listenPrivateSIP(nw, cfg.PrivateSIPPort); err != nil {
++		return fail(err)
++	}
++	r.sip = p
++	if r.http, err = newHTTPRelay(ctx, cfg.HTTPAllowedHosts, cfg.HTTPPort, nw, r.cnt, rl); err != nil {
++		return fail(err)
++	}
++
++	p.start()
++	r.wg.Add(1)
++	go func() {
++		defer r.wg.Done()
++		r.http.serve()
++	}()
++	go func() {
++		<-ctx.Done()
++		r.Close()
++	}()
++
++	info := Info{
++		SIPPort:        p.sipPort,
++		HTTPPort:       r.http.port(),
++		HTTPToken:      r.http.token,
++		PrivateSIPPort: p.upPort,
++	}
++	if cfg.Logf != nil {
++		cfg.Logf("p21relay: started (SIP %d, HTTP %d, private SIP %d)", info.SIPPort, info.HTTPPort, info.PrivateSIPPort)
++	}
++	return r, info, nil
+ }
+ 
+ // Close stops listeners and releases all media ports.
+-func (r *Relay) Close() error { return nil }
++func (r *Relay) Close() error {
++	if r == nil {
++		return nil
++	}
++	r.closeOnce.Do(func() {
++		r.cancel()
++		r.closeListeners(r.sip)
++		if r.http != nil {
++			r.http.close()
++		}
++		r.media.closeAll()
++		r.wg.Wait()
++		if r.sip != nil && r.sip.log.logf != nil {
++			r.sip.log.logf("p21relay: stopped")
++		}
++	})
++	return nil
++}
++
++func (r *Relay) closeListeners(p *sipProxy) {
++	if p == nil {
++		return
++	}
++	if p.tlsLn != nil {
++		p.tlsLn.Close()
++	}
++	if p.udp != nil {
++		p.udp.Close()
++	}
++	if p.tcpLn != nil {
++		p.tcpLn.Close()
++	}
++}
+ 
+ // Stats returns a JSON summary for diagnostics (counts, no personal data).
+-func (r *Relay) Stats() string { return "{}" }
++func (r *Relay) Stats() string {
++	if r == nil {
++		return "{}"
++	}
++	out := struct {
++		UptimeSec       int64            `json:"uptimeSec"`
++		ClientConnected bool             `json:"clientConnected"`
++		Media           map[string]int64 `json:"media"`
++		Counters        map[string]int64 `json:"counters"`
++	}{
++		UptimeSec: int64(time.Since(r.started) / time.Second),
++		Media:     r.media.stats(),
++		Counters:  r.cnt.snapshot(),
++	}
++	if r.sip != nil {
++		out.ClientConnected = r.sip.clientOn.Load()
++	}
++	b, err := json.Marshal(out)
++	if err != nil {
++		return "{}"
++	}
++	return string(b)
++}
++
++func certDER(pemBytes []byte) ([]byte, error) {
++	for {
++		var blk *pem.Block
++		blk, pemBytes = pem.Decode(pemBytes)
++		if blk == nil {
++			return nil, errors.New("no CERTIFICATE block")
++		}
++		if blk.Type == "CERTIFICATE" {
++			if _, err := x509.ParseCertificate(blk.Bytes); err != nil {
++				return nil, err
++			}
++			return blk.Bytes, nil
++		}
++	}
++}
++
++var errClientCert = errors.New("client certificate not accepted")
++
++// serverTLSConfig requires a client certificate and accepts exactly one.
++// Suites cover what the calling library's TLS stack offers.
++func serverTLSConfig(cert tls.Certificate, clientDER []byte) *tls.Config {
++	pinned := func(raw []byte) bool {
++		return len(raw) == len(clientDER) && subtle.ConstantTimeCompare(raw, clientDER) == 1
++	}
++	return &tls.Config{
++		Certificates: []tls.Certificate{cert},
++		ClientAuth:   tls.RequireAnyClientCert,
++		MinVersion:   tls.VersionTLS12,
++		CipherSuites: []uint16{
++			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
++			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
++			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
++			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
++			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
++			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
++		},
++		// Resumed sessions would skip VerifyPeerCertificate.
++		SessionTicketsDisabled: true,
++		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
++			if len(raw) == 0 || !pinned(raw[0]) {
++				return errClientCert
++			}
++			return nil
++		},
++		VerifyConnection: func(cs tls.ConnectionState) error {
++			if len(cs.PeerCertificates) == 0 || !bytes.Equal(cs.PeerCertificates[0].Raw, clientDER) {
++				return errClientCert
++			}
++			return nil
++		},
++	}
++}
++
++// listenPrivateSIP binds UDP and TCP on the same private-network port.
++func listenPrivateSIP(nw Network, want uint16) (net.PacketConn, net.Listener, int, error) {
++	var lastErr error
++	for try := 0; try < 16; try++ {
++		port := uint16(0)
++		if try == 0 {
++			port = want
++		}
++		u, err := nw.ListenUDP(port)
++		if err != nil {
++			lastErr = err
++			continue
++		}
++		up := addrPortOf(u.LocalAddr()).Port()
++		if up == 0 {
++			u.Close()
++			return nil, nil, 0, errors.New("private UDP socket has no port")
++		}
++		t, err := nw.ListenTCP(up)
++		if err != nil {
++			u.Close()
++			lastErr = err
++			continue
++		}
++		return u, t, int(up), nil
++	}
++	return nil, nil, 0, fmt.Errorf("private SIP port: %w", lastErr)
++}
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+new file mode 100644
+index 0000000..89d2386
+--- /dev/null
++++ b/libtailscale/p21relay/relay_test.go
+@@ -0,0 +1,861 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"context"
++	"crypto/tls"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/netip"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++func (e *testEnv) relayRoute() string {
++	return fmt.Sprintf("Route: <sip:127.0.0.1:%d;transport=tls;lr>", e.info.SIPPort)
++}
++
++func (e *testEnv) relayURI() string {
++	return fmt.Sprintf("sip:127.0.0.1:%d;transport=tls", e.info.SIPPort)
++}
++
++// register runs REGISTER -> 401 -> REGISTER -> 200 and returns the 200 the
++// calling library sees.
++func register(t *testing.T, e *testEnv, c *fakeClient) *sipMsg {
++	t.Helper()
++	callID := "reg-" + newBranch()
++	hdrs := func(branch string, cseq int, extra ...string) []string {
++		return append([]string{
++			c.via(branch),
++			e.relayRoute(),
++			"Max-Forwards: 70",
++			"From: <sip:" + testUser + "@" + upIP.String() + ">;tag=reg1",
++			"To: <sip:" + testUser + "@" + upIP.String() + ">",
++			"Call-ID: " + callID,
++			"CSeq: " + strconv.Itoa(cseq) + " REGISTER",
++			`Contact: <` + c.contact() + `>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-000000000000>";expires=3600`,
++			"Expires: 3600",
++		}, extra...)
++	}
++	c.send(requestText("REGISTER", e.relayURI(), hdrs(newBranch(), 1), ""))
++	r1 := e.up.expectRequest("REGISTER")
++
++	// What the miniserver sees.
++	if r1.conn != nil || r1.src != e.privSIP() {
++		t.Fatalf("REGISTER came from %v (tcp=%v), want UDP from %v", r1.src, r1.conn != nil, e.privSIP())
++	}
++	if want := "sip:" + e.up.addr.String(); r1.m.ruri != want {
++		t.Fatalf("R-URI %q, want %q", r1.m.ruri, want)
++	}
++	vias := r1.m.values("via")
++	if len(vias) != 2 {
++		t.Fatalf("Vias %q", vias)
++	}
++	v := topVia(t, r1.m)
++	if v.transport != "UDP" || v.host != privIP.String() || v.port != e.info.PrivateSIPPort || !strings.HasPrefix(v.branch(), branchPrefix) || !hasParam(v.params, "rport") {
++		t.Fatalf("relay Via %q", vias[0])
++	}
++	cv, _ := parseVia(vias[1])
++	if rp, _ := paramValue(cv.params, "rport"); rp != strconv.Itoa(c.port) {
++		t.Fatalf("client Via rport not filled: %q", vias[1])
++	}
++	if r1.m.has("route") {
++		t.Fatal("Route to the relay was forwarded")
++	}
++	if r1.m.get("max-forwards") != "69" {
++		t.Fatalf("Max-Forwards %q", r1.m.get("max-forwards"))
++	}
++	wantContact := fmt.Sprintf(`<sip:%s@%s>;+sip.instance="<urn:uuid:00000000-0000-0000-0000-000000000000>";expires=3600`, testUser, e.privSIP())
++	if got := r1.m.get("contact"); got != wantContact {
++		t.Fatalf("Contact %q, want %q", got, wantContact)
++	}
++
++	e.up.reply(r1, 401, "Unauthorized", []string{`WWW-Authenticate: Digest realm="test",nonce="n1",algorithm=MD5`}, "")
++	m401 := c.expectResponse(401, "REGISTER")
++	if vs := m401.values("via"); len(vs) != 1 || !strings.Contains(vs[0], fmt.Sprintf("127.0.0.1:%d", c.port)) {
++		t.Fatalf("401 Vias %q", vs)
++	}
++	if !m401.has("www-authenticate") {
++		t.Fatal("challenge lost")
++	}
++
++	c.send(requestText("REGISTER", e.relayURI(), hdrs(newBranch(), 2,
++		`Authorization: Digest username="test",realm="test",nonce="n1",uri="sip:x",response="00"`), ""))
++	r2 := e.up.expectRequest("REGISTER")
++	if topVia(t, r2.m).branch() == v.branch() {
++		t.Fatal("new transaction reused the branch")
++	}
++	e.up.reply(r2, 200, "OK", []string{
++		fmt.Sprintf("Contact: <sip:%s@%s;x-ast-orig-host=%s>;expires=3600, <sip:%s@100.64.0.9:5060>;expires=120",
++			testUser, e.privSIP(), e.privSIP(), testUser),
++		"Expires: 3600",
++	}, "")
++	return c.expectResponse(200, "REGISTER")
++}
++
++func TestRegister(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	ok := register(t, e, c)
++	cs := ok.values("contact")
++	if len(cs) != 2 {
++		t.Fatalf("contacts %q", cs)
++	}
++	if want := "<" + c.contact() + ">;expires=3600"; cs[0] != want {
++		t.Fatalf("own binding %q, want %q", cs[0], want)
++	}
++	if want := "<sip:" + testUser + "@100.64.0.9:5060>;expires=120"; cs[1] != want {
++		t.Fatalf("other binding changed: %q", cs[1])
++	}
++}
++
++// call is an established (or ringing) call through the relay.
++type call struct {
++	callID   string
++	branch   string // client's INVITE branch
++	cli, up  *rtpPair
++	relayC   int // relay's 127.0.0.1 RTP port
++	relayU   int // relay's private RTP port
++	upInvite upMsg
++	cseq     int
++}
++
++func (cl *call) relayClientRTP() netip.AddrPort {
++	return netip.AddrPortFrom(loopback4, uint16(cl.relayC))
++}
++func (cl *call) relayClientRTCP() netip.AddrPort {
++	return netip.AddrPortFrom(loopback4, uint16(cl.relayC+1))
++}
++func (cl *call) relayPrivRTP() netip.AddrPort { return netip.AddrPortFrom(privIP, uint16(cl.relayU)) }
++func (cl *call) relayPrivRTCP() netip.AddrPort {
++	return netip.AddrPortFrom(privIP, uint16(cl.relayU+1))
++}
++
++func (cl *call) clientHeaders(c *fakeClient, branch string, cseq int, method string, toTag bool) []string {
++	to := "To: <sip:" + testNumber + "@" + upIP.String() + ">"
++	if toTag {
++		to += ";tag=up-tag"
++	}
++	return []string{
++		c.via(branch), "Max-Forwards: 70",
++		"From: <sip:" + testUser + "@" + upIP.String() + ">;tag=c1", to,
++		"Call-ID: " + cl.callID, fmt.Sprintf("CSeq: %d %s", cseq, method),
++		"Contact: <" + c.contact() + ">",
++	}
++}
++
++// startOutgoing sends an INVITE with SDP and returns once the miniserver
++// has it.
++func startOutgoing(t *testing.T, e *testEnv, c *fakeClient) *call {
++	t.Helper()
++	cl := &call{callID: "out-" + newBranch(), branch: newBranch(), cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP), cseq: 20}
++	hdrs := append(cl.clientHeaders(c, cl.branch, cl.cseq, "INVITE", false), e.relayRoute())
++	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), hdrs, sdpBody("127.0.0.1", cl.cli.port)))
++	cl.upInvite = e.up.expectRequest("INVITE")
++	if cl.upInvite.conn != nil {
++		t.Fatal("small INVITE went over TCP")
++	}
++	addr, port := sdpMedia(t, cl.upInvite.m.body)
++	if addr != privIP.String() || port%2 != 0 || port == cl.cli.port {
++		t.Fatalf("offer toward miniserver not anchored: %s:%d", addr, port)
++	}
++	if !strings.Contains(string(cl.upInvite.m.body), "o=- 1 1 IN IP4 "+privIP.String()) {
++		t.Fatalf("o= not rewritten:\n%s", cl.upInvite.m.body)
++	}
++	cl.relayU = port
++	return cl
++}
++
++func (cl *call) upContact(e *testEnv) string { return "Contact: <sip:" + e.up.addr.String() + ">" }
++
++// establishOutgoing runs a full outgoing call setup incl. early media.
++func establishOutgoing(t *testing.T, e *testEnv, c *fakeClient) *call {
++	t.Helper()
++	cl := startOutgoing(t, e, c)
++	e.up.reply(cl.upInvite, 100, "Trying", nil, "")
++	c.expectResponse(100, "INVITE")
++	e.up.reply(cl.upInvite, 180, "Ringing", []string{cl.upContact(e)}, "")
++	r180 := c.expectResponse(180, "INVITE")
++	if want := fmt.Sprintf("<sip:127.0.0.1:%d;transport=tls>", e.info.SIPPort); r180.get("contact") != want {
++		t.Fatalf("180 Contact %q, want %q", r180.get("contact"), want)
++	}
++
++	e.up.reply(cl.upInvite, 183, "Session Progress", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.up.port))
++	r183 := c.expectResponse(183, "INVITE")
++	addr, port := sdpMedia(t, r183.body)
++	if addr != "127.0.0.1" || port%2 != 0 {
++		t.Fatalf("183 SDP not anchored: %s:%d", addr, port)
++	}
++	cl.relayC = port
++
++	// Early media, both directions, RTP and RTCP, before the 200.
++	expectPacket(t, cl.up.rtp, cl.relayPrivRTP(), cl.cli.rtp, cl.relayClientRTP(), "early-rtp-down")
++	expectPacket(t, cl.up.rtcp, cl.relayPrivRTCP(), cl.cli.rtcp, cl.relayClientRTCP(), "early-rtcp-down")
++	expectPacket(t, cl.cli.rtp, cl.relayClientRTP(), cl.up.rtp, cl.relayPrivRTP(), "early-rtp-up")
++	expectPacket(t, cl.cli.rtcp, cl.relayClientRTCP(), cl.up.rtcp, cl.relayPrivRTCP(), "early-rtcp-up")
++
++	e.up.reply(cl.upInvite, 200, "OK", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.up.port))
++	r200 := c.expectResponse(200, "INVITE")
++	if _, p := sdpMedia(t, r200.body); p != cl.relayC {
++		t.Fatalf("200 moved the stream: %d != %d", p, cl.relayC)
++	}
++	c.send(requestText("ACK", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq, "ACK", true), ""))
++	ack := e.up.expectRequest("ACK")
++	if ack.m.ruri != "sip:"+e.up.addr.String() {
++		t.Fatalf("ACK R-URI %q", ack.m.ruri)
++	}
++	return cl
++}
++
++func (cl *call) checkMedia(t *testing.T, tag string) {
++	t.Helper()
++	expectPacket(t, cl.up.rtp, cl.relayPrivRTP(), cl.cli.rtp, cl.relayClientRTP(), tag+"-rtp-down")
++	expectPacket(t, cl.cli.rtp, cl.relayClientRTP(), cl.up.rtp, cl.relayPrivRTP(), tag+"-rtp-up")
++	expectPacket(t, cl.up.rtcp, cl.relayPrivRTCP(), cl.cli.rtcp, cl.relayClientRTCP(), tag+"-rtcp-down")
++	expectPacket(t, cl.cli.rtcp, cl.relayClientRTCP(), cl.up.rtcp, cl.relayPrivRTCP(), tag+"-rtcp-up")
++}
++
++func TestOutgoingCall(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := establishOutgoing(t, e, c)
++	cl.checkMedia(t, "talk")
++	if e.mediaStat("streams") != 1 {
++		t.Fatalf("streams %d", e.mediaStat("streams"))
++	}
++
++	// BYE from the calling library.
++	c.send(requestText("BYE", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "BYE", true), ""))
++	bye := e.up.expectRequest("BYE")
++	e.up.reply(bye, 200, "OK", nil, "")
++	c.expectResponse(200, "BYE")
++	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
++	if e.counter("media.released_bye") != 1 {
++		t.Fatalf("released_bye %d", e.counter("media.released_bye"))
++	}
++	if e.mediaStat("packetsToUpstream") < 4 || e.mediaStat("packetsToClient") < 4 {
++		t.Fatalf("media stats %v", e.relay.media.stats())
++	}
++}
++
++// incomingInvite sends an INVITE from the miniserver to the relay.
++func incomingInvite(t *testing.T, e *testEnv, callID string, cseq int, upPort int) string {
++	t.Helper()
++	return requestText("INVITE", "sip:"+testUser+"@"+e.privSIP().String(), []string{
++		"Via: SIP/2.0/UDP " + e.up.addr.String() + ";rport;branch=" + newBranch(),
++		"Max-Forwards: 70",
++		"From: <sip:" + testNumber + "@" + upIP.String() + ">;tag=u1",
++		"To: <sip:" + testUser + "@" + upIP.String() + ">",
++		"Call-ID: " + callID,
++		fmt.Sprintf("CSeq: %d INVITE", cseq),
++		"Contact: <sip:asterisk@" + e.up.addr.String() + ">",
++	}, sdpBody(upIP.String(), upPort))
++}
++
++func upRequest(e *testEnv, method, callID string, cseq int, toTag string) string {
++	return requestText(method, "sip:"+testUser+"@"+e.privSIP().String(), []string{
++		"Via: SIP/2.0/UDP " + e.up.addr.String() + ";rport;branch=" + newBranch(),
++		"Max-Forwards: 70",
++		"From: <sip:" + testNumber + "@" + upIP.String() + ">;tag=u1",
++		"To: <sip:" + testUser + "@" + upIP.String() + ">;tag=" + toTag,
++		"Call-ID: " + callID,
++		fmt.Sprintf("CSeq: %d %s", cseq, method),
++	}, "")
++}
++
++func TestIncomingCall(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := &call{callID: "in-" + newBranch(), cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP)}
++
++	e.up.sendUDP(e.privSIP(), incomingInvite(t, e, cl.callID, 100, cl.up.port))
++	ci := c.expectRequest("INVITE")
++	if ci.ruri != c.contact() {
++		t.Fatalf("R-URI %q, want the registered contact %q", ci.ruri, c.contact())
++	}
++	v := topVia(t, ci)
++	if v.transport != "TLS" || v.host != "127.0.0.1" || v.port != e.info.SIPPort || !strings.HasPrefix(v.branch(), branchPrefix) {
++		t.Fatalf("relay Via %+v", v)
++	}
++	if conn, _ := paramValue(v.params, viaConnParam); conn != "u" {
++		t.Fatalf("transport param %q", conn)
++	}
++	if up, _ := parseVia(ci.values("via")[1]); func() string { r, _ := paramValue(up.params, "rport"); return r }() != strconv.Itoa(int(e.up.addr.Port())) {
++		t.Fatalf("miniserver Via rport not filled: %q", ci.values("via")[1])
++	}
++	if want := fmt.Sprintf("<sip:asterisk@127.0.0.1:%d;transport=tls>", e.info.SIPPort); ci.get("contact") != want {
++		t.Fatalf("Contact %q, want %q", ci.get("contact"), want)
++	}
++	addr, port := sdpMedia(t, ci.body)
++	if addr != "127.0.0.1" {
++		t.Fatalf("offer to the client not anchored: %s", addr)
++	}
++	cl.relayC = port
++
++	c.send(responseText(ci, 180, "Ringing", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, ""))
++	r180 := e.up.expectResponse(180, "INVITE")
++	if vs := r180.m.values("via"); len(vs) != 1 {
++		t.Fatalf("180 Vias %q", vs)
++	}
++	if want := "<sip:" + testUser + "@" + e.privSIP().String() + ">"; r180.m.get("contact") != want {
++		t.Fatalf("180 Contact %q, want %q", r180.m.get("contact"), want)
++	}
++	if r180.src != e.privSIP() {
++		t.Fatalf("180 from %v", r180.src)
++	}
++	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", cl.cli.port)))
++	r200 := e.up.expectResponse(200, "INVITE")
++	addr, port = sdpMedia(t, r200.m.body)
++	if addr != privIP.String() {
++		t.Fatalf("answer not anchored: %s", addr)
++	}
++	cl.relayU = port
++
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", cl.callID, 100, "cli-tag"))
++	c.expectRequest("ACK")
++	cl.checkMedia(t, "in")
++
++	// After the ACK the relay stops repeating its 200.
++	before := e.counter("sip.retransmit")
++	time.Sleep(1200 * time.Millisecond)
++	if after := e.counter("sip.retransmit"); after != before {
++		t.Fatalf("200 still retransmitted after ACK (%d -> %d)", before, after)
++	}
++
++	// BYE from the miniserver.
++	e.up.sendUDP(e.privSIP(), upRequest(e, "BYE", cl.callID, 101, "cli-tag"))
++	cb := c.expectRequest("BYE")
++	c.send(responseText(cb, 200, "OK", "cli-tag", nil, ""))
++	e.up.expectResponse(200, "BYE")
++	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
++}
++
++func TestOptionsQualify(t *testing.T) {
++	e := newEnv(t)
++	opts := func() string {
++		return requestText("OPTIONS", "sip:"+testUser+"@"+e.privSIP().String(), []string{
++			"Via: SIP/2.0/UDP " + e.up.addr.String() + ";rport;branch=" + newBranch(),
++			"Max-Forwards: 70",
++			"From: <sip:" + testUser + "@" + upIP.String() + ">;tag=q1",
++			"To: <sip:" + testUser + "@" + e.privSIP().String() + ">",
++			"Call-ID: q-" + newBranch(),
++			"CSeq: 1 OPTIONS",
++		}, "")
++	}
++	// No calling library connected: the relay answers 480 itself.
++	e.up.sendUDP(e.privSIP(), opts())
++	r := e.up.expectResponse(480, "OPTIONS")
++	if !strings.Contains(r.m.get("to"), "tag=") {
++		t.Fatal("480 without To tag")
++	}
++	if r.src != e.privSIP() {
++		t.Fatalf("480 from %v", r.src)
++	}
++	// ACK is never answered.
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", "x-"+newBranch(), 1, "t"))
++	e.up.expectNothing()
++
++	c := newFakeClient(t, e)
++	e.up.sendUDP(e.privSIP(), opts())
++	q := c.expectRequest("OPTIONS")
++	c.send(responseText(q, 200, "OK", "cli-tag", nil, ""))
++	e.up.expectResponse(200, "OPTIONS")
++}
++
++func TestCancel(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := startOutgoing(t, e, c)
++	e.up.reply(cl.upInvite, 100, "Trying", nil, "")
++	e.up.reply(cl.upInvite, 180, "Ringing", []string{cl.upContact(e)}, "")
++	c.expectResponse(100, "INVITE")
++	c.expectResponse(180, "INVITE")
++	if e.mediaStat("streams") != 1 {
++		t.Fatal("no stream while ringing")
++	}
++
++	inviteRURI := "sip:" + testNumber + "@" + upIP.String()
++	cancelHdrs := cl.clientHeaders(c, cl.branch, cl.cseq, "CANCEL", false)
++	c.send(requestText("CANCEL", inviteRURI, append(cancelHdrs[:len(cancelHdrs)-1], e.relayRoute()), ""))
++	uc := e.up.expectRequest("CANCEL")
++	invBranch := topVia(t, cl.upInvite.m).branch()
++	if topVia(t, uc.m).branch() != invBranch {
++		t.Fatal("CANCEL branch differs from INVITE branch")
++	}
++	e.up.reply(uc, 200, "OK", nil, "")
++	e.up.reply(cl.upInvite, 487, "Request Terminated", nil, "")
++	c.expectResponse(200, "CANCEL")
++	c.expectResponse(487, "INVITE")
++	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
++
++	ackHdrs := cl.clientHeaders(c, cl.branch, cl.cseq, "ACK", true)
++	c.send(requestText("ACK", inviteRURI, append(ackHdrs[:len(ackHdrs)-1], e.relayRoute()), ""))
++	ua := e.up.expectRequest("ACK")
++	if topVia(t, ua.m).branch() != invBranch {
++		t.Fatal("non-2xx ACK branch differs from INVITE branch")
++	}
++
++	// The ACK got lost: the miniserver repeats the 487. The relay answers it
++	// with the stored ACK and does not bother the calling library.
++	e.up.reply(cl.upInvite, 487, "Request Terminated", nil, "")
++	waitFor(t, func() bool { return e.counter("sip.ack_repeated") == 1 })
++	c.expectNothing()
++}
++
++func TestReinviteHold(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := establishOutgoing(t, e, c)
++
++	// Hold from the calling library.
++	c.send(requestText("INVITE", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "INVITE", true),
++		sdpBody("127.0.0.1", cl.cli.port, "a=sendonly")))
++	ri := e.up.expectRequest("INVITE")
++	if _, p := sdpMedia(t, ri.m.body); p != cl.relayU {
++		t.Fatalf("re-INVITE moved the stream %d -> %d", cl.relayU, p)
++	}
++	if !strings.Contains(string(ri.m.body), "a=sendonly") {
++		t.Fatal("direction attribute lost")
++	}
++	e.up.reply(ri, 200, "OK", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.up.port, "a=recvonly"))
++	r := c.expectResponse(200, "INVITE")
++	if _, p := sdpMedia(t, r.body); p != cl.relayC {
++		t.Fatalf("answer moved the stream %d -> %d", cl.relayC, p)
++	}
++	c.send(requestText("ACK", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "ACK", true), ""))
++	e.up.expectRequest("ACK")
++
++	// Resume from the miniserver, with a new port on its side.
++	newUp := newRTPPair(t, upIP)
++	inv := incomingInvite(t, e, cl.callID, 300, newUp.port)
++	inv = strings.Replace(inv, "To: <sip:"+testUser+"@"+upIP.String()+">", "To: <sip:"+testUser+"@"+upIP.String()+">;tag=c1", 1)
++	e.up.sendUDP(e.privSIP(), inv)
++	ci := c.expectRequest("INVITE")
++	if _, p := sdpMedia(t, ci.body); p != cl.relayC {
++		t.Fatalf("upstream re-INVITE moved the stream %d -> %d", cl.relayC, p)
++	}
++	c.send(responseText(ci, 200, "OK", "c1", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", cl.cli.port)))
++	e.up.expectResponse(200, "INVITE")
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", cl.callID, 300, "c1"))
++	c.expectRequest("ACK")
++	cl.up = newUp
++	cl.checkMedia(t, "resumed")
++	if e.mediaStat("streams") != 1 {
++		t.Fatalf("streams %d", e.mediaStat("streams"))
++	}
++}
++
++func TestLargeMessagesOverTCP(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	text := strings.Repeat("x", 1500)
++
++	msg := func(via, ruri string) string {
++		return "MESSAGE " + ruri + " SIP/2.0\r\n" + via + "\r\nMax-Forwards: 70\r\n" +
++			"From: <sip:" + testUser + "@" + upIP.String() + ">;tag=m1\r\nTo: <sip:" + testNumber + "@" + upIP.String() + ">\r\n" +
++			"Call-ID: msg-" + newBranch() + "\r\nCSeq: 1 MESSAGE\r\nContent-Type: text/plain\r\n" +
++			"Content-Length: " + strconv.Itoa(len(text)) + "\r\n\r\n" + text
++	}
++	// Calling library -> miniserver: relay switches to TCP.
++	c.send(msg(c.via(newBranch()), "sip:"+testNumber+"@"+upIP.String()))
++	um := e.up.expectRequest("MESSAGE")
++	if um.conn == nil {
++		t.Fatal("big MESSAGE went over UDP")
++	}
++	if v := topVia(t, um.m); v.transport != "TCP" || v.port != e.info.PrivateSIPPort {
++		t.Fatalf("Via %+v", v)
++	}
++	if string(um.m.body) != text {
++		t.Fatal("body changed")
++	}
++	e.up.reply(um, 200, "OK", nil, "")
++	c.expectResponse(200, "MESSAGE")
++
++	// Miniserver -> calling library over a TCP connection it opens itself.
++	conn := e.up.dialTCP(e.privSIP())
++	if _, err := conn.Write([]byte(msg("Via: SIP/2.0/TCP "+e.up.addr.String()+";rport;branch="+newBranch(), "sip:"+testUser+"@"+e.privSIP().String()))); err != nil {
++		t.Fatal(err)
++	}
++	cm := c.expectRequest("MESSAGE")
++	if conn, _ := paramValue(topVia(t, cm).params, viaConnParam); conn == "u" || conn == "" {
++		t.Fatalf("TCP origin not recorded: %q", conn)
++	}
++	if cm.ruri != c.contact() {
++		t.Fatalf("R-URI %q", cm.ruri)
++	}
++	c.send(responseText(cm, 200, "OK", "cli-tag", nil, ""))
++	r := e.up.expectResponse(200, "MESSAGE")
++	if r.conn != conn {
++		t.Fatal("answer did not use the miniserver's connection")
++	}
++}
++
++func TestRetransmissionsOverUDP(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	// The first copy of a request is "lost": the relay repeats it after T1.
++	c.send(requestText("OPTIONS", "sip:"+upIP.String(), []string{
++		c.via(newBranch()), "Max-Forwards: 70",
++		"From: <sip:" + testUser + "@" + upIP.String() + ">;tag=o1", "To: <sip:" + upIP.String() + ">",
++		"Call-ID: o-" + newBranch(), "CSeq: 1 OPTIONS",
++	}, ""))
++	first := <-e.up.in
++	select {
++	case again := <-e.up.in:
++		if string(again.raw) != string(first.raw) {
++			t.Fatalf("retransmission differs:\n%s\n---\n%s", first.raw, again.raw)
++		}
++	case <-time.After(waitLong):
++		t.Fatal("no retransmission")
++	}
++	e.up.reply(first, 200, "OK", nil, "")
++	c.expectResponse(200, "OPTIONS")
++	// A repeated final answer is not passed on again.
++	e.up.reply(first, 200, "OK", nil, "")
++	c.expectNothing()
++	n := e.counter("sip.retransmit")
++	time.Sleep(1200 * time.Millisecond)
++	if e.counter("sip.retransmit") != n {
++		t.Fatal("still retransmitting after the answer")
++	}
++
++	// The 200 to an incoming INVITE is repeated until the miniserver's ACK.
++	register(t, e, c)
++	upr := newRTPPair(t, upIP)
++	callID := "rt-" + newBranch()
++	e.up.sendUDP(e.privSIP(), incomingInvite(t, e, callID, 7, upr.port))
++	ci := c.expectRequest("INVITE")
++	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", newRTPPair(t, loopback4).port)))
++	r := e.up.expectResponse(200, "INVITE")
++	select {
++	case again := <-e.up.in: // no ACK yet: the relay repeats its 200
++		if string(again.raw) != string(r.raw) {
++			t.Fatalf("repeated 200 differs:\n%s\n---\n%s", r.raw, again.raw)
++		}
++	case <-time.After(waitLong):
++		t.Fatal("200 not repeated")
++	}
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", callID, 7, "cli-tag"))
++	c.expectRequest("ACK")
++	n = e.counter("sip.retransmit")
++	time.Sleep(1200 * time.Millisecond)
++	if e.counter("sip.retransmit") != n {
++		t.Fatal("200 still repeated after ACK")
++	}
++}
++
++func TestInviteRetransmissionAnswered(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	upr := newRTPPair(t, upIP)
++	callID := "rti-" + newBranch()
++	inv := incomingInvite(t, e, callID, 9, upr.port)
++	e.up.sendUDP(e.privSIP(), inv)
++	ci := c.expectRequest("INVITE")
++	c.send(responseText(ci, 486, "Busy Here", "cli-tag", nil, ""))
++	e.up.expectResponse(486, "INVITE")
++	// Same INVITE again (the miniserver did not get the answer).
++	e.up.sendUDP(e.privSIP(), inv)
++	waitFor(t, func() bool { return e.counter("sip.retransmit_answered") == 1 })
++	c.expectNothing()
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", callID, 9, "cli-tag"))
++	c.expectRequest("ACK")
++	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
++}
++
++func TestMalformedInput(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++
++	c.send("GARBAGE\r\n\r\n")
++	c.send("OPTIONS sip:x SIP/2.0\r\nVia: SIP/2.0/TLS 127.0.0.1:1;branch=z9hG4bK1\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n")
++	waitFor(t, func() bool { return e.counter("sip.drop.client_malformed") == 2 })
++	// A response with a Via that is not the relay's.
++	c.send("SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP 127.0.0.9:5060;branch=z9hG4bKx\r\nFrom: <sip:a@b>;tag=1\r\nTo: <sip:a@b>;tag=2\r\nCall-ID: x\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n")
++	waitFor(t, func() bool { return e.counter("sip.drop.via_not_ours") == 1 })
++	// Max-Forwards exhausted.
++	c.send(requestText("OPTIONS", "sip:"+upIP.String(), []string{
++		c.via(newBranch()), "Max-Forwards: 0", "From: <sip:a@b>;tag=1", "To: <sip:a@b>", "Call-ID: mf-" + newBranch(), "CSeq: 1 OPTIONS",
++	}, ""))
++	c.expectResponse(483, "OPTIONS")
++	// Unparsable SDP is refused, not forwarded.
++	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), []string{
++		c.via(newBranch()), "From: <sip:a@b>;tag=1", "To: <sip:a@b>", "Call-ID: sdp-" + newBranch(), "CSeq: 1 INVITE",
++	}, "this is not sdp"))
++	c.expectResponse(488, "INVITE")
++	e.up.expectNothing()
++
++	// From the private side.
++	e.up.sendUDP(e.privSIP(), "NOT SIP AT ALL\r\n\r\n")
++	waitFor(t, func() bool { return e.counter("sip.drop.upstream_malformed") == 1 })
++	e.up.sendUDP(e.privSIP(), "SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP 127.0.0.9:5060;branch=z9hG4bKx\r\nFrom: <sip:a@b>;tag=1\r\nTo: <sip:a@b>;tag=2\r\nCall-ID: x\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n")
++	waitFor(t, func() bool { return e.counter("sip.drop.via_not_ours") == 2 })
++
++	// Another peer of the private network is ignored (UDP and TCP).
++	other, err := net.ListenUDP("udp4", &net.UDPAddr{IP: otherIP.AsSlice()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer other.Close()
++	other.WriteToUDPAddrPort([]byte(upRequest(e, "OPTIONS", "f-"+newBranch(), 1, "t")), e.privSIP())
++	waitFor(t, func() bool { return e.counter("sip.drop.foreign_source") == 1 })
++	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: otherIP.AsSlice()}}
++	tc, err := d.Dial("tcp4", e.privSIP().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer tc.Close()
++	tc.SetReadDeadline(time.Now().Add(waitLong))
++	if _, err := tc.Read(make([]byte, 1)); err == nil {
++		t.Fatal("foreign TCP connection stayed open")
++	}
++	c.expectNothing()
++
++	// The connection still works.
++	c.send(requestText("OPTIONS", "sip:"+upIP.String(), []string{
++		c.via(newBranch()), "From: <sip:a@b>;tag=1", "To: <sip:a@b>", "Call-ID: ok-" + newBranch(), "CSeq: 1 OPTIONS",
++	}, ""))
++	e.up.expectRequest("OPTIONS")
++
++	// Broken framing closes the connection.
++	c.send("\rX")
++	waitFor(t, func() bool { return !e.relay.sip.clientOn.Load() })
++}
++
++func TestKeepalive(t *testing.T) {
++	e := newEnv(t)
++	conn, err := dialClient(t, e.info.SIPPort, &e.clientCert.tls)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for i := 0; i < 2; i++ {
++		if _, err := conn.Write([]byte("\r\n\r\n")); err != nil {
++			t.Fatal(err)
++		}
++		conn.SetReadDeadline(time.Now().Add(waitLong))
++		buf := make([]byte, 8)
++		n, err := conn.Read(buf)
++		if err != nil || string(buf[:n]) != "\r\n" {
++			t.Fatalf("pong %q %v", buf[:n], err)
++		}
++	}
++	if e.counter("client.keepalive") != 2 {
++		t.Fatalf("keepalive counter %d", e.counter("client.keepalive"))
++	}
++}
++
++func TestClientCertificatePinned(t *testing.T) {
++	e := newEnv(t)
++	other := makeCert(t, "client")
++	tryCert := func(cert *tls.Certificate) {
++		t.Helper()
++		conn, err := dialClient(t, e.info.SIPPort, cert)
++		if err != nil {
++			return // refused during the handshake
++		}
++		// TLS 1.3: the server's verdict arrives after the client finished.
++		conn.Write([]byte(requestText("OPTIONS", "sip:"+upIP.String(), []string{
++			"Via: SIP/2.0/TLS 127.0.0.1:1;branch=" + newBranch(), "From: <sip:a@b>;tag=1", "To: <sip:a@b>", "Call-ID: x", "CSeq: 1 OPTIONS",
++		}, "")))
++		conn.SetReadDeadline(time.Now().Add(waitLong))
++		if _, err := conn.Read(make([]byte, 1)); err == nil {
++			t.Fatal("connection without the pinned certificate was served")
++		}
++	}
++	before := e.counter("client.rejected")
++	tryCert(nil)
++	tryCert(&other.tls)
++	waitFor(t, func() bool { return e.counter("client.rejected") == before+2 })
++	e.up.expectNothing()
++	if e.relay.sip.clientOn.Load() {
++		t.Fatal("rejected client became active")
++	}
++
++	// TLS 1.2 with a suite the calling library's TLS stack uses.
++	cfg := &tls.Config{
++		InsecureSkipVerify: true,
++		MaxVersion:         tls.VersionTLS12,
++		CipherSuites:       []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
++		Certificates:       []tls.Certificate{e.clientCert.tls},
++	}
++	conn, err := tls.Dial("tcp4", "127.0.0.1:"+strconv.Itoa(e.info.SIPPort), cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	waitFor(t, func() bool { return e.relay.sip.clientOn.Load() })
++}
++
++func TestNewestClientWins(t *testing.T) {
++	e := newEnv(t)
++	c1 := newFakeClient(t, e)
++	c2 := newFakeClient(t, e)
++	select {
++	case _, ok := <-c1.in:
++		if ok {
++			t.Fatal("old client got a message")
++		}
++	case <-time.After(waitLong):
++		t.Fatal("old client connection not closed")
++	}
++	waitFor(t, func() bool { return e.relay.sip.clientOn.Load() && e.counter("client.replaced") == 1 })
++	e.up.sendUDP(e.privSIP(), upRequest(e, "OPTIONS", "n-"+newBranch(), 1, "t"))
++	c2.expectRequest("OPTIONS")
++}
++
++func TestMediaForeignSourcesDropped(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++
++	// Another app on the phone sends to the relay's 127.0.0.1 RTP port.
++	intruder, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback4.AsSlice()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer intruder.Close()
++	intruder.WriteToUDPAddrPort([]byte("inject"), cl.relayClientRTP())
++	intruder.WriteToUDPAddrPort([]byte("inject"), cl.relayClientRTCP())
++	expectNoPacket(t, cl.up.rtp)
++	expectNoPacket(t, cl.up.rtcp)
++	waitFor(t, func() bool { return e.mediaStat("dropForeignClient") == 2 })
++
++	// Another peer of the private network sends to the relay's private port.
++	peer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: otherIP.AsSlice()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer peer.Close()
++	peer.WriteToUDPAddrPort([]byte("inject"), cl.relayPrivRTP())
++	expectNoPacket(t, cl.cli.rtp)
++	waitFor(t, func() bool { return e.mediaStat("dropForeignNetwork") == 1 })
++
++	// Nothing reaches the intruder either, and the call still works.
++	cl.checkMedia(t, "after")
++	expectNoPacket(t, intruder)
++}
++
++func TestMediaIdleRelease(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := startOutgoing(t, e, c)
++	if e.mediaStat("streams") != 1 {
++		t.Fatal("no stream")
++	}
++	// Pretend the call went silent long ago.
++	e.relay.media.mu.Lock()
++	call := e.relay.media.calls[cl.callID]
++	call.lastSIP = time.Now().Add(-2 * mediaIdleTimeout)
++	for _, s := range call.streams {
++		s.lastPkt.Store(call.lastSIP.UnixNano())
++	}
++	e.relay.media.mu.Unlock()
++	if next := e.relay.media.expire(time.Now()); !next.IsZero() {
++		t.Fatalf("next deadline %v", next)
++	}
++	if e.mediaStat("streams") != 0 || e.counter("media.released_idle") != 1 {
++		t.Fatalf("not released: %v", e.relay.media.stats())
++	}
++}
++
++func TestStatsAndClose(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++	_ = cl
++	s := e.stats()
++	if s["clientConnected"] != true {
++		t.Fatalf("stats %v", s)
++	}
++	if m := s["media"].(map[string]any); m["streams"].(float64) != 1 {
++		t.Fatalf("media stats %v", m)
++	}
++	if ctr := s["counters"].(map[string]any); ctr["sip.from_client"].(float64) < 2 {
++		t.Fatalf("counters %v", ctr)
++	}
++	for _, bad := range []string{testUser, testNumber, e.info.HTTPToken, cl.callID} {
++		if strings.Contains(e.relay.Stats(), bad) {
++			t.Fatalf("stats leak %q", bad)
++		}
++	}
++	e.relay.Close()
++	if _, err := net.DialTimeout("tcp4", "127.0.0.1:"+strconv.Itoa(e.info.SIPPort), time.Second); err == nil {
++		t.Fatal("SIP port still open after Close")
++	}
++	if e.mediaStat("streams") != 0 {
++		t.Fatal("media not released on Close")
++	}
++	e.relay.Close() // idempotent
++}
++
++func TestStartValidation(t *testing.T) {
++	sc, cc := makeCert(t, "relay"), makeCert(t, "client")
++	good := Config{UpstreamSIP: netip.MustParseAddrPort("127.0.0.3:5060"), ServerCertPEM: sc.certPEM, ServerKeyPEM: sc.keyPEM, ClientCertPEM: cc.certPEM}
++	for name, mut := range map[string]func(*Config){
++		"no upstream":   func(c *Config) { c.UpstreamSIP = netip.AddrPort{} },
++		"v6 upstream":   func(c *Config) { c.UpstreamSIP = netip.MustParseAddrPort("[fd00::1]:5060") },
++		"no server key": func(c *Config) { c.ServerKeyPEM = nil },
++		"no client":     func(c *Config) { c.ClientCertPEM = []byte("junk") },
++	} {
++		cfg := good
++		mut(&cfg)
++		if r, _, err := Start(context.Background(), cfg, fakeNet{}); err == nil {
++			r.Close()
++			t.Errorf("%s: accepted", name)
++		}
++	}
++	// Cancelling the context stops the relay.
++	ctx, cancel := context.WithCancel(context.Background())
++	r, info, err := Start(ctx, good, fakeNet{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	cancel()
++	waitFor(t, func() bool {
++		c, err := net.DialTimeout("tcp4", "127.0.0.1:"+strconv.Itoa(info.SIPPort), 100*time.Millisecond)
++		if err == nil {
++			c.Close()
++		}
++		return err != nil
++	})
++	r.Close()
++}
++
++func TestStartHTTPRelay(t *testing.T) {
++	_, upAddr := newHTTPUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.WriteString(w, r.Method+" "+r.RequestURI)
++	}))
++	e := newEnv(t, upIP)
++	if len(e.info.HTTPToken) != 64 {
++		t.Fatalf("token length %d", len(e.info.HTTPToken))
++	}
++	for _, tok := range []string{e.info.HTTPToken, ""} {
++		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/%s/pristup?x=1", e.info.HTTPPort, upAddr), nil)
++		if tok != "" {
++			req.Header.Set(TokenHeader, tok)
++		}
++		resp, err := relayClient().Do(req)
++		if err != nil {
++			t.Fatal(err)
++		}
++		body, _ := io.ReadAll(resp.Body)
++		resp.Body.Close()
++		switch {
++		case tok != "" && (resp.StatusCode != 200 || string(body) != "GET /pristup?x=1"):
++			t.Fatalf("with token: %d %q", resp.StatusCode, body)
++		case tok == "" && resp.StatusCode != 403:
++			t.Fatalf("without token: %d", resp.StatusCode)
++		}
++	}
++}
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+new file mode 100644
+index 0000000..cbf8783
+--- /dev/null
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -0,0 +1,1199 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"context"
++	"crypto/hmac"
++	"crypto/sha256"
++	"crypto/tls"
++	"encoding/hex"
++	"errors"
++	"net"
++	"net/netip"
++	"strconv"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"time"
++)
++
++const (
++	sipT1                = 500 * time.Millisecond
++	sipT2                = 4 * time.Second
++	sipTxTimeout         = 64 * sipT1
++	maxUDPRequest        = 1200 // bigger requests go to the miniserver over TCP
++	maxTxEntries         = 256
++	maxUpstreamTCP       = 8
++	maxRememberedContact = 16
++	maxPendingHandshakes = 16
++	handshakeTimeout     = 10 * time.Second
++	tcpDialTimeout       = 10 * time.Second
++	writeTimeout         = 10 * time.Second
++	clientQueueLen       = 256
++	tcpQueueLen          = 64
++	branchPrefix         = "z9hG4bK-p21-"
++	viaConnParam         = "p21c" // which miniserver transport a request came on
++)
++
++type evKind int
++
++const (
++	evClientUp evKind = iota
++	evClientDown
++	evClientMsg
++	evUpstreamMsg
++	evTCPUp
++	evTCPDown
++)
++
++type sipEvent struct {
++	kind evKind
++	data []byte
++	cc   *clientConn
++	tc   *tcpConn // nil: UDP
++	src  netip.AddrPort
++}
++
++// clientConn is the TLS connection of the calling library.
++type clientConn struct {
++	conn   net.Conn
++	remote netip.AddrPort
++	out    chan []byte
++	done   chan struct{}
++	once   sync.Once
++}
++
++func (c *clientConn) send(b []byte) bool {
++	select {
++	case <-c.done:
++		return false
++	default:
++	}
++	select {
++	case c.out <- b:
++		return true
++	default:
++		return false
++	}
++}
++
++func (c *clientConn) close() {
++	c.once.Do(func() {
++		close(c.done)
++		c.conn.Close()
++	})
++}
++
++// tcpConn is a TCP connection to the miniserver, dialled by the relay
++// (outgoing) or accepted on the private address.
++type tcpConn struct {
++	id       uint64
++	outgoing bool
++	out      chan []byte
++	done     chan struct{}
++	once     sync.Once
++	mu       sync.Mutex
++	conn     net.Conn
++}
++
++func newTCPConn(id uint64, outgoing bool, c net.Conn) *tcpConn {
++	return &tcpConn{id: id, outgoing: outgoing, conn: c, out: make(chan []byte, tcpQueueLen), done: make(chan struct{})}
++}
++
++func (t *tcpConn) setConn(c net.Conn) bool {
++	t.mu.Lock()
++	defer t.mu.Unlock()
++	select {
++	case <-t.done:
++		c.Close()
++		return false
++	default:
++	}
++	t.conn = c
++	return true
++}
++
++func (t *tcpConn) getConn() net.Conn {
++	t.mu.Lock()
++	defer t.mu.Unlock()
++	return t.conn
++}
++
++func (t *tcpConn) closed() bool {
++	select {
++	case <-t.done:
++		return true
++	default:
++		return false
++	}
++}
++
++func (t *tcpConn) send(b []byte) bool {
++	if t.closed() {
++		return false
++	}
++	select {
++	case t.out <- b:
++		return true
++	default:
++		return false
++	}
++}
++
++func (t *tcpConn) close() {
++	t.once.Do(func() {
++		t.mu.Lock()
++		close(t.done)
++		if t.conn != nil {
++			t.conn.Close()
++		}
++		t.mu.Unlock()
++	})
++}
++
++// txEntry makes the UDP leg toward the miniserver reliable: the calling
++// library talks TLS and therefore never retransmits.
++type txEntry struct {
++	data      []byte
++	dest      netip.AddrPort
++	invite    bool // INVITE client transaction: Timer A is not capped at T2
++	response  bool // final response to an INVITE from the miniserver, until its ACK
++	completed bool // final response seen (request entries only)
++	ack       []byte
++	next      time.Time // zero: no more retransmissions
++	interval  time.Duration
++	expire    time.Time
++}
++
++// sipProxy is a single-upstream SIP proxy between the calling library
++// (TLS on 127.0.0.1) and the miniserver (UDP/TCP in the private network).
++// All SIP state lives in one goroutine (run).
++type sipProxy struct {
++	cfg      *Config
++	nw       Network
++	cnt      *counters
++	log      *rateLog
++	media    *mediaManager
++	ctx      context.Context
++	wg       *sync.WaitGroup
++	tlsConf  *tls.Config
++	tlsLn    net.Listener
++	sipPort  int        // TLS port on 127.0.0.1
++	localIP  netip.Addr // this phone in the private network
++	upPort   int        // UDP and TCP port on localIP
++	udp      net.PacketConn
++	tcpLn    net.Listener
++	upstream netip.AddrPort
++	secret   []byte
++
++	events   chan sipEvent
++	nextID   atomic.Uint64
++	clientOn atomic.Bool
++
++	// Owned by run.
++	client   *clientConn
++	tcps     map[uint64]*tcpConn
++	outTCP   *tcpConn
++	contacts map[string]string // user part -> Contact URI the calling library registered
++	txs      map[string]*txEntry
++	timer    *time.Timer
++	timerOn  bool
++}
++
++func (p *sipProxy) post(ev sipEvent) bool {
++	select {
++	case p.events <- ev:
++		return true
++	case <-p.ctx.Done():
++		return false
++	}
++}
++
++func (p *sipProxy) drop(reason string) {
++	p.cnt.inc("sip.drop." + reason)
++	p.log.printf("drop-"+reason, "p21relay: SIP message dropped: %s", reason)
++}
++
++func (p *sipProxy) start() {
++	p.events = make(chan sipEvent, 256)
++	p.tcps = make(map[uint64]*tcpConn)
++	p.contacts = make(map[string]string)
++	p.txs = make(map[string]*txEntry)
++	p.timer = time.NewTimer(time.Hour)
++	p.timer.Stop()
++	p.wg.Add(4)
++	go p.run()
++	go p.acceptClients()
++	go p.readUDP()
++	go p.acceptUpstream()
++}
++
++// ---- goroutines feeding the loop ----
++
++// pendingConns tracks TLS handshakes in progress. When full, the oldest is
++// dropped instead of refusing the newcomer, so other apps holding
++// half-open connections cannot lock the calling library out.
++type pendingConns struct {
++	mu    sync.Mutex
++	conns []net.Conn
++}
++
++func (pc *pendingConns) add(c net.Conn) (evicted net.Conn) {
++	pc.mu.Lock()
++	defer pc.mu.Unlock()
++	pc.conns = append(pc.conns, c)
++	if len(pc.conns) > maxPendingHandshakes {
++		evicted = pc.conns[0]
++		pc.conns = pc.conns[1:]
++	}
++	return evicted
++}
++
++func (pc *pendingConns) remove(c net.Conn) {
++	pc.mu.Lock()
++	defer pc.mu.Unlock()
++	for i, x := range pc.conns {
++		if x == c {
++			pc.conns = append(pc.conns[:i], pc.conns[i+1:]...)
++			return
++		}
++	}
++}
++
++func (p *sipProxy) acceptClients() {
++	defer p.wg.Done()
++	var pending pendingConns
++	for {
++		c, err := p.tlsLn.Accept()
++		if err != nil {
++			if p.ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
++				return
++			}
++			if !p.pause() {
++				return
++			}
++			continue
++		}
++		if old := pending.add(c); old != nil {
++			p.cnt.inc("client.handshake_evicted")
++			old.Close()
++		}
++		p.wg.Add(1)
++		go func() {
++			defer p.wg.Done()
++			cc := p.handshake(c)
++			pending.remove(c)
++			if cc != nil {
++				p.serveClient(cc)
++			}
++		}()
++	}
++}
++
++func (p *sipProxy) handshake(raw net.Conn) *clientConn {
++	tc := tls.Server(raw, p.tlsConf)
++	ctx, cancel := context.WithTimeout(p.ctx, handshakeTimeout)
++	defer cancel()
++	tc.SetDeadline(time.Now().Add(handshakeTimeout))
++	if err := tc.HandshakeContext(ctx); err != nil {
++		tc.Close()
++		p.cnt.inc("client.rejected")
++		p.log.printf("client-rejected", "p21relay: SIP client rejected (TLS handshake failed)")
++		return nil
++	}
++	tc.SetDeadline(time.Time{})
++	return &clientConn{
++		conn:   tc,
++		remote: addrPortOf(raw.RemoteAddr()),
++		out:    make(chan []byte, clientQueueLen),
++		done:   make(chan struct{}),
++	}
++}
++
++func (p *sipProxy) serveClient(cc *clientConn) {
++	// Close with the relay even if the loop never saw this connection.
++	stop := context.AfterFunc(p.ctx, cc.close)
++	defer stop()
++	if !p.post(sipEvent{kind: evClientUp, cc: cc}) {
++		cc.close()
++		return
++	}
++	p.wg.Add(1)
++	go func() {
++		defer p.wg.Done()
++		for {
++			select {
++			case b := <-cc.out:
++				cc.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
++				if _, err := cc.conn.Write(b); err != nil {
++					cc.close()
++					return
++				}
++			case <-cc.done:
++				return
++			}
++		}
++	}()
++	defer func() {
++		cc.close()
++		p.post(sipEvent{kind: evClientDown, cc: cc})
++	}()
++	r := newSIPStreamReader(cc.conn)
++	for {
++		msg, ping, err := r.next()
++		if err != nil {
++			if errors.Is(err, errFraming) {
++				p.cnt.inc("sip.drop.client_framing")
++			}
++			return
++		}
++		if ping {
++			p.cnt.inc("client.keepalive")
++			cc.send([]byte("\r\n"))
++			continue
++		}
++		if !p.post(sipEvent{kind: evClientMsg, data: msg, cc: cc}) {
++			return
++		}
++	}
++}
++
++func (p *sipProxy) readUDP() {
++	defer p.wg.Done()
++	buf := make([]byte, 65536)
++	for {
++		n, from, err := p.udp.ReadFrom(buf)
++		if err != nil {
++			if p.ctx.Err() != nil || errors.Is(err, net.ErrClosed) || !p.pause() {
++				return
++			}
++			continue
++		}
++		src := addrPortOf(from)
++		if src.Addr() != p.upstream.Addr() {
++			p.drop("foreign_source")
++			continue
++		}
++		if len(strings.TrimSpace(string(buf[:n]))) == 0 {
++			continue // keepalive
++		}
++		data := append([]byte(nil), buf[:n]...)
++		if !p.post(sipEvent{kind: evUpstreamMsg, data: data, src: src}) {
++			return
++		}
++	}
++}
++
++func (p *sipProxy) acceptUpstream() {
++	defer p.wg.Done()
++	for {
++		c, err := p.tcpLn.Accept()
++		if err != nil {
++			if p.ctx.Err() != nil || errors.Is(err, net.ErrClosed) || !p.pause() {
++				return
++			}
++			continue
++		}
++		if addrPortOf(c.RemoteAddr()).Addr() != p.upstream.Addr() {
++			p.drop("foreign_source")
++			c.Close()
++			continue
++		}
++		tc := newTCPConn(p.nextID.Add(1), false, c)
++		if !p.post(sipEvent{kind: evTCPUp, tc: tc}) {
++			c.Close()
++			return
++		}
++		p.wg.Add(2)
++		go p.tcpWriter(tc)
++		go p.tcpReader(tc)
++	}
++}
++
++// pause waits a little after a transient accept/read error.
++func (p *sipProxy) pause() bool {
++	select {
++	case <-time.After(100 * time.Millisecond):
++		return true
++	case <-p.ctx.Done():
++		return false
++	}
++}
++
++func (p *sipProxy) dialUpstream(tc *tcpConn) {
++	defer p.wg.Done()
++	ctx, cancel := context.WithTimeout(p.ctx, tcpDialTimeout)
++	c, err := p.nw.DialTCP(ctx, p.upstream)
++	cancel()
++	if err != nil {
++		p.cnt.inc("upstream.tcp_dial_error")
++		p.log.printf("tcp-dial", "p21relay: TCP to miniserver failed (%s)", errClass(err))
++		tc.close()
++		p.post(sipEvent{kind: evTCPDown, tc: tc})
++		return
++	}
++	if !tc.setConn(c) {
++		p.post(sipEvent{kind: evTCPDown, tc: tc})
++		return
++	}
++	p.wg.Add(2)
++	go p.tcpWriter(tc)
++	go p.tcpReader(tc)
++}
++
++func (p *sipProxy) tcpWriter(tc *tcpConn) {
++	defer p.wg.Done()
++	c := tc.getConn()
++	for {
++		select {
++		case b := <-tc.out:
++			c.SetWriteDeadline(time.Now().Add(writeTimeout))
++			if _, err := c.Write(b); err != nil {
++				p.cnt.inc("upstream.tcp_write_error")
++				tc.close()
++				return
++			}
++		case <-tc.done:
++			return
++		}
++	}
++}
++
++func (p *sipProxy) tcpReader(tc *tcpConn) {
++	defer p.wg.Done()
++	stop := context.AfterFunc(p.ctx, tc.close)
++	defer stop()
++	c := tc.getConn()
++	defer func() {
++		tc.close()
++		p.post(sipEvent{kind: evTCPDown, tc: tc})
++	}()
++	src := addrPortOf(c.RemoteAddr())
++	r := newSIPStreamReader(c)
++	for {
++		msg, ping, err := r.next()
++		if err != nil {
++			if errors.Is(err, errFraming) {
++				p.cnt.inc("sip.drop.upstream_framing")
++			}
++			return
++		}
++		if ping {
++			tc.send([]byte("\r\n"))
++			continue
++		}
++		if !p.post(sipEvent{kind: evUpstreamMsg, data: msg, tc: tc, src: src}) {
++			return
++		}
++	}
++}
++
++// ---- the loop ----
++
++func (p *sipProxy) run() {
++	defer p.wg.Done()
++	defer p.shutdown()
++	for {
++		select {
++		case <-p.ctx.Done():
++			return
++		case ev := <-p.events:
++			p.handle(ev)
++		case now := <-p.timer.C:
++			p.timerOn = false
++			p.retransmit(now)
++			p.media.expire(now)
++		}
++		p.armTimer()
++	}
++}
++
++func (p *sipProxy) shutdown() {
++	p.timer.Stop()
++	if p.client != nil {
++		p.client.close()
++		p.client = nil
++	}
++	for _, tc := range p.tcps {
++		tc.close()
++	}
++	p.clientOn.Store(false)
++}
++
++func (p *sipProxy) armTimer() {
++	var next time.Time
++	for _, tx := range p.txs {
++		d := tx.expire
++		if !tx.next.IsZero() && tx.next.Before(d) {
++			d = tx.next
++		}
++		if next.IsZero() || d.Before(next) {
++			next = d
++		}
++	}
++	if d := p.media.nextDeadline(); !d.IsZero() && (next.IsZero() || d.Before(next)) {
++		next = d
++	}
++	if next.IsZero() {
++		if p.timerOn {
++			p.timer.Stop()
++			p.timerOn = false
++		}
++		return
++	}
++	p.timer.Reset(max(time.Until(next), time.Millisecond))
++	p.timerOn = true
++}
++
++func (p *sipProxy) handle(ev sipEvent) {
++	switch ev.kind {
++	case evClientUp:
++		if p.client != nil {
++			p.client.close()
++			p.cnt.inc("client.replaced")
++		}
++		p.client = ev.cc
++		p.clientOn.Store(true)
++		p.cnt.inc("client.accepted")
++		if p.log.logf != nil {
++			p.log.logf("p21relay: SIP client connected")
++		}
++	case evClientDown:
++		if p.client == ev.cc {
++			p.client = nil
++			p.clientOn.Store(false)
++			if p.log.logf != nil {
++				p.log.logf("p21relay: SIP client disconnected")
++			}
++		}
++	case evClientMsg:
++		if ev.cc != p.client {
++			p.cnt.inc("sip.drop.stale_client")
++			return
++		}
++		p.fromClient(ev.data, ev.cc)
++	case evUpstreamMsg:
++		p.fromUpstream(ev.data, ev.tc, ev.src)
++	case evTCPUp:
++		p.tcps[ev.tc.id] = ev.tc
++		p.trimTCP()
++	case evTCPDown:
++		delete(p.tcps, ev.tc.id)
++		if p.outTCP == ev.tc {
++			p.outTCP = nil
++		}
++	}
++}
++
++// trimTCP closes the oldest accepted connections above the limit.
++func (p *sipProxy) trimTCP() {
++	for len(p.tcps) > maxUpstreamTCP {
++		var oldest *tcpConn
++		for _, tc := range p.tcps {
++			if tc != p.outTCP && (oldest == nil || tc.id < oldest.id) {
++				oldest = tc
++			}
++		}
++		if oldest == nil {
++			return
++		}
++		oldest.close()
++		delete(p.tcps, oldest.id)
++	}
++}
++
++// upstreamTCP returns the relay's own TCP connection to the miniserver,
++// dialling a new one when needed (messages queue until it is up).
++func (p *sipProxy) upstreamTCP() *tcpConn {
++	if p.outTCP != nil && !p.outTCP.closed() {
++		return p.outTCP
++	}
++	tc := newTCPConn(p.nextID.Add(1), true, nil)
++	p.outTCP = tc
++	p.tcps[tc.id] = tc
++	p.wg.Add(1)
++	go p.dialUpstream(tc)
++	return tc
++}
++
++// ---- sending ----
++
++func (p *sipProxy) sendClient(b []byte) {
++	if p.client == nil {
++		p.drop("no_client")
++		return
++	}
++	if !p.client.send(b) {
++		p.drop("client_queue")
++		return
++	}
++	p.cnt.inc("sip.to_client")
++}
++
++func (p *sipProxy) sendUDP(b []byte, dst netip.AddrPort) {
++	if _, err := p.udp.WriteTo(b, net.UDPAddrFromAddrPort(dst)); err != nil {
++		p.cnt.inc("upstream.udp_write_error")
++		p.log.printf("udp-write", "p21relay: UDP to miniserver failed (%s)", errClass(err))
++		return
++	}
++	p.cnt.inc("sip.to_upstream_udp")
++}
++
++func (p *sipProxy) sendTCP(tc *tcpConn, b []byte) {
++	if !tc.send(b) {
++		p.drop("tcp_queue")
++		return
++	}
++	p.cnt.inc("sip.to_upstream_tcp")
++}
++
++// viaDest is where a response to the request with this Via goes
++// (RFC 3261 18.2.2 with RFC 3581); only the miniserver is acceptable.
++func (p *sipProxy) viaDest(v *sipVia) (netip.AddrPort, bool) {
++	host := v.host
++	if r, ok := paramValue(v.params, "received"); ok && r != "" {
++		host = r
++	}
++	a, ok := hostAddr(host)
++	if !ok || a != p.upstream.Addr() {
++		return netip.AddrPort{}, false
++	}
++	port := v.port
++	if rp, ok := paramValue(v.params, "rport"); ok {
++		if n, err := strconv.Atoi(rp); err == nil && n > 0 && n <= 65535 {
++			port = n
++		}
++	}
++	if port == 0 {
++		port = 5060
++	}
++	return netip.AddrPortFrom(a, uint16(port)), true
++}
++
++// replyUpstream answers a request from the miniserver locally.
++func (p *sipProxy) replyUpstream(req *sipMsg, status int, reason string, tc *tcpConn, src netip.AddrPort) {
++	resp := newResponse(req, status, reason, p.toTag(req)).bytes()
++	p.cnt.inc("sip.local_reply_" + strconv.Itoa(status))
++	if tc != nil {
++		p.sendTCP(tc, resp)
++		return
++	}
++	top, _ := req.topValue("via")
++	v, ok := parseVia(top)
++	if !ok {
++		return
++	}
++	dst, ok := p.viaDest(v)
++	if !ok {
++		dst = src
++	}
++	p.sendUDP(resp, dst)
++}
++
++func (p *sipProxy) replyClient(req *sipMsg, status int, reason string) {
++	p.cnt.inc("sip.local_reply_" + strconv.Itoa(status))
++	p.sendClient(newResponse(req, status, reason, p.toTag(req)).bytes())
++}
++
++// ---- hashing ----
++
++func (p *sipProxy) mac(parts ...string) string {
++	h := hmac.New(sha256.New, p.secret)
++	for _, s := range parts {
++		h.Write([]byte(s))
++		h.Write([]byte{0})
++	}
++	return hex.EncodeToString(h.Sum(nil)[:12])
++}
++
++// branch derives our Via branch statelessly (RFC 3261 16.11): the same
++// incoming transaction always maps to the same branch, and CANCEL and the
++// ACK of a non-2xx answer map to the branch of their INVITE.
++func (p *sipProxy) branch(side, inBranch string, m *sipMsg) string {
++	method := m.method
++	if method == "ACK" || method == "CANCEL" {
++		method = "INVITE"
++	}
++	if !strings.HasPrefix(inBranch, "z9hG4bK") || len(inBranch) <= len("z9hG4bK") {
++		// RFC 2543 peer: derive from the transaction identifiers instead.
++		num, _, _ := m.cseq()
++		from, _ := paramValue(nameAddrParams(m.get("from")), "tag")
++		inBranch = "legacy\x00" + m.get("call-id") + "\x00" + from + "\x00" + strconv.FormatUint(uint64(num), 10) + "\x00" + m.ruri
++	}
++	return branchPrefix + p.mac(side, inBranch, method)
++}
++
++func (p *sipProxy) toTag(req *sipMsg) string {
++	top, _ := req.topValue("via")
++	return "p21" + p.mac("tag", top, req.get("call-id"))[:16]
++}
++
++// ---- header helpers ----
++
++// maxForwards decrements Max-Forwards; false means the request must not
++// be forwarded (483).
++func (p *sipProxy) maxForwards(m *sipMsg) bool {
++	v, ok := m.lookup("max-forwards")
++	if !ok {
++		m.hdrs = append(m.hdrs, sipHeader{name: "Max-Forwards", key: "max-forwards", value: "70"})
++		return true
++	}
++	n, err := strconv.Atoi(strings.TrimSpace(v))
++	if err != nil || n < 0 {
++		n = 70
++	}
++	if n == 0 {
++		return false
++	}
++	m.set("max-forwards", "Max-Forwards", strconv.Itoa(min(n-1, 255)))
++	return true
++}
++
++// noteSource adds received/rport to the top Via (RFC 3261 18.2.1, RFC 3581).
++func noteSource(m *sipMsg, src netip.AddrPort) (*sipVia, bool) {
++	top, _ := m.topValue("via")
++	v, ok := parseVia(top)
++	if !ok {
++		return nil, false
++	}
++	if hasParam(v.params, "rport") {
++		v.params = setParam(v.params, "rport", strconv.Itoa(int(src.Port())))
++	}
++	if a, ok := hostAddr(v.host); !ok || a != src.Addr() {
++		v.params = setParam(v.params, "received", src.Addr().String())
++	}
++	m.setTopValue("via", v.String())
++	return v, true
++}
++
++func (p *sipProxy) isOwnRoute(v string) bool {
++	u, ok := parseURI(parseNameAddr(v).uri)
++	return ok && u.isLoopback() && (u.port == 0 || u.port == p.sipPort)
++}
++
++func (p *sipProxy) rememberContact(user, uri string) {
++	if _, ok := p.contacts[user]; !ok && len(p.contacts) >= maxRememberedContact {
++		clear(p.contacts)
++	}
++	p.contacts[user] = uri
++}
++
++// contactsToUpstream points the calling library's Contact URIs at the
++// relay's private address (the transport parameter goes away: the
++// miniserver reaches us over UDP, or TCP for big messages).
++func (p *sipProxy) contactsToUpstream(m *sipMsg, register bool) {
++	m.mapValues("contact", func(v string) string {
++		if v == "*" {
++			return v
++		}
++		na := parseNameAddr(v)
++		u, ok := parseURI(na.uri)
++		if !ok {
++			return v
++		}
++		if register && !u.isLoopback() {
++			// Removal of a binding made outside the relay: leave it alone,
++			// it must not remove the relay's own binding.
++			if e, ok := paramValue(parseParams(na.params), "expires"); ok && strings.TrimSpace(e) == "0" {
++				return v
++			}
++		}
++		p.rememberContact(u.user, na.uri)
++		u.scheme = "sip"
++		u.host, u.port = p.localIP.String(), p.upPort
++		u.params = removeParam(u.params, "transport")
++		na.uri = u.String()
++		return na.String()
++	})
++}
++
++// clientURI turns a URI on the relay's private address into one the
++// calling library recognises as its own.
++func (p *sipProxy) clientURI(u *sipURI) string {
++	if orig, ok := p.contacts[u.user]; ok {
++		return orig
++	}
++	port := p.sipPort
++	if p.client != nil {
++		port = int(p.client.remote.Port())
++	}
++	u.scheme = "sip"
++	u.host, u.port = loopback4.String(), port
++	u.params = removeParam(removeParam(u.params, "transport"), "x-ast-orig-host")
++	u.params = append(u.params, sipParam{k: "transport", v: "tls", hasV: true})
++	return u.String()
++}
++
++// contactsToClient points the miniserver's Contact URIs at the relay.
++func (p *sipProxy) contactsToClient(m *sipMsg) {
++	m.mapValues("contact", func(v string) string {
++		if v == "*" {
++			return v
++		}
++		na := parseNameAddr(v)
++		u, ok := parseURI(na.uri)
++		if !ok {
++			return v
++		}
++		u.scheme = "sip"
++		u.host, u.port = loopback4.String(), p.sipPort
++		u.params = removeParam(u.params, "transport")
++		u.params = append(u.params, sipParam{k: "transport", v: "tls", hasV: true})
++		na.uri = u.String()
++		return na.String()
++	})
++}
++
++// registerContactsToClient maps the relay's bindings in a REGISTER
++// response back to the Contact the calling library sent; other bindings
++// of the account pass unchanged.
++func (p *sipProxy) registerContactsToClient(m *sipMsg) {
++	m.mapValues("contact", func(v string) string {
++		na := parseNameAddr(v)
++		u, ok := parseURI(na.uri)
++		if !ok || !u.isHost(p.localIP) {
++			return v
++		}
++		na.uri = p.clientURI(u)
++		return na.String()
++	})
++}
++
++// ---- media lifecycle ----
++
++func (p *sipProxy) mediaOnRequest(m *sipMsg, now time.Time) {
++	switch m.method {
++	case "BYE", "CANCEL":
++		p.media.scheduleRelease(m.get("call-id"), now.Add(mediaByeLinger))
++	}
++}
++
++func (p *sipProxy) mediaOnResponse(m *sipMsg, method string) {
++	callID := m.get("call-id")
++	switch {
++	case method == "BYE" && m.status >= 200 && m.status < 300:
++		p.media.release(callID, "bye")
++	case method == "INVITE" && m.status >= 200 && m.status < 300:
++		p.media.setEstablished(callID)
++	case method == "INVITE" && m.status >= 300:
++		if !p.media.established(callID) {
++			p.media.release(callID, "failed")
++		}
++	}
++}
++
++// rewriteBody anchors the media of an SDP body.
++func (p *sipProxy) rewriteBody(m *sipMsg, fromClient bool, now time.Time) error {
++	callID := m.get("call-id")
++	if m.isSDP() {
++		b, err := p.media.rewrite(callID, fromClient, m.body, now)
++		if err != nil {
++			return err
++		}
++		m.body = b
++	} else if ct := strings.ToLower(m.get("content-type")); strings.HasPrefix(ct, "multipart/") && strings.Contains(strings.ToLower(string(m.body)), "application/sdp") {
++		return errBadSDP // not supported; better fail than leak unanchored media
++	}
++	p.media.touch(callID, now)
++	return nil
++}
++
++// ---- calling library -> miniserver ----
++
++func (p *sipProxy) fromClient(data []byte, cc *clientConn) {
++	p.cnt.inc("sip.from_client")
++	m, err := parseSIP(data)
++	if err != nil || !m.valid() {
++		p.drop("client_malformed")
++		return
++	}
++	if m.isReq {
++		p.clientRequest(m, cc)
++	} else {
++		p.clientResponse(m)
++	}
++}
++
++func (p *sipProxy) clientRequest(m *sipMsg, cc *clientConn) {
++	now := time.Now()
++	cv, ok := noteSource(m, cc.remote)
++	if !ok {
++		p.drop("client_malformed")
++		return
++	}
++	if !p.maxForwards(m) {
++		if m.method != "ACK" {
++			p.replyClient(m, 483, "Too Many Hops")
++		}
++		p.drop("max_forwards")
++		return
++	}
++	for {
++		top, ok := m.topValue("route")
++		if !ok || !p.isOwnRoute(top) {
++			break
++		}
++		m.popTopValue("route")
++	}
++	if u, ok := parseURI(m.ruri); ok && u.isLoopback() {
++		u.scheme = "sip"
++		u.host, u.port = p.upstream.Addr().String(), int(p.upstream.Port())
++		u.params = removeParam(u.params, "transport")
++		m.ruri = u.String()
++	}
++	p.contactsToUpstream(m, m.method == "REGISTER")
++	if err := p.rewriteBody(m, true, now); err != nil {
++		if m.method != "ACK" {
++			p.replyClient(m, 488, "Not Acceptable Here")
++		}
++		p.drop("client_sdp")
++		return
++	}
++	p.mediaOnRequest(m, now)
++
++	branch := p.branch("c", cv.branch(), m)
++	via := &sipVia{transport: "UDP", host: p.localIP.String(), port: p.upPort, params: []sipParam{
++		{k: "branch", v: branch, hasV: true}, {k: "rport"},
++	}}
++	m.pushVia(via.String())
++	out := m.bytes()
++	// REGISTER always uses UDP: over TCP the miniserver would bind the
++	// registration to a short-lived connection port.
++	if len(out) > maxUDPRequest && m.method != "REGISTER" {
++		via.transport = "TCP"
++		m.setTopValue("via", via.String())
++		p.sendTCP(p.upstreamTCP(), m.bytes())
++		return
++	}
++	p.sendUDP(out, p.upstream)
++	switch m.method {
++	case "ACK":
++		if tx := p.txs["req|"+branch+"|INVITE"]; tx != nil {
++			tx.ack = out
++		}
++	default:
++		p.addTx("req|"+branch+"|"+m.method, &txEntry{
++			data: out, dest: p.upstream, invite: m.method == "INVITE",
++			next: now.Add(sipT1), interval: sipT1, expire: now.Add(sipTxTimeout),
++		})
++	}
++}
++
++func (p *sipProxy) clientResponse(m *sipMsg) {
++	now := time.Now()
++	top, _ := m.topValue("via")
++	v, ok := parseVia(top)
++	if !ok || v.host != loopback4.String() || v.port != p.sipPort || !strings.HasPrefix(v.branch(), branchPrefix) {
++		p.drop("via_not_ours")
++		return
++	}
++	conn, _ := paramValue(v.params, viaConnParam)
++	m.popTopValue("via")
++	next, ok := m.topValue("via")
++	if !ok {
++		p.drop("client_malformed")
++		return
++	}
++	nv, ok := parseVia(next)
++	if !ok {
++		p.drop("client_malformed")
++		return
++	}
++	num, method, _ := m.cseq()
++	p.contactsToUpstream(m, false)
++	if err := p.rewriteBody(m, true, now); err != nil {
++		p.drop("client_sdp")
++		return
++	}
++	p.mediaOnResponse(m, method)
++	out := m.bytes()
++
++	if conn != "" && conn != "u" {
++		id, _ := strconv.ParseUint(conn, 10, 64)
++		tc := p.tcps[id]
++		if tc == nil || tc.closed() {
++			tc = p.upstreamTCP() // RFC 3261 18.2.2: new connection to the sender
++		}
++		p.sendTCP(tc, out)
++		return
++	}
++	dst, ok := p.viaDest(nv)
++	if !ok {
++		p.drop("bad_response_destination")
++		return
++	}
++	p.sendUDP(out, dst)
++	if method == "INVITE" && m.status >= 200 {
++		// RFC 3261 13.3.1.4 / 17.2.1: repeat until the miniserver's ACK.
++		p.addTx(rspKey(m.get("call-id"), num), &txEntry{
++			data: out, dest: dst, response: true,
++			next: now.Add(sipT1), interval: sipT1, expire: now.Add(sipTxTimeout),
++		})
++	}
++}
++
++func rspKey(callID string, num uint32) string {
++	return "rsp|" + callID + "|" + strconv.FormatUint(uint64(num), 10)
++}
++
++// ---- miniserver -> calling library ----
++
++func (p *sipProxy) fromUpstream(data []byte, tc *tcpConn, src netip.AddrPort) {
++	p.cnt.inc("sip.from_upstream")
++	m, err := parseSIP(data)
++	if err != nil || !m.valid() {
++		p.drop("upstream_malformed")
++		return
++	}
++	if m.isReq {
++		p.upstreamRequest(m, tc, src)
++	} else {
++		p.upstreamResponse(m)
++	}
++}
++
++func (p *sipProxy) upstreamRequest(m *sipMsg, tc *tcpConn, src netip.AddrPort) {
++	now := time.Now()
++	uv, ok := noteSource(m, src)
++	if !ok {
++		p.drop("upstream_malformed")
++		return
++	}
++	callID := m.get("call-id")
++	num, _, _ := m.cseq()
++	switch m.method {
++	case "ACK":
++		delete(p.txs, rspKey(callID, num))
++	case "INVITE":
++		if tx := p.txs[rspKey(callID, num)]; tx != nil {
++			// Retransmitted INVITE: our final answer got lost, repeat it.
++			p.sendUDP(tx.data, tx.dest)
++			p.cnt.inc("sip.retransmit_answered")
++			return
++		}
++	}
++	if p.client == nil {
++		if m.method != "ACK" {
++			p.replyUpstream(m, 480, "Temporarily Unavailable", tc, src)
++		}
++		p.cnt.inc("sip.no_client")
++		return
++	}
++	if !p.maxForwards(m) {
++		if m.method != "ACK" {
++			p.replyUpstream(m, 483, "Too Many Hops", tc, src)
++		}
++		p.drop("max_forwards")
++		return
++	}
++	if u, ok := parseURI(m.ruri); ok && u.isHost(p.localIP) {
++		m.ruri = p.clientURI(u)
++	}
++	p.contactsToClient(m)
++	if err := p.rewriteBody(m, false, now); err != nil {
++		if m.method != "ACK" {
++			p.replyUpstream(m, 488, "Not Acceptable Here", tc, src)
++		}
++		p.drop("upstream_sdp")
++		return
++	}
++	p.mediaOnRequest(m, now)
++
++	conn := "u"
++	if tc != nil {
++		conn = strconv.FormatUint(tc.id, 10)
++	}
++	via := &sipVia{transport: "TLS", host: loopback4.String(), port: p.sipPort, params: []sipParam{
++		{k: "branch", v: p.branch("u", uv.branch(), m), hasV: true},
++		{k: viaConnParam, v: conn, hasV: true},
++	}}
++	m.pushVia(via.String())
++	p.sendClient(m.bytes())
++}
++
++func (p *sipProxy) upstreamResponse(m *sipMsg) {
++	now := time.Now()
++	top, _ := m.topValue("via")
++	v, ok := parseVia(top)
++	if !ok || v.host != p.localIP.String() || v.port != p.upPort || !strings.HasPrefix(v.branch(), branchPrefix) {
++		p.drop("via_not_ours")
++		return
++	}
++	_, method, _ := m.cseq()
++	if tx := p.txs["req|"+v.branch()+"|"+method]; tx != nil {
++		switch {
++		case m.status < 200 && tx.completed:
++			p.drop("late_provisional")
++			return
++		case m.status < 200:
++			if tx.invite {
++				tx.next = time.Time{}
++			} else {
++				tx.interval, tx.next = sipT2, now.Add(sipT2)
++			}
++		case !tx.completed:
++			tx.completed, tx.next, tx.expire = true, time.Time{}, now.Add(sipTxTimeout)
++		case tx.invite && m.status < 300:
++			// Repeated 2xx: pass on, the calling library acknowledges again.
++		case tx.invite:
++			if tx.ack != nil {
++				p.sendUDP(tx.ack, tx.dest)
++				p.cnt.inc("sip.ack_repeated")
++			}
++			p.cnt.inc("sip.duplicate_response")
++			return
++		default:
++			p.cnt.inc("sip.duplicate_response")
++			return
++		}
++	}
++	m.popTopValue("via")
++	if _, ok := m.topValue("via"); !ok {
++		p.drop("upstream_malformed")
++		return
++	}
++	if method == "REGISTER" {
++		p.registerContactsToClient(m)
++	} else {
++		p.contactsToClient(m)
++	}
++	// The relay is the only route; a service route would bypass it.
++	m.del("service-route")
++	if err := p.rewriteBody(m, false, now); err != nil {
++		p.drop("upstream_sdp")
++		return
++	}
++	p.mediaOnResponse(m, method)
++	p.sendClient(m.bytes())
++}
++
++// ---- retransmissions ----
++
++func (p *sipProxy) addTx(key string, tx *txEntry) {
++	if _, ok := p.txs[key]; !ok && len(p.txs) >= maxTxEntries {
++		p.cnt.inc("sip.tx_table_full")
++		return
++	}
++	p.txs[key] = tx
++}
++
++func (p *sipProxy) retransmit(now time.Time) {
++	for k, tx := range p.txs {
++		if !now.Before(tx.expire) {
++			delete(p.txs, k)
++			continue
++		}
++		if tx.next.IsZero() || now.Before(tx.next) {
++			continue
++		}
++		p.sendUDP(tx.data, tx.dest)
++		p.cnt.inc("sip.retransmit")
++		tx.interval *= 2
++		if !tx.invite && tx.interval > sipT2 {
++			tx.interval = sipT2
++		}
++		tx.next = now.Add(tx.interval)
++	}
++}
+diff --git a/libtailscale/p21relay/sipproxy_test.go b/libtailscale/p21relay/sipproxy_test.go
+new file mode 100644
+index 0000000..6ffa219
+--- /dev/null
++++ b/libtailscale/p21relay/sipproxy_test.go
+@@ -0,0 +1,38 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestBranchStateless(t *testing.T) {
++	p := &sipProxy{secret: []byte("k")}
++	mk := func(method, branch string) *sipMsg {
++		m, err := parseSIP([]byte(method + " sip:x@127.0.0.3 SIP/2.0\r\nVia: SIP/2.0/TLS 127.0.0.1:1;branch=" + branch +
++			"\r\nCall-ID: c\r\nFrom: <sip:a@b>;tag=f\r\nTo: <sip:x@b>\r\nCSeq: 1 " + method + "\r\n\r\n"))
++		if err != nil {
++			t.Fatal(err)
++		}
++		return m
++	}
++	inv := p.branch("c", "z9hG4bKone", mk("INVITE", "z9hG4bKone"))
++	if inv != p.branch("c", "z9hG4bKone", mk("INVITE", "z9hG4bKone")) {
++		t.Fatal("not deterministic")
++	}
++	if inv != p.branch("c", "z9hG4bKone", mk("CANCEL", "z9hG4bKone")) || inv != p.branch("c", "z9hG4bKone", mk("ACK", "z9hG4bKone")) {
++		t.Fatal("CANCEL/ACK must share the INVITE branch")
++	}
++	if inv == p.branch("c", "z9hG4bKtwo", mk("ACK", "z9hG4bKtwo")) || inv == p.branch("c", "z9hG4bKone", mk("BYE", "z9hG4bKone")) {
++		t.Fatal("different transactions share a branch")
++	}
++	if !strings.HasPrefix(inv, branchPrefix) {
++		t.Fatal("prefix")
++	}
++	legacy := p.branch("c", "", mk("INVITE", "1"))
++	if legacy != p.branch("c", "", mk("CANCEL", "1")) {
++		t.Fatal("legacy CANCEL branch differs")
++	}
++}

@@ -152,9 +152,10 @@ se z klonu vrátí zpátky (`TunnelReadinessManager.onConfiguring`).
 
 **Klient sítě:** `app/libs/libtailscale.aar` je postavené z `tailscale.com`
 v1.104.7 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.104.7`,
-dlouhá verze `1.104.7-tfb3b9b296-gcdd6a9da2`; do 21p.45 `-g226f029a3`).
-Od vnitřního tunelu nese vlastní záplatu (vnitřní režim bez systémové VPN
-a relé na 127.0.0.1); appka volá `requestInternal`, `stopInternal`,
+dlouhá verze `1.104.7-tfb3b9b296-ga3655be16`; do 21p.45 `-g226f029a3`).
+Od vnitřního tunelu nese vlastní záplaty (vnitřní režim bez systémové VPN
+a relé na 127.0.0.1) — jsou v `tunnel/patches/` nad commitem `226f029a3`,
+sestavení v `tunnel/README.md`; appka volá `requestInternal`, `stopInternal`,
 `internalStatus`, `startRelay`, `stopRelay`, `relayStats`,
 `generateRelayIdentity` (`vpn/TsRelay.kt`). HTTP na adresy privátní sítě
 jde jen přes `vpn/TsHttp.kt` (ve vnitřním režimu webové relé

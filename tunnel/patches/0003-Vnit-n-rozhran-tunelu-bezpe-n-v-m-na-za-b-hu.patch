@@ -1,0 +1,468 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:42:59 +0000
+Subject: [PATCH 03/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20rozhran=C3=AD=20tunel?=
+ =?UTF-8?q?u:=20bezpe=C4=8Dn=C3=A1=20v=C3=BDm=C4=9Bna=20za=20b=C4=9Bhu?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Rozhraní se bude měnit za běhu (změna adresy, přechod na systémovou
+VPN), proto:
+- odchozí pakety se čtou z fronty přímo, odesílající vlákno zásobníku
+  už nečeká na čtenáře a zavření nemůže spadnout na zápisu do
+  zavřeného kanálu;
+- uvolňují se reference na pakety podle pravidel zásobníku;
+- zavření je opakovatelné, ukončí i zásobník (spojení a naslouchání
+  dostanou chybu hned, nezůstávají viset vlákna);
+- při chybě vytváření se zásobník zavře.
+Testy: UDP a TCP mezi dvěma rozhraními zapojenými proti sobě (IPv4
+i IPv6), chování po zavření.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/internaltun/tun.go      | 108 +++++++-----
+ libtailscale/internaltun/tun_test.go | 248 +++++++++++++++++++++++++++
+ 2 files changed, 312 insertions(+), 44 deletions(-)
+ create mode 100644 libtailscale/internaltun/tun_test.go
+
+diff --git a/libtailscale/internaltun/tun.go b/libtailscale/internaltun/tun.go
+index c188ec6..6ec4dc6 100644
+--- a/libtailscale/internaltun/tun.go
++++ b/libtailscale/internaltun/tun.go
+@@ -14,7 +14,19 @@
+ // Changes against the origin (keep this list up to date):
+ //   - package renamed from netstack to internaltun;
+ //   - WriteNotify: pkt.IsNil() -> pkt == nil (the packet buffer API of the
+-//     gvisor version pinned in go.mod no longer has IsNil).
++//     gvisor version pinned in go.mod no longer has IsNil);
++//   - outbound packets: Read pulls them with ep.ReadContext instead of
++//     WriteNotify + an unbuffered channel. WriteNotify blocked the stack's
++//     sending goroutine until somebody read the device, and Close could
++//     panic with "send on closed channel"; Phone21 replaces this device at
++//     runtime (address change, switch to the system VPN), so both mattered;
++//   - Read releases the packet view; Write drops the reference it holds on
++//     the injected packet buffer after delivery (as the gvisor contract
++//     requires) and fails with os.ErrClosed once the device is closed;
++//   - Close is idempotent and also closes the stack (aborts all endpoints and
++//     stops protocol workers), so a replaced device does not leak goroutines
++//     and sockets of the old device fail fast instead of hanging;
++//   - CreateNetTUN closes the stack when it fails half way.
+ package internaltun
+ 
+ import (
+@@ -31,6 +43,7 @@ import (
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 	"time"
+ 
+@@ -52,13 +65,17 @@ import (
+ )
+ 
+ type netTun struct {
+-	ep             *channel.Endpoint
+-	stack          *stack.Stack
+-	events         chan tun.Event
+-	incomingPacket chan *buffer.View
+-	mtu            int
+-	dnsServers     []netip.Addr
+-	hasV4, hasV6   bool
++	ep           *channel.Endpoint
++	stack        *stack.Stack
++	events       chan tun.Event
++	mtu          int
++	dnsServers   []netip.Addr
++	hasV4, hasV6 bool
++
++	// ctx is cancelled by Close; it unblocks Read.
++	ctx       context.Context
++	cancel    context.CancelFunc
++	closeOnce sync.Once
+ }
+ 
+ type Net netTun
+@@ -70,19 +87,26 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
+ 		HandleLocal:        true,
+ 	}
+ 	dev := &netTun{
+-		ep:             channel.New(1024, uint32(mtu), ""),
+-		stack:          stack.New(opts),
+-		events:         make(chan tun.Event, 10),
+-		incomingPacket: make(chan *buffer.View),
+-		dnsServers:     dnsServers,
+-		mtu:            mtu,
+-	}
++		ep:         channel.New(1024, uint32(mtu), ""),
++		stack:      stack.New(opts),
++		events:     make(chan tun.Event, 10),
++		dnsServers: dnsServers,
++		mtu:        mtu,
++	}
++	dev.ctx, dev.cancel = context.WithCancel(context.Background())
++	ok := false
++	defer func() {
++		if !ok {
++			dev.cancel()
++			dev.stack.Close()
++			dev.ep.Close()
++		}
++	}()
+ 	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
+ 	tcpipErr := dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackEnabledOpt)
+ 	if tcpipErr != nil {
+ 		return nil, nil, fmt.Errorf("could not enable TCP SACK: %v", tcpipErr)
+ 	}
+-	dev.ep.AddNotify(dev)
+ 	tcpipErr = dev.stack.CreateNIC(1, dev.ep)
+ 	if tcpipErr != nil {
+ 		return nil, nil, fmt.Errorf("CreateNIC: %v", tcpipErr)
+@@ -116,6 +140,7 @@ func CreateNetTUN(localAddresses, dnsServers []netip.Addr, mtu int) (tun.Device,
+ 	}
+ 
+ 	dev.events <- tun.EventUp
++	ok = true
+ 	return dev, (*Net)(dev), nil
+ }
+ 
+@@ -132,10 +157,14 @@ func (t *netTun) Events() <-chan tun.Event {
+ }
+ 
+ func (t *netTun) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
+-	view, ok := <-t.incomingPacket
+-	if !ok {
++	// ReadContext returns nil when ctx is cancelled or the queue is closed.
++	pkt := t.ep.ReadContext(t.ctx)
++	if pkt == nil {
+ 		return 0, os.ErrClosed
+ 	}
++	view := pkt.ToView()
++	pkt.DecRef()
++	defer view.Release()
+ 
+ 	n, err := view.Read(slab[tun.ReadPacketSpacing : len(slab)-tun.ReadPacketSpacing])
+ 	if err != nil {
+@@ -147,50 +176,41 @@ func (t *netTun) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
+ }
+ 
+ func (t *netTun) Write(buf [][]byte, offset int) (int, error) {
++	if t.ctx.Err() != nil {
++		return 0, os.ErrClosed
++	}
+ 	for _, buf := range buf {
+ 		packet := buf[offset:]
+ 		if len(packet) == 0 {
+ 			continue
+ 		}
+ 
+-		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
++		var proto tcpip.NetworkProtocolNumber
+ 		switch packet[0] >> 4 {
+ 		case 4:
+-			t.ep.InjectInbound(header.IPv4ProtocolNumber, pkb)
++			proto = header.IPv4ProtocolNumber
+ 		case 6:
+-			t.ep.InjectInbound(header.IPv6ProtocolNumber, pkb)
++			proto = header.IPv6ProtocolNumber
+ 		default:
+ 			return 0, syscall.EAFNOSUPPORT
+ 		}
++		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(packet)})
++		t.ep.InjectInbound(proto, pkb)
++		pkb.DecRef()
+ 	}
+ 	return len(buf), nil
+ }
+ 
+-func (t *netTun) WriteNotify() {
+-	pkt := t.ep.Read()
+-	if pkt == nil {
+-		return
+-	}
+-
+-	view := pkt.ToView()
+-	pkt.DecRef()
+-
+-	t.incomingPacket <- view
+-}
+-
+ func (t *netTun) Close() error {
+-	t.stack.RemoveNIC(1)
+-
+-	if t.events != nil {
++	t.closeOnce.Do(func() {
++		t.cancel()
++		// Abort all endpoints first so that users of this Net (listeners,
++		// connections) get errors right away, then detach the link.
++		t.stack.Close()
++		t.stack.RemoveNIC(1)
++		t.ep.Close()
+ 		close(t.events)
+-	}
+-
+-	t.ep.Close()
+-
+-	if t.incomingPacket != nil {
+-		close(t.incomingPacket)
+-	}
+-
++	})
+ 	return nil
+ }
+ 
+diff --git a/libtailscale/internaltun/tun_test.go b/libtailscale/internaltun/tun_test.go
+new file mode 100644
+index 0000000..50fc396
+--- /dev/null
++++ b/libtailscale/internaltun/tun_test.go
+@@ -0,0 +1,248 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package internaltun
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"os"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/tailscale/wireguard-go/tun"
++)
++
++var (
++	phoneV4  = netip.MustParseAddr("100.64.0.4")
++	phoneV6  = netip.MustParseAddr("fd7a:115c:a1e0::4")
++	serverV4 = netip.MustParseAddr("100.64.0.1")
++	serverV6 = netip.MustParseAddr("fd7a:115c:a1e0::1")
++)
++
++// pump copies packets read from src into dst until src is closed.
++func pump(t *testing.T, src, dst tun.Device, wg *sync.WaitGroup) {
++	defer wg.Done()
++	slab := make([]byte, 2*tun.ReadPacketSpacing+65535)
++	packets := make([]tun.ReadPacket, src.BatchSize())
++	for {
++		n, err := src.Read(slab, packets)
++		if err != nil {
++			if !errors.Is(err, os.ErrClosed) {
++				t.Errorf("Read: %v", err)
++			}
++			return
++		}
++		for _, p := range packets[:n] {
++			buf := make([]byte, p.Size)
++			copy(buf, slab[p.Offset:p.Offset+p.Size])
++			if _, err := dst.Write([][]byte{buf}, 0); err != nil && !errors.Is(err, os.ErrClosed) {
++				t.Errorf("Write: %v", err)
++			}
++		}
++	}
++}
++
++// backToBack returns two in-process interfaces whose packets are wired to
++// each other, like a phone and a miniserver on the private network.
++func backToBack(t *testing.T) (phone, server *Net) {
++	t.Helper()
++	devA, netA, err := CreateNetTUN([]netip.Addr{phoneV4, phoneV6}, nil, 1280)
++	if err != nil {
++		t.Fatal(err)
++	}
++	devB, netB, err := CreateNetTUN([]netip.Addr{serverV4, serverV6}, nil, 1280)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var wg sync.WaitGroup
++	wg.Add(2)
++	go pump(t, devA, devB, &wg)
++	go pump(t, devB, devA, &wg)
++	t.Cleanup(func() {
++		devA.Close()
++		devB.Close()
++		wg.Wait()
++	})
++	return netA, netB
++}
++
++func TestUDPBackToBack(t *testing.T) {
++	phone, server := backToBack(t)
++	for _, tc := range []struct {
++		name        string
++		local, peer netip.Addr
++	}{
++		{"v4", phoneV4, serverV4},
++		{"v6", phoneV6, serverV6},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			srv, err := server.ListenUDPAddrPort(netip.AddrPortFrom(tc.peer, 5060))
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer srv.Close()
++			cli, err := phone.ListenUDPAddrPort(netip.AddrPortFrom(tc.local, 0))
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer cli.Close()
++
++			msg := []byte("OPTIONS sip:test@100.64.0.1 SIP/2.0\r\n\r\n")
++			if _, err := cli.WriteTo(msg, net.UDPAddrFromAddrPort(netip.AddrPortFrom(tc.peer, 5060))); err != nil {
++				t.Fatal(err)
++			}
++			srv.SetDeadline(time.Now().Add(5 * time.Second))
++			buf := make([]byte, 1500)
++			n, from, err := srv.ReadFrom(buf)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !bytes.Equal(buf[:n], msg) {
++				t.Fatalf("server got %q", buf[:n])
++			}
++			fromAP := from.(*net.UDPAddr).AddrPort()
++			if fromAP.Addr().Unmap() != tc.local {
++				t.Fatalf("source = %v, want %v", fromAP, tc.local)
++			}
++			if _, err := srv.WriteTo([]byte("pong"), from); err != nil {
++				t.Fatal(err)
++			}
++			cli.SetDeadline(time.Now().Add(5 * time.Second))
++			n, _, err = cli.ReadFrom(buf)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if string(buf[:n]) != "pong" {
++				t.Fatalf("client got %q", buf[:n])
++			}
++		})
++	}
++}
++
++func TestTCPBackToBack(t *testing.T) {
++	phone, server := backToBack(t)
++	for _, tc := range []struct {
++		name string
++		peer netip.Addr
++	}{
++		{"v4", serverV4},
++		{"v6", serverV6},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			ln, err := server.ListenTCPAddrPort(netip.AddrPortFrom(tc.peer, 80))
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer ln.Close()
++			go func() {
++				c, err := ln.Accept()
++				if err != nil {
++					return
++				}
++				defer c.Close()
++				io.Copy(c, c) // echo
++			}()
++
++			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++			defer cancel()
++			c, err := phone.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(tc.peer, 80))
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer c.Close()
++			c.SetDeadline(time.Now().Add(5 * time.Second))
++			// Larger than one MTU to exercise segmentation.
++			msg := bytes.Repeat([]byte("0123456789abcdef"), 1000)
++			go c.Write(msg)
++			got := make([]byte, len(msg))
++			if _, err := io.ReadFull(c, got); err != nil {
++				t.Fatal(err)
++			}
++			if !bytes.Equal(got, msg) {
++				t.Fatal("echo mismatch")
++			}
++		})
++	}
++}
++
++func TestClose(t *testing.T) {
++	dev, n, err := CreateNetTUN([]netip.Addr{phoneV4}, nil, 1280)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if e := <-dev.Events(); e != tun.EventUp {
++		t.Fatalf("first event = %v, want EventUp", e)
++	}
++	ln, err := n.ListenTCPAddrPort(netip.AddrPortFrom(phoneV4, 5061))
++	if err != nil {
++		t.Fatal(err)
++	}
++	acceptErr := make(chan error, 1)
++	go func() {
++		_, err := ln.Accept()
++		acceptErr <- err
++	}()
++	readErr := make(chan error, 1)
++	go func() {
++		slab := make([]byte, 2*tun.ReadPacketSpacing+1500)
++		_, err := dev.Read(slab, make([]tun.ReadPacket, 1))
++		readErr <- err
++	}()
++	time.Sleep(50 * time.Millisecond)
++
++	if err := dev.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if err := dev.Close(); err != nil { // idempotent
++		t.Fatal(err)
++	}
++	select {
++	case err := <-readErr:
++		if !errors.Is(err, os.ErrClosed) {
++			t.Fatalf("Read after Close = %v, want os.ErrClosed", err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("Read did not return after Close")
++	}
++	select {
++	case err := <-acceptErr:
++		if err == nil {
++			t.Fatal("Accept succeeded after Close")
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("Accept did not return after Close")
++	}
++	if _, err := dev.Write([][]byte{{0x45, 0}}, 0); !errors.Is(err, os.ErrClosed) {
++		t.Fatalf("Write after Close = %v, want os.ErrClosed", err)
++	}
++	if _, ok := <-dev.Events(); ok {
++		t.Fatal("events channel not closed")
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if c, err := n.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(serverV4, 80)); err == nil {
++		c.Close()
++		t.Fatal("dial on closed interface succeeded")
++	}
++}
++
++func TestNoAddresses(t *testing.T) {
++	// No addresses: device is created but has no route; dialing fails fast.
++	dev, n, err := CreateNetTUN(nil, nil, 1280)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer dev.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if c, err := n.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(serverV4, 80)); err == nil {
++		c.Close()
++		t.Fatal("dial without addresses succeeded")
++	}
++}

@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 17:02:21 +0000
+Subject: [PATCH 31/33] =?UTF-8?q?Rel=C3=A9:=20test=20skoku=20=C4=8D=C3=ADs?=
+ =?UTF-8?q?el=20paket=C5=AF=20u=C5=BE=20nepad=C3=A1=20n=C3=A1hodou?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Test vyrovnání skoku čísel paketů posílal ke knihovně jednobajtový obsah
+a kontrola „nedošel nešifrovaný“ hledala ten bajt v celém šifrovaném
+datagramu. V náhodné šifře a autentizační značce se zhruba v každém
+desátém běhu našel, takže test (i kontrola před vydáním) padal bez
+chyby relé. Krátké obsahy v testech prodlouženy na aspoň 8 bajtů
+a pomocná funkce testů kratší obsah odmítne, ať se past nevrátí.
+Kód relé beze změny; 100 běhů testu za sebou prošlo.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/media_test.go    |  2 +-
+ libtailscale/p21relay/srtpcall_test.go |  4 ++--
+ libtailscale/p21relay/srtppeer_test.go | 11 +++++++++++
+ 3 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/libtailscale/p21relay/media_test.go b/libtailscale/p21relay/media_test.go
+index 2439c56..e746967 100644
+--- a/libtailscale/p21relay/media_test.go
++++ b/libtailscale/p21relay/media_test.go
+@@ -79,7 +79,7 @@ func TestMediaManagerAnchoring(t *testing.T) {
+ 	mp.relayC, mp.relayU = relayC, relayU
+ 	rc, ru := mp.relayCli(false), mp.relayPriv(false)
+ 	mp.toUp(t, false, "up")
+-	mp.toClient(t, false, "down")
++	mp.toClient(t, false, "downlink")
+ 
+ 	// A re-offer keeps the ports; a held (0.0.0.0) side gets nothing.
+ 	held := strings.Replace(string(sdpFor("127.0.0.1", cli.port, mp.cs.attr(1))), "c=IN IP4 127.0.0.1", "c=IN IP4 0.0.0.0", 1)
+diff --git a/libtailscale/p21relay/srtpcall_test.go b/libtailscale/p21relay/srtpcall_test.go
+index bc4d29a..390fc9d 100644
+--- a/libtailscale/p21relay/srtpcall_test.go
++++ b/libtailscale/p21relay/srtpcall_test.go
+@@ -350,7 +350,7 @@ func TestSRTPSequenceJumpToClient(t *testing.T) {
+ 	e := newEnv(t)
+ 	c := newFakeClient(t, e)
+ 	cl := establishOutgoing(t, e, c)
+-	last := cl.toClient(t, false, "a")
++	last := cl.toClient(t, false, "before-jump")
+ 	cl.us.seq -= 1000 // zpět o 1000
+ 	if got := cl.toClient(t, false, "after-back-jump"); got != last+1 {
+ 		t.Fatalf("seq %d after the jump, want %d", got, last+1)
+@@ -360,7 +360,7 @@ func TestSRTPSequenceJumpToClient(t *testing.T) {
+ 		t.Fatalf("seq %d after the jump, want %d", got, last+2)
+ 	}
+ 	cl.us.seq += 5 // malá mezera zůstane
+-	if got := cl.toClient(t, false, "gap"); got != last+8 {
++	if got := cl.toClient(t, false, "after-gap"); got != last+8 {
+ 		t.Fatalf("seq %d after a gap, want %d", got, last+8)
+ 	}
+ 	if n := e.mediaStat("srtpSeqResync"); n != 2 {
+diff --git a/libtailscale/p21relay/srtppeer_test.go b/libtailscale/p21relay/srtppeer_test.go
+index 2de4b6b..2962f04 100644
+--- a/libtailscale/p21relay/srtppeer_test.go
++++ b/libtailscale/p21relay/srtppeer_test.go
+@@ -23,6 +23,10 @@ import (
+ 	"github.com/pion/srtp/v3"
+ )
+ 
++// minPlainCheck: nejkratší obsah paketu, u kterého toClient spolehlivě
++// pozná, že došel nešifrovaný.
++const minPlainCheck = 8
++
+ var testSuites = map[string]srtp.ProtectionProfile{
+ 	"AES_CM_128_HMAC_SHA1_80": srtp.ProtectionProfileAes128CmHmacSha1_80,
+ 	"AES_CM_128_HMAC_SHA1_32": srtp.ProtectionProfileAes128CmHmacSha1_32,
+@@ -286,8 +290,15 @@ func (m *mediaPath) toUp(t *testing.T, rtcp bool, payload string) {
+ 
+ // toClient pošle obyčejný paket ústředny a čeká ho šifrovaný u knihovny;
+ // vrátí číslo paketu, které knihovna dostala.
++//
++// Obsah musí mít aspoň minPlainCheck bajtů: kontrola „nedošel nešifrovaný“
++// hledá obsah v celém datagramu a kratší řetězec se v náhodné šifře
++// a autentizační značce najde náhodou (1 bajt zhruba v každém desátém běhu).
+ func (m *mediaPath) toClient(t *testing.T, rtcp bool, payload string) uint16 {
+ 	t.Helper()
++	if len(payload) < minPlainCheck {
++		t.Fatalf("payload %q: want at least %d bytes for the plaintext check", payload, minPlainCheck)
++	}
+ 	var plain []byte
+ 	if rtcp {
+ 		plain = rtcpPkt(m.us.ssrc, payload)

@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:54:32 +0000
+Subject: [PATCH 09/33] =?UTF-8?q?Knihovna=20tunelu:=20kontrola=20typ=C5=AF?=
+ =?UTF-8?q?=20bez=20NDK?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Zápis do systémového logu potřebuje cgo a NDK, takže kontrola typů pro
+Android s vypnutým cgo končila na chybějící funkci. Náhradní prázdná
+funkce platí jen bez cgo; skutečná knihovna se staví vždy s cgo.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/log_nocgo.go | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+ create mode 100644 libtailscale/log_nocgo.go
+
+diff --git a/libtailscale/log_nocgo.go b/libtailscale/log_nocgo.go
+new file mode 100644
+index 0000000..b5bdf18
+--- /dev/null
++++ b/libtailscale/log_nocgo.go
+@@ -0,0 +1,13 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !cgo
++
++package libtailscale
++
++// initLogging is implemented in log.go, which needs cgo and the NDK (it
++// writes to logcat). The real library is always built with cgo; this stub
++// only lets the package be type-checked and vetted without the NDK:
++//
++//	GOOS=android GOARCH=arm64 CGO_ENABLED=0 ./tool/go build ./libtailscale/...
++func initLogging(appCtx AppContext) {}

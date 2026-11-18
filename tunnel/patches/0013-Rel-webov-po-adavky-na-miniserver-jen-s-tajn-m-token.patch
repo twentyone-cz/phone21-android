@@ -1,0 +1,442 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:07:25 +0000
+Subject: [PATCH 13/33] =?UTF-8?q?Rel=C3=A9:=20webov=C3=A9=20po=C5=BEadavky?=
+ =?UTF-8?q?=20na=20miniserver=20jen=20s=20tajn=C3=BDm=20tokenem?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Na 127.0.0.1 cesta /<adresa>:<port>/<zbytek> s hlavičkou
+X-Phone21-Relay (token z 32 náhodných bajtů, porovnání v konstantním
+čase). Jen povolené adresy a porty 1-65535, jinak 403; nečitelný cíl,
+absolutní adresa i tunelování 400; nedostupný cíl 502. Libovolná
+metoda, těla proudí oběma směry, token se dál neposílá, hlavička
+Host = adresa:port, spojení jen přes privátní síť.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/http.go      | 198 +++++++++++++++++++++++++++
+ libtailscale/p21relay/http_test.go | 208 +++++++++++++++++++++++++++++
+ 2 files changed, 406 insertions(+)
+ create mode 100644 libtailscale/p21relay/http.go
+ create mode 100644 libtailscale/p21relay/http_test.go
+
+diff --git a/libtailscale/p21relay/http.go b/libtailscale/p21relay/http.go
+new file mode 100644
+index 0000000..50ab749
+--- /dev/null
++++ b/libtailscale/p21relay/http.go
+@@ -0,0 +1,198 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"context"
++	"crypto/rand"
++	"crypto/subtle"
++	"crypto/tls"
++	"encoding/hex"
++	"errors"
++	"io"
++	"log"
++	"net"
++	"net/http"
++	"net/http/httputil"
++	"net/netip"
++	"net/url"
++	"strconv"
++	"strings"
++	"time"
++)
++
++// TokenHeader carries Info.HTTPToken on every request to the HTTP relay.
++const TokenHeader = "X-Phone21-Relay"
++
++const (
++	httpDialTimeout       = 10 * time.Second
++	httpResponseTimeout   = 2 * time.Minute
++	httpReadHeaderTimeout = 10 * time.Second
++	httpIdleTimeout       = 60 * time.Second
++)
++
++var errHTTPTarget = fixedErr("target not allowed")
++
++type relayTargetKey struct{}
++
++// httpRelay forwards http://127.0.0.1:P/<host>:<port>/<rest> to
++// http://<host>:<port>/<rest> in the private network, for requests that
++// carry the secret token.
++type httpRelay struct {
++	ln      net.Listener
++	srv     *http.Server
++	token   string
++	allowed map[netip.Addr]bool
++	nw      Network
++	cnt     *counters
++	log     *rateLog
++	tr      *http.Transport
++	rp      *httputil.ReverseProxy
++}
++
++func newHTTPRelay(ctx context.Context, hosts []netip.Addr, port int, nw Network, cnt *counters, rl *rateLog) (*httpRelay, error) {
++	tok := make([]byte, 32)
++	if _, err := rand.Read(tok); err != nil {
++		return nil, err
++	}
++	h := &httpRelay{
++		token:   hex.EncodeToString(tok),
++		allowed: make(map[netip.Addr]bool),
++		nw:      nw,
++		cnt:     cnt,
++		log:     rl,
++	}
++	for _, a := range hosts {
++		if a.IsValid() {
++			h.allowed[a.Unmap()] = true
++		}
++	}
++	h.tr = &http.Transport{
++		Proxy:                 nil,
++		DialContext:           h.dial,
++		ForceAttemptHTTP2:     false,
++		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
++		MaxIdleConns:          4,
++		MaxIdleConnsPerHost:   2,
++		IdleConnTimeout:       30 * time.Second,
++		ResponseHeaderTimeout: httpResponseTimeout,
++		ExpectContinueTimeout: time.Second,
++		DisableCompression:    true,
++	}
++	h.rp = &httputil.ReverseProxy{
++		Rewrite: func(pr *httputil.ProxyRequest) {
++			t := pr.In.Context().Value(relayTargetKey{}).(*url.URL)
++			u := *t
++			pr.Out.URL = &u
++			pr.Out.Host = u.Host
++			pr.Out.Header.Del(TokenHeader)
++		},
++		Transport:     h.tr,
++		FlushInterval: -1,
++		ErrorLog:      log.New(io.Discard, "", 0),
++		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
++			h.cnt.inc("http.upstream_error")
++			h.log.printf("http-upstream", "p21relay: HTTP to miniserver failed (%s)", errClass(err))
++			w.WriteHeader(http.StatusBadGateway)
++		},
++	}
++	ln, err := listenLoopback(port)
++	if err != nil {
++		return nil, err
++	}
++	h.ln = ln
++	h.srv = &http.Server{
++		Handler:           h,
++		ReadHeaderTimeout: httpReadHeaderTimeout,
++		IdleTimeout:       httpIdleTimeout,
++		MaxHeaderBytes:    64 << 10,
++		ErrorLog:          log.New(io.Discard, "", 0),
++		BaseContext:       func(net.Listener) context.Context { return ctx },
++	}
++	return h, nil
++}
++
++func (h *httpRelay) serve() {
++	if err := h.srv.Serve(h.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
++		h.log.printf("http-serve", "p21relay: HTTP relay stopped (%s)", errClass(err))
++	}
++}
++
++func (h *httpRelay) close() {
++	h.srv.Close()
++	h.tr.CloseIdleConnections()
++}
++
++func (h *httpRelay) port() int { return h.ln.Addr().(*net.TCPAddr).Port }
++
++func (h *httpRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	h.cnt.inc("http.requests")
++	tok := r.Header.Values(TokenHeader)
++	if len(tok) != 1 || subtle.ConstantTimeCompare([]byte(tok[0]), []byte(h.token)) != 1 {
++		h.cnt.inc("http.forbidden_token")
++		http.Error(w, "forbidden", http.StatusForbidden)
++		return
++	}
++	target, status := h.target(r)
++	if target == nil {
++		h.cnt.inc("http.rejected_target")
++		http.Error(w, http.StatusText(status), status)
++		return
++	}
++	h.rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), relayTargetKey{}, target)))
++}
++
++// target parses /<host>:<port>/<rest> and checks the host.
++func (h *httpRelay) target(r *http.Request) (*url.URL, int) {
++	if r.Method == http.MethodConnect || r.URL.IsAbs() || r.URL.Opaque != "" {
++		return nil, http.StatusBadRequest
++	}
++	p := r.URL.EscapedPath()
++	if !strings.HasPrefix(p, "/") {
++		return nil, http.StatusBadRequest
++	}
++	hp, rest, _ := strings.Cut(p[1:], "/")
++	hp, err := url.PathUnescape(hp)
++	if err != nil {
++		return nil, http.StatusBadRequest
++	}
++	ap, err := netip.ParseAddrPort(hp)
++	if err != nil {
++		return nil, http.StatusBadRequest
++	}
++	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
++	if ap.Port() == 0 || !h.allowed[ap.Addr()] {
++		return nil, http.StatusForbidden
++	}
++	u, err := url.Parse("http://" + ap.String() + "/" + rest)
++	if err != nil || u.Host != ap.String() {
++		return nil, http.StatusBadRequest
++	}
++	u.RawQuery = r.URL.RawQuery
++	return u, 0
++}
++
++func (h *httpRelay) dial(ctx context.Context, network, addr string) (net.Conn, error) {
++	ap, err := netip.ParseAddrPort(addr)
++	if err != nil {
++		return nil, err
++	}
++	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
++	if ap.Port() == 0 || !h.allowed[ap.Addr()] {
++		return nil, errHTTPTarget
++	}
++	ctx, cancel := context.WithTimeout(ctx, httpDialTimeout)
++	defer cancel()
++	return h.nw.DialTCP(ctx, ap)
++}
++
++// listenLoopback listens on 127.0.0.1:port, falling back to any port.
++func listenLoopback(port int) (net.Listener, error) {
++	if port > 0 && port <= 65535 {
++		if ln, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(port)); err == nil {
++			return ln, nil
++		}
++	}
++	return net.Listen("tcp4", "127.0.0.1:0")
++}
+diff --git a/libtailscale/p21relay/http_test.go b/libtailscale/p21relay/http_test.go
+new file mode 100644
+index 0000000..772c8db
+--- /dev/null
++++ b/libtailscale/p21relay/http_test.go
+@@ -0,0 +1,208 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bufio"
++	"context"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/netip"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++)
++
++// newHTTPUpstream starts an HTTP server on the miniserver's address.
++func newHTTPUpstream(t *testing.T, h http.Handler) (*httptest.Server, string) {
++	t.Helper()
++	ln, err := net.Listen("tcp4", upIP.String()+":0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := httptest.NewUnstartedServer(h)
++	s.Listener.Close()
++	s.Listener = ln
++	s.Start()
++	t.Cleanup(s.Close)
++	return s, ln.Addr().String()
++}
++
++type testHTTP struct {
++	*httpRelay
++	cnt *counters
++}
++
++// newTestHTTPRelay runs just the HTTP part of the relay.
++func newTestHTTPRelay(t *testing.T, hosts ...netip.Addr) testHTTP {
++	t.Helper()
++	cnt := &counters{}
++	h, err := newHTTPRelay(context.Background(), hosts, 0, fakeNet{}, cnt, &rateLog{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	go h.serve()
++	t.Cleanup(h.close)
++	return testHTTP{h, cnt}
++}
++
++func relayClient() *http.Client {
++	return &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 10 * time.Second}
++}
++
++func TestHTTPRelayStreaming(t *testing.T) {
++	gotFirst, release := make(chan struct{}), make(chan struct{})
++	var mu sync.Mutex
++	var seenMethod, seenURI, seenHost, seenToken, seenDepth string
++	var seenBody []byte
++	_, upAddr := newHTTPUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		first := make([]byte, 5)
++		if _, err := io.ReadFull(r.Body, first); err != nil {
++			t.Errorf("upstream read: %v", err)
++			return
++		}
++		close(gotFirst)
++		rest, _ := io.ReadAll(r.Body)
++		mu.Lock()
++		seenMethod, seenURI, seenHost = r.Method, r.RequestURI, r.Host
++		seenToken, seenDepth = r.Header.Get(TokenHeader), r.Header.Get("Depth")
++		seenBody = append(first, rest...)
++		mu.Unlock()
++		w.Header().Set("Content-Type", "application/xml")
++		w.WriteHeader(207)
++		w.Write([]byte("chunk1"))
++		w.(http.Flusher).Flush()
++		select {
++		case <-release:
++		case <-time.After(waitLong):
++		}
++		w.Write([]byte("chunk2"))
++	}))
++	e := newTestHTTPRelay(t, upIP)
++
++	pr, pw := io.Pipe()
++	req, err := http.NewRequest("PROPFIND", fmt.Sprintf("http://127.0.0.1:%d/%s/dav/a%%20b/?depth=1", e.port(), upAddr), pr)
++	if err != nil {
++		t.Fatal(err)
++	}
++	req.Header.Set(TokenHeader, e.token)
++	req.Header.Set("Depth", "1")
++	type result struct {
++		resp *http.Response
++		err  error
++	}
++	done := make(chan result, 1)
++	go func() {
++		resp, err := relayClient().Do(req)
++		done <- result{resp, err}
++	}()
++	pw.Write([]byte("part1"))
++	select {
++	case <-gotFirst: // the request body streams through the relay
++	case <-time.After(waitLong):
++		t.Fatal("request body was not streamed")
++	}
++	pw.Write([]byte("part2"))
++	pw.Close()
++	res := <-done
++	if res.err != nil {
++		t.Fatal(res.err)
++	}
++	defer res.resp.Body.Close()
++	if res.resp.StatusCode != 207 {
++		t.Fatalf("status %d", res.resp.StatusCode)
++	}
++	first := make([]byte, 6)
++	if _, err := io.ReadFull(res.resp.Body, first); err != nil || string(first) != "chunk1" {
++		t.Fatalf("first chunk %q %v (response not streamed?)", first, err)
++	}
++	close(release)
++	rest, _ := io.ReadAll(res.resp.Body)
++	if string(rest) != "chunk2" {
++		t.Fatalf("rest %q", rest)
++	}
++	mu.Lock()
++	defer mu.Unlock()
++	if seenMethod != "PROPFIND" || seenURI != "/dav/a%20b/?depth=1" || seenHost != upAddr || seenDepth != "1" {
++		t.Fatalf("upstream saw %s %s host=%s depth=%q", seenMethod, seenURI, seenHost, seenDepth)
++	}
++	if seenToken != "" {
++		t.Fatal("token leaked to the miniserver")
++	}
++	if string(seenBody) != "part1part2" {
++		t.Fatalf("body %q", seenBody)
++	}
++}
++
++func TestHTTPRelayRejects(t *testing.T) {
++	_, upAddr := newHTTPUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		io.WriteString(w, "ok")
++	}))
++	// A port on the allowed host where nothing listens.
++	ln, err := net.Listen("tcp4", upIP.String()+":0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	closedAddr := ln.Addr().String()
++	ln.Close()
++
++	e := newTestHTTPRelay(t, upIP)
++	wrong := strings.Repeat("0", len(e.token))
++	do := func(path, token string) int {
++		t.Helper()
++		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d%s", e.port(), path), nil)
++		if token != "" {
++			req.Header.Set(TokenHeader, token)
++		}
++		resp, err := relayClient().Do(req)
++		if err != nil {
++			t.Fatal(err)
++		}
++		resp.Body.Close()
++		return resp.StatusCode
++	}
++	cases := []struct {
++		name, path, token string
++		want              int
++	}{
++		{"happy", "/" + upAddr + "/x", e.token, 200},
++		{"no token", "/" + upAddr + "/x", "", 403},
++		{"wrong token", "/" + upAddr + "/x", wrong, 403},
++		{"host not allowed", "/127.0.0.5:80/x", e.token, 403},
++		{"port 0", "/" + upIP.String() + ":0/x", e.token, 403},
++		{"not an address", "/example:80/x", e.token, 400},
++		{"no target", "/", e.token, 400},
++		{"miniserver down", "/" + closedAddr + "/x", e.token, 502},
++	}
++	for _, c := range cases {
++		if got := do(c.path, c.token); got != c.want {
++			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
++		}
++	}
++	if n := e.cnt.get("http.forbidden_token"); n != 2 {
++		t.Errorf("forbidden_token %d", n)
++	}
++
++	// Not a forward proxy: absolute-form and CONNECT are refused.
++	for _, line := range []string{"GET http://" + upAddr + "/x HTTP/1.1", "CONNECT " + upAddr + " HTTP/1.1"} {
++		c, err := net.Dial("tcp4", fmt.Sprintf("127.0.0.1:%d", e.port()))
++		if err != nil {
++			t.Fatal(err)
++		}
++		fmt.Fprintf(c, "%s\r\nHost: %s\r\n%s: %s\r\n\r\n", line, upAddr, TokenHeader, e.token)
++		c.SetReadDeadline(time.Now().Add(waitLong))
++		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
++		c.Close()
++		if err != nil {
++			t.Fatalf("%s: %v", line, err)
++		}
++		if resp.StatusCode != 400 {
++			t.Errorf("%s: status %d", line, resp.StatusCode)
++		}
++	}
++}

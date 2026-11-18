@@ -1,0 +1,1135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:07:25 +0000
+Subject: [PATCH 12/33] =?UTF-8?q?Rel=C3=A9:=20kotven=C3=AD=20hlasu=20na=20?=
+ =?UTF-8?q?127.0.0.1=20a=20v=20priv=C3=A1tn=C3=AD=20s=C3=ADti?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Popis relace se přepíše na adresu a porty relé (spojení, původ,
+port média i řídicího kanálu, společný port zachován, kandidáti
+obcházení se zahodí, port 0 beze změny, 0.0.0.0 = neposílat).
+Pro každé médium hovoru pár sudý/lichý port na 127.0.0.1 a pár
+v privátní síti; přeposílá se bez vyrovnávání v obou směrech.
+
+Ze strany telefonu se bere jen z portů, které volací knihovna sama
+ohlásila, ze strany sítě jen od ústředny. Uvolnění po ukončení,
+po zrušení, po neúspěchu prvního pozvání a po 5 min bez provozu;
+omezený počet hovorů a médií. Do logu jen pevná slova místo chyb.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/media.go        | 435 ++++++++++++++++++++++++++
+ libtailscale/p21relay/media_test.go   | 125 ++++++++
+ libtailscale/p21relay/netfake_test.go |  86 +++++
+ libtailscale/p21relay/sdp.go          | 173 ++++++++++
+ libtailscale/p21relay/sdp_test.go     |  90 ++++++
+ libtailscale/p21relay/stats.go        | 109 +++++++
+ libtailscale/p21relay/stats_test.go   |  37 +++
+ 7 files changed, 1055 insertions(+)
+ create mode 100644 libtailscale/p21relay/media.go
+ create mode 100644 libtailscale/p21relay/media_test.go
+ create mode 100644 libtailscale/p21relay/netfake_test.go
+ create mode 100644 libtailscale/p21relay/sdp.go
+ create mode 100644 libtailscale/p21relay/sdp_test.go
+ create mode 100644 libtailscale/p21relay/stats.go
+ create mode 100644 libtailscale/p21relay/stats_test.go
+
+diff --git a/libtailscale/p21relay/media.go b/libtailscale/p21relay/media.go
+new file mode 100644
+index 0000000..bf8f361
+--- /dev/null
++++ b/libtailscale/p21relay/media.go
+@@ -0,0 +1,435 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"errors"
++	"math/rand/v2"
++	"net"
++	"net/netip"
++	"sync"
++	"sync/atomic"
++	"time"
++)
++
++const (
++	mediaIdleTimeout  = 5 * time.Minute  // no packets and no signalling
++	mediaByeLinger    = 32 * time.Second // after BYE/CANCEL without a final answer
++	maxMediaCalls     = 16
++	maxStreamsPerCall = 4
++	maxMediaStreams   = 32
++	mediaPortMin      = 20000
++	mediaPortMax      = 60000
++	maxMediaPacket    = 2048
++)
++
++var (
++	loopback4    = netip.AddrFrom4([4]byte{127, 0, 0, 1})
++	errNoPorts   = fixedErr("no free media port pair")
++	errMediaGone = errors.New("media relay closed")
++)
++
++// mediaStream anchors one m= line: a 127.0.0.1 even/odd pair toward the
++// calling library and a private-network even/odd pair toward the miniserver.
++type mediaStream struct {
++	cRTP, cRTCP net.PacketConn // 127.0.0.1:cPort, cPort+1
++	uRTP, uRTCP net.PacketConn // local private address:uPort, uPort+1
++	cPort       int
++	uPort       int
++
++	// Ports the calling library announced; only they may send to the
++	// client-facing pair, and only they receive from it.
++	cliRTP, cliRTCP atomic.Uint32
++	cliSend         atomic.Bool
++	// Ports the miniserver announced (on cfg.UpstreamSIP's address).
++	upRTP, upRTCP atomic.Uint32
++	upSend        atomic.Bool
++
++	lastPkt   atomic.Int64 // unix nanoseconds
++	closeOnce sync.Once
++}
++
++func (s *mediaStream) close() {
++	s.closeOnce.Do(func() {
++		s.cRTP.Close()
++		s.cRTCP.Close()
++		s.uRTP.Close()
++		s.uRTCP.Close()
++	})
++}
++
++type mediaCall struct {
++	streams     map[int]*mediaStream // by m= line index
++	established bool                 // a 2xx to INVITE passed
++	lastSIP     time.Time
++	releaseAt   time.Time // zero = not scheduled
++}
++
++func (c *mediaCall) lastActive() time.Time {
++	last := c.lastSIP
++	for _, s := range c.streams {
++		if t := time.Unix(0, s.lastPkt.Load()); t.After(last) {
++			last = t
++		}
++	}
++	return last
++}
++
++// mediaManager owns all media streams. SDP rewriting runs on the SIP loop;
++// packet forwarding runs in four goroutines per stream.
++type mediaManager struct {
++	nw      Network
++	localIP netip.Addr
++	upIP    netip.Addr
++	cnt     *counters
++	log     *rateLog
++	wg      sync.WaitGroup
++
++	mu       sync.Mutex
++	calls    map[string]*mediaCall
++	nstreams int
++	closed   bool
++
++	pktToUp, pktToClient     atomic.Int64
++	bytesToUp, bytesToClient atomic.Int64
++	dropClientSrc, dropUpSrc atomic.Int64
++	dropNoDest, writeErrors  atomic.Int64
++}
++
++func newMediaManager(nw Network, upIP netip.Addr, cnt *counters, log *rateLog) *mediaManager {
++	return &mediaManager{
++		nw:      nw,
++		localIP: nw.LocalAddr(),
++		upIP:    upIP,
++		cnt:     cnt,
++		log:     log,
++		calls:   make(map[string]*mediaCall),
++	}
++}
++
++// rewrite anchors the media of an SDP body. fromClient: the body comes from
++// the calling library and goes to the miniserver (advertise the private
++// address); otherwise the reverse (advertise 127.0.0.1).
++func (mm *mediaManager) rewrite(callID string, fromClient bool, body []byte, now time.Time) ([]byte, error) {
++	mm.mu.Lock()
++	defer mm.mu.Unlock()
++	if mm.closed {
++		return nil, errMediaGone
++	}
++	addr := loopback4
++	if fromClient {
++		addr = mm.localIP
++	}
++	return rewriteSDP(body, addr, func(s sdpStream) (int, int, bool) {
++		st := mm.streamLocked(callID, s.index, now)
++		if st == nil {
++			return 0, 0, false
++		}
++		rtcp := s.rtcpPort
++		if rtcp == 0 {
++			rtcp = s.port + 1
++		}
++		if rtcp > 65535 {
++			rtcp = 0
++		}
++		var advRTP int
++		if fromClient {
++			st.cliRTP.Store(uint32(s.port))
++			st.cliRTCP.Store(uint32(rtcp))
++			st.cliSend.Store(!s.held)
++			advRTP = st.uPort
++		} else {
++			st.upRTP.Store(uint32(s.port))
++			st.upRTCP.Store(uint32(rtcp))
++			st.upSend.Store(!s.held)
++			advRTP = st.cPort
++		}
++		advRTCP := advRTP + 1
++		if s.rtcpPort == s.port { // RTCP multiplexed on the RTP port
++			advRTCP = advRTP
++		}
++		return advRTP, advRTCP, true
++	})
++}
++
++func (mm *mediaManager) streamLocked(callID string, index int, now time.Time) *mediaStream {
++	call := mm.calls[callID]
++	if call == nil {
++		if len(mm.calls) >= maxMediaCalls {
++			mm.cnt.inc("media.drop_call_limit")
++			return nil
++		}
++		call = &mediaCall{streams: make(map[int]*mediaStream)}
++		mm.calls[callID] = call
++	}
++	call.lastSIP = now
++	if st := call.streams[index]; st != nil {
++		return st
++	}
++	if len(call.streams) >= maxStreamsPerCall || mm.nstreams >= maxMediaStreams {
++		mm.cnt.inc("media.drop_stream_limit")
++		return nil
++	}
++	st, err := mm.newStream()
++	if err != nil {
++		mm.cnt.inc("media.alloc_error")
++		mm.log.printf("media-alloc", "p21relay: no media ports (%s)", errClass(err))
++		return nil
++	}
++	st.lastPkt.Store(now.UnixNano())
++	call.streams[index] = st
++	mm.nstreams++
++	mm.cnt.inc("media.streams_created")
++	mm.startPumps(st)
++	return st
++}
++
++func (mm *mediaManager) newStream() (*mediaStream, error) {
++	c1, c2, cp, err := listenPair(func(p int) (net.PacketConn, error) {
++		return net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(loopback4, uint16(p))))
++	})
++	if err != nil {
++		return nil, err
++	}
++	u1, u2, up, err := listenPair(func(p int) (net.PacketConn, error) {
++		return mm.nw.ListenUDP(uint16(p))
++	})
++	if err != nil {
++		c1.Close()
++		c2.Close()
++		return nil, err
++	}
++	return &mediaStream{cRTP: c1, cRTCP: c2, uRTP: u1, uRTCP: u2, cPort: cp, uPort: up}, nil
++}
++
++// listenPair binds an even port and the odd one after it.
++func listenPair(listen func(port int) (net.PacketConn, error)) (a, b net.PacketConn, port int, err error) {
++	err = errNoPorts
++	for try := 0; try < 64; try++ {
++		p := mediaPortMin + 2*rand.IntN((mediaPortMax-mediaPortMin)/2)
++		if a, err = listen(p); err != nil {
++			continue
++		}
++		if b, err = listen(p + 1); err != nil {
++			a.Close()
++			continue
++		}
++		return a, b, p, nil
++	}
++	return nil, nil, 0, err
++}
++
++func (mm *mediaManager) startPumps(st *mediaStream) {
++	mm.wg.Add(4)
++	go mm.pump(st, st.cRTP, st.uRTP, true, &st.cliRTP, &st.upRTP)
++	go mm.pump(st, st.cRTCP, st.uRTCP, true, &st.cliRTCP, &st.upRTCP)
++	go mm.pump(st, st.uRTP, st.cRTP, false, &st.cliRTP, &st.upRTP)
++	go mm.pump(st, st.uRTCP, st.cRTCP, false, &st.cliRTCP, &st.upRTCP)
++}
++
++// pump forwards datagrams from in to out. toUp: in faces the calling
++// library (accept only from 127.0.0.1:cliPort, send to upIP:upPort);
++// otherwise in faces the miniserver (accept only from upIP, send to
++// 127.0.0.1:cliPort). Nothing is buffered: without a destination the
++// packet is dropped.
++func (mm *mediaManager) pump(st *mediaStream, in, out net.PacketConn, toUp bool, cliPort, upPort *atomic.Uint32) {
++	defer mm.wg.Done()
++	buf := make([]byte, maxMediaPacket)
++	for {
++		n, from, err := in.ReadFrom(buf)
++		if err != nil {
++			return
++		}
++		src := addrPortOf(from)
++		var dst netip.AddrPort
++		if toUp {
++			p := cliPort.Load()
++			if p == 0 || src.Addr() != loopback4 || src.Port() != uint16(p) {
++				mm.dropClientSrc.Add(1)
++				continue
++			}
++			up := upPort.Load()
++			if up == 0 || !st.upSend.Load() {
++				mm.dropNoDest.Add(1)
++				continue
++			}
++			dst = netip.AddrPortFrom(mm.upIP, uint16(up))
++		} else {
++			if src.Addr() != mm.upIP {
++				mm.dropUpSrc.Add(1)
++				continue
++			}
++			p := cliPort.Load()
++			if p == 0 || !st.cliSend.Load() {
++				mm.dropNoDest.Add(1)
++				continue
++			}
++			dst = netip.AddrPortFrom(loopback4, uint16(p))
++		}
++		st.lastPkt.Store(time.Now().UnixNano())
++		if _, err := out.WriteTo(buf[:n], net.UDPAddrFromAddrPort(dst)); err != nil {
++			mm.writeErrors.Add(1)
++			continue
++		}
++		if toUp {
++			mm.pktToUp.Add(1)
++			mm.bytesToUp.Add(int64(n))
++		} else {
++			mm.pktToClient.Add(1)
++			mm.bytesToClient.Add(int64(n))
++		}
++	}
++}
++
++// touch records signalling activity of a call (keeps it from idling out).
++func (mm *mediaManager) touch(callID string, now time.Time) {
++	mm.mu.Lock()
++	if c := mm.calls[callID]; c != nil {
++		c.lastSIP = now
++	}
++	mm.mu.Unlock()
++}
++
++func (mm *mediaManager) setEstablished(callID string) {
++	mm.mu.Lock()
++	if c := mm.calls[callID]; c != nil {
++		c.established = true
++	}
++	mm.mu.Unlock()
++}
++
++func (mm *mediaManager) established(callID string) bool {
++	mm.mu.Lock()
++	defer mm.mu.Unlock()
++	c := mm.calls[callID]
++	return c != nil && c.established
++}
++
++// scheduleRelease releases the call's media at t unless released earlier.
++func (mm *mediaManager) scheduleRelease(callID string, t time.Time) {
++	mm.mu.Lock()
++	if c := mm.calls[callID]; c != nil && (c.releaseAt.IsZero() || t.Before(c.releaseAt)) {
++		c.releaseAt = t
++	}
++	mm.mu.Unlock()
++}
++
++func (mm *mediaManager) release(callID, reason string) {
++	mm.mu.Lock()
++	c := mm.calls[callID]
++	if c != nil {
++		delete(mm.calls, callID)
++		mm.nstreams -= len(c.streams)
++	}
++	mm.mu.Unlock()
++	if c == nil {
++		return
++	}
++	for _, s := range c.streams {
++		s.close()
++	}
++	mm.cnt.inc("media.released_" + reason)
++}
++
++// expire releases calls whose time is up and returns the next deadline
++// (zero when there are no calls).
++func (mm *mediaManager) expire(now time.Time) time.Time {
++	type dueCall struct{ id, reason string }
++	var due []dueCall
++	var next time.Time
++	mm.mu.Lock()
++	for id, c := range mm.calls {
++		if !c.releaseAt.IsZero() && !now.Before(c.releaseAt) {
++			due = append(due, dueCall{id, "bye"})
++			continue
++		}
++		idleAt := c.lastActive().Add(mediaIdleTimeout)
++		if !now.Before(idleAt) {
++			due = append(due, dueCall{id, "idle"})
++			continue
++		}
++		d := idleAt
++		if !c.releaseAt.IsZero() && c.releaseAt.Before(d) {
++			d = c.releaseAt
++		}
++		if next.IsZero() || d.Before(next) {
++			next = d
++		}
++	}
++	mm.mu.Unlock()
++	for _, d := range due {
++		mm.release(d.id, d.reason)
++	}
++	return next
++}
++
++// nextDeadline is expire without side effects.
++func (mm *mediaManager) nextDeadline() time.Time {
++	var next time.Time
++	mm.mu.Lock()
++	defer mm.mu.Unlock()
++	for _, c := range mm.calls {
++		d := c.lastActive().Add(mediaIdleTimeout)
++		if !c.releaseAt.IsZero() && c.releaseAt.Before(d) {
++			d = c.releaseAt
++		}
++		if next.IsZero() || d.Before(next) {
++			next = d
++		}
++	}
++	return next
++}
++
++func (mm *mediaManager) counts() (calls, streams int) {
++	mm.mu.Lock()
++	defer mm.mu.Unlock()
++	return len(mm.calls), mm.nstreams
++}
++
++func (mm *mediaManager) closeAll() {
++	mm.mu.Lock()
++	mm.closed = true
++	calls := mm.calls
++	mm.calls = make(map[string]*mediaCall)
++	mm.nstreams = 0
++	mm.mu.Unlock()
++	for _, c := range calls {
++		for _, s := range c.streams {
++			s.close()
++		}
++	}
++	mm.wg.Wait()
++}
++
++func (mm *mediaManager) stats() map[string]int64 {
++	calls, streams := mm.counts()
++	return map[string]int64{
++		"calls":              int64(calls),
++		"streams":            int64(streams),
++		"packetsToUpstream":  mm.pktToUp.Load(),
++		"packetsToClient":    mm.pktToClient.Load(),
++		"bytesToUpstream":    mm.bytesToUp.Load(),
++		"bytesToClient":      mm.bytesToClient.Load(),
++		"dropForeignClient":  mm.dropClientSrc.Load(),
++		"dropForeignNetwork": mm.dropUpSrc.Load(),
++		"dropNoDestination":  mm.dropNoDest.Load(),
++		"writeErrors":        mm.writeErrors.Load(),
++	}
++}
++
++// addrPortOf converts a socket address to an unmapped netip.AddrPort.
++func addrPortOf(a net.Addr) netip.AddrPort {
++	var ap netip.AddrPort
++	switch v := a.(type) {
++	case *net.UDPAddr:
++		ap = v.AddrPort()
++	case *net.TCPAddr:
++		ap = v.AddrPort()
++	default:
++		if a != nil {
++			ap, _ = netip.ParseAddrPort(a.String())
++		}
++	}
++	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
++}
+diff --git a/libtailscale/p21relay/media_test.go b/libtailscale/p21relay/media_test.go
+new file mode 100644
+index 0000000..4229140
+--- /dev/null
++++ b/libtailscale/p21relay/media_test.go
+@@ -0,0 +1,125 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"net"
++	"net/netip"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++func sdpFor(addr string, port int, extra ...string) []byte {
++	s := "v=0\r\no=- 1 1 IN IP4 " + addr + "\r\ns=-\r\nc=IN IP4 " + addr + "\r\nt=0 0\r\nm=audio " + strconv.Itoa(port) + " RTP/AVP 0\r\n"
++	for _, x := range extra {
++		s += x + "\r\n"
++	}
++	return []byte(s)
++}
++
++func firstPort(t *testing.T, sdp []byte) int {
++	t.Helper()
++	for _, l := range strings.Split(string(sdp), "\r\n") {
++		if strings.HasPrefix(l, "m=") {
++			p, err := strconv.Atoi(strings.Fields(l)[1])
++			if err != nil {
++				t.Fatal(err)
++			}
++			return p
++		}
++	}
++	t.Fatalf("no m= line:\n%s", sdp)
++	return 0
++}
++
++func TestMediaManagerAnchoring(t *testing.T) {
++	mm := newMediaManager(fakeNet{}, upIP, &counters{}, &rateLog{})
++	defer mm.closeAll()
++	cli, up := newRTPPair(t, loopback4), newRTPPair(t, upIP)
++	now := time.Now()
++
++	// Offer from the calling library.
++	out, err := mm.rewrite("c1", true, sdpFor("127.0.0.1", cli.port), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(out), "c=IN IP4 "+privIP.String()) {
++		t.Fatalf("offer:\n%s", out)
++	}
++	relayU := firstPort(t, out)
++
++	// Answer from the miniserver (rtcp-mux on the RTP port).
++	out, err = mm.rewrite("c1", false, sdpFor(upIP.String(), up.port, "a=rtcp:"+strconv.Itoa(up.port), "a=rtcp-mux"), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	relayC := firstPort(t, out)
++	if !strings.Contains(string(out), "a=rtcp:"+strconv.Itoa(relayC)+"\r\n") || !strings.Contains(string(out), "c=IN IP4 127.0.0.1") {
++		t.Fatalf("answer:\n%s", out)
++	}
++	rc, ru := netip.AddrPortFrom(loopback4, uint16(relayC)), netip.AddrPortFrom(privIP, uint16(relayU))
++	expectPacket(t, cli.rtp, rc, up.rtp, ru, "up")
++	expectPacket(t, up.rtp, ru, cli.rtp, rc, "down")
++
++	// A re-offer keeps the ports; a held (0.0.0.0) side gets nothing.
++	out, _ = mm.rewrite("c1", true, []byte(strings.Replace(string(sdpFor("127.0.0.1", cli.port)), "c=IN IP4 127.0.0.1", "c=IN IP4 0.0.0.0", 1)), now)
++	if firstPort(t, out) != relayU || !strings.Contains(string(out), "c=IN IP4 0.0.0.0") {
++		t.Fatalf("re-offer:\n%s", out)
++	}
++	up.rtp.WriteToUDPAddrPort([]byte("held"), ru)
++	expectNoPacket(t, cli.rtp)
++	if calls, streams := mm.counts(); calls != 1 || streams != 1 {
++		t.Fatalf("counts %d %d", calls, streams)
++	}
++
++	// Release closes the ports.
++	mm.release("c1", "test")
++	if _, streams := mm.counts(); streams != 0 {
++		t.Fatal("not released")
++	}
++	if c, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(rc)); err != nil {
++		t.Fatalf("client-side port still bound: %v", err)
++	} else {
++		c.Close()
++	}
++}
++
++func TestMediaManagerLimits(t *testing.T) {
++	mm := newMediaManager(fakeNet{}, upIP, &counters{}, &rateLog{})
++	defer mm.closeAll()
++	now := time.Now()
++	// More m= lines than a call may have: the extra ones are disabled.
++	var sdp strings.Builder
++	sdp.WriteString("v=0\r\nc=IN IP4 127.0.0.1\r\n")
++	for i := 0; i < maxStreamsPerCall+2; i++ {
++		sdp.WriteString("m=audio " + strconv.Itoa(40000+2*i) + " RTP/AVP 0\r\n")
++	}
++	out, err := mm.rewrite("big", true, []byte(sdp.String()), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if n := strings.Count(string(out), "m=audio 0 "); n != 2 {
++		t.Fatalf("%d streams disabled:\n%s", n, out)
++	}
++	for i := 0; i < maxMediaCalls; i++ {
++		mm.rewrite("call"+strconv.Itoa(i), true, sdpFor("127.0.0.1", 41000), now)
++	}
++	if calls, _ := mm.counts(); calls != maxMediaCalls {
++		t.Fatalf("calls %d", calls)
++	}
++	if mm.cnt.get("media.drop_call_limit") == 0 && mm.cnt.get("media.drop_stream_limit") == 0 {
++		t.Fatal("limits not counted")
++	}
++	// Scheduled release.
++	mm.scheduleRelease("big", now.Add(time.Second))
++	if next := mm.nextDeadline(); next.After(now.Add(time.Second)) {
++		t.Fatalf("next deadline %v", next)
++	}
++	mm.expire(now.Add(2 * time.Second))
++	if mm.cnt.get("media.released_bye") != 1 {
++		t.Fatal("scheduled release did not happen")
++	}
++}
+diff --git a/libtailscale/p21relay/netfake_test.go b/libtailscale/p21relay/netfake_test.go
+new file mode 100644
+index 0000000..246f2be
+--- /dev/null
++++ b/libtailscale/p21relay/netfake_test.go
+@@ -0,0 +1,86 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bytes"
++	"context"
++	"net"
++	"net/netip"
++	"testing"
++	"time"
++)
++
++const (
++	waitLong  = 3 * time.Second
++	waitShort = 300 * time.Millisecond
++)
++
++var (
++	privIP  = netip.MustParseAddr("127.0.0.2") // the phone in the "private network"
++	upIP    = netip.MustParseAddr("127.0.0.3") // the miniserver
++	otherIP = netip.MustParseAddr("127.0.0.4") // some other peer
++)
++
++// fakeNet is the private-network side over OS loopback, bound to privIP.
++type fakeNet struct{}
++
++func (fakeNet) LocalAddr() netip.Addr { return privIP }
++func (fakeNet) ListenUDP(port uint16) (net.PacketConn, error) {
++	return net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(privIP, port)))
++}
++func (fakeNet) ListenTCP(port uint16) (net.Listener, error) {
++	return net.Listen("tcp4", netip.AddrPortFrom(privIP, port).String())
++}
++func (fakeNet) DialTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, error) {
++	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: privIP.AsSlice()}}
++	return d.DialContext(ctx, "tcp4", addr.String())
++}
++
++// ---- RTP endpoints ----
++
++type rtpPair struct {
++	rtp, rtcp *net.UDPConn
++	port      int
++}
++
++func newRTPPair(t *testing.T, ip netip.Addr) *rtpPair {
++	t.Helper()
++	a, b, p, err := listenPair(func(port int) (net.PacketConn, error) {
++		return net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip, uint16(port))))
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { a.Close(); b.Close() })
++	return &rtpPair{rtp: a.(*net.UDPConn), rtcp: b.(*net.UDPConn), port: p}
++}
++
++// expectPacket sends payload from `from` to `to` and expects it on `at`
++// coming from `wantSrc`.
++func expectPacket(t *testing.T, from *net.UDPConn, to netip.AddrPort, at *net.UDPConn, wantSrc netip.AddrPort, payload string) {
++	t.Helper()
++	if _, err := from.WriteToUDPAddrPort([]byte(payload), to); err != nil {
++		t.Fatal(err)
++	}
++	at.SetReadDeadline(time.Now().Add(waitLong))
++	buf := make([]byte, 2048)
++	n, src, err := at.ReadFromUDPAddrPort(buf)
++	if err != nil {
++		t.Fatalf("packet %q not delivered: %v", payload, err)
++	}
++	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
++	if !bytes.Equal(buf[:n], []byte(payload)) || src != wantSrc {
++		t.Fatalf("got %q from %v, want %q from %v", buf[:n], src, payload, wantSrc)
++	}
++}
++
++func expectNoPacket(t *testing.T, at *net.UDPConn) {
++	t.Helper()
++	at.SetReadDeadline(time.Now().Add(waitShort))
++	buf := make([]byte, 2048)
++	if n, src, err := at.ReadFromUDPAddrPort(buf); err == nil {
++		t.Fatalf("unexpected packet %q from %v", buf[:n], src)
++	}
++}
+diff --git a/libtailscale/p21relay/sdp.go b/libtailscale/p21relay/sdp.go
+new file mode 100644
+index 0000000..acbecbd
+--- /dev/null
++++ b/libtailscale/p21relay/sdp.go
+@@ -0,0 +1,173 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bytes"
++	"errors"
++	"net/netip"
++	"strconv"
++	"strings"
++)
++
++var errBadSDP = errors.New("malformed session description")
++
++// sdpStream is one m= line as found in an incoming session description.
++type sdpStream struct {
++	index    int  // position among the m= lines
++	port     int  // m= port, never 0 when passed to alloc
++	rtcpPort int  // from a=rtcp, 0 if absent
++	held     bool // effective c= address is unspecified (0.0.0.0): do not send
++}
++
++// sdpAllocFunc returns the RTP and RTCP ports the relay advertises for a
++// stream instead of the original ones; ok=false disables the stream (port 0).
++type sdpAllocFunc func(s sdpStream) (rtp, rtcp int, ok bool)
++
++// iceAttrs are dropped: candidates would point around the relay.
++var iceAttrs = []string{
++	"a=candidate:", "a=remote-candidates:", "a=ice-ufrag:", "a=ice-pwd:",
++	"a=ice-options:", "a=ice-lite", "a=ice-mismatch", "a=end-of-candidates",
++	"a=ice-pacing:",
++}
++
++func isICEAttr(l string) bool {
++	for _, p := range iceAttrs {
++		if strings.HasPrefix(l, p) {
++			return true
++		}
++	}
++	return false
++}
++
++// connAddrUnspecified reports whether a c= line carries 0.0.0.0 or ::.
++func connAddrUnspecified(l string) bool {
++	f := strings.Fields(l[2:])
++	if len(f) < 3 {
++		return false
++	}
++	a, _, _ := strings.Cut(f[2], "/")
++	ip, err := netip.ParseAddr(a)
++	return err == nil && ip.IsUnspecified()
++}
++
++// rewriteSDP replaces every connection and origin address with addr, every
++// m= port and a=rtcp port with the ones alloc returns, and drops ICE
++// attributes. Streams with port 0 stay untouched. Line endings are kept.
++func rewriteSDP(body []byte, addr netip.Addr, alloc sdpAllocFunc) ([]byte, error) {
++	eol := "\n"
++	if bytes.Contains(body, []byte("\r\n")) {
++		eol = "\r\n"
++	}
++	text := strings.TrimRight(string(body), "\r\n")
++	lines := strings.Split(text, "\n")
++	for i := range lines {
++		lines[i] = strings.TrimSuffix(lines[i], "\r")
++	}
++	if len(lines) == 0 || !strings.HasPrefix(lines[0], "v=") {
++		return nil, errBadSDP
++	}
++
++	type media struct {
++		sdpStream
++		hasC          bool
++		newRTP, newRT int
++		ok            bool
++	}
++	var ms []*media
++	sessHeld := false
++	for _, l := range lines {
++		switch {
++		case strings.HasPrefix(l, "m="):
++			f := strings.Fields(l[2:])
++			if len(f) < 3 {
++				return nil, errBadSDP
++			}
++			ps, _, _ := strings.Cut(f[1], "/")
++			port, err := strconv.Atoi(ps)
++			if err != nil || port < 0 || port > 65535 {
++				return nil, errBadSDP
++			}
++			ms = append(ms, &media{sdpStream: sdpStream{index: len(ms), port: port}})
++		case strings.HasPrefix(l, "c="):
++			held := connAddrUnspecified(l)
++			if len(ms) == 0 {
++				sessHeld = held
++			} else {
++				ms[len(ms)-1].hasC, ms[len(ms)-1].held = true, held
++			}
++		case strings.HasPrefix(l, "a=rtcp:") && len(ms) > 0:
++			f := strings.Fields(l[len("a=rtcp:"):])
++			if len(f) == 0 {
++				return nil, errBadSDP
++			}
++			p, err := strconv.Atoi(f[0])
++			if err != nil || p <= 0 || p > 65535 {
++				return nil, errBadSDP
++			}
++			ms[len(ms)-1].rtcpPort = p
++		}
++	}
++	for _, m := range ms {
++		if m.port == 0 {
++			continue
++		}
++		if !m.hasC {
++			m.held = sessHeld
++		}
++		m.newRTP, m.newRT, m.ok = alloc(m.sdpStream)
++	}
++
++	var b strings.Builder
++	b.Grow(len(body) + 64)
++	ip := addr.String()
++	cur := -1
++	for _, l := range lines {
++		switch {
++		case strings.HasPrefix(l, "m="):
++			cur++
++			m := ms[cur]
++			if m.port != 0 {
++				f := strings.Fields(l[2:])
++				_, count, hasCount := strings.Cut(f[1], "/")
++				np := 0
++				if m.ok {
++					np = m.newRTP
++				}
++				f[1] = strconv.Itoa(np)
++				if hasCount {
++					f[1] += "/" + count
++				}
++				l = "m=" + strings.Join(f, " ")
++			}
++		case strings.HasPrefix(l, "c="):
++			if !connAddrUnspecified(l) {
++				l = "c=IN IP4 " + ip
++			}
++		case strings.HasPrefix(l, "o="):
++			if f := strings.Fields(l[2:]); len(f) == 6 {
++				f[4], f[5] = "IP4", ip
++				l = "o=" + strings.Join(f, " ")
++			}
++		case strings.HasPrefix(l, "a=rtcp:") && cur >= 0:
++			m := ms[cur]
++			if m.port != 0 && m.ok {
++				f := strings.Fields(l[len("a=rtcp:"):])
++				l = "a=rtcp:" + strconv.Itoa(m.newRT)
++				if len(f) >= 4 {
++					if m.held {
++						l += " " + strings.Join(f[1:], " ")
++					} else {
++						l += " IN IP4 " + ip
++					}
++				}
++			}
++		case isICEAttr(l):
++			continue
++		}
++		b.WriteString(l)
++		b.WriteString(eol)
++	}
++	return []byte(b.String()), nil
++}
+diff --git a/libtailscale/p21relay/sdp_test.go b/libtailscale/p21relay/sdp_test.go
+new file mode 100644
+index 0000000..e2ada6d
+--- /dev/null
++++ b/libtailscale/p21relay/sdp_test.go
+@@ -0,0 +1,90 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"net/netip"
++	"strings"
++	"testing"
++)
++
++func TestRewriteSDP(t *testing.T) {
++	in := "v=0\r\n" +
++		"o=test 1 2 IN IP4 192.0.2.10\r\n" +
++		"s=-\r\n" +
++		"c=IN IP4 192.0.2.10\r\n" +
++		"a=ice-ufrag:abcd\r\n" +
++		"t=0 0\r\n" +
++		"m=audio 40000 RTP/AVP 9 0 101\r\n" +
++		"a=rtcp:40001 IN IP4 192.0.2.10\r\n" +
++		"a=candidate:1 1 UDP 1 192.0.2.10 40000 typ host\r\n" +
++		"a=sendrecv\r\n" +
++		"m=video 0 RTP/AVP 96\r\n" +
++		"m=audio 41000 RTP/AVP 0\r\n" +
++		"c=IN IP4 0.0.0.0\r\n" +
++		"a=rtcp:41000\r\n" +
++		"a=rtcp-mux\r\n" +
++		"m=text 42000/2 RTP/AVP 98\r\n" +
++		"c=IN IP6 2001:db8::1\r\n"
++	var got []sdpStream
++	out, err := rewriteSDP([]byte(in), netip.MustParseAddr("100.64.0.4"), func(s sdpStream) (int, int, bool) {
++		got = append(got, s)
++		switch s.index {
++		case 0:
++			return 30000, 30001, true
++		case 2:
++			return 30010, 30010, true
++		}
++		return 0, 0, false
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	want := "v=0\r\n" +
++		"o=test 1 2 IN IP4 100.64.0.4\r\n" +
++		"s=-\r\n" +
++		"c=IN IP4 100.64.0.4\r\n" +
++		"t=0 0\r\n" +
++		"m=audio 30000 RTP/AVP 9 0 101\r\n" +
++		"a=rtcp:30001 IN IP4 100.64.0.4\r\n" +
++		"a=sendrecv\r\n" +
++		"m=video 0 RTP/AVP 96\r\n" +
++		"m=audio 30010 RTP/AVP 0\r\n" +
++		"c=IN IP4 0.0.0.0\r\n" +
++		"a=rtcp:30010\r\n" +
++		"a=rtcp-mux\r\n" +
++		"m=text 0/2 RTP/AVP 98\r\n" +
++		"c=IN IP4 100.64.0.4\r\n"
++	if string(out) != want {
++		t.Fatalf("got:\n%s\nwant:\n%s", out, want)
++	}
++	if len(got) != 3 {
++		t.Fatalf("alloc calls %+v", got)
++	}
++	if got[0] != (sdpStream{index: 0, port: 40000, rtcpPort: 40001}) {
++		t.Fatalf("stream 0 %+v", got[0])
++	}
++	if got[1] != (sdpStream{index: 2, port: 41000, rtcpPort: 41000, held: true}) {
++		t.Fatalf("stream 2 %+v", got[1])
++	}
++	if got[2].index != 3 || got[2].port != 42000 || got[2].held {
++		t.Fatalf("stream 3 %+v", got[2])
++	}
++}
++
++func TestRewriteSDPLineEndingsAndErrors(t *testing.T) {
++	out, err := rewriteSDP([]byte("v=0\nc=IN IP4 192.0.2.1\nm=audio 5000 RTP/AVP 0\n"), loopback4,
++		func(sdpStream) (int, int, bool) { return 6000, 6001, true })
++	if err != nil || string(out) != "v=0\nc=IN IP4 127.0.0.1\nm=audio 6000 RTP/AVP 0\n" {
++		t.Fatalf("%q %v", out, err)
++	}
++	for _, bad := range []string{"x=1\r\n", "v=0\r\nm=audio\r\n", "v=0\r\nm=audio x RTP/AVP 0\r\n", "v=0\r\nm=audio 1 RTP/AVP 0\r\na=rtcp:\r\n"} {
++		if _, err := rewriteSDP([]byte(bad), loopback4, func(sdpStream) (int, int, bool) { return 1, 2, true }); err == nil {
++			t.Errorf("accepted %q", bad)
++		}
++	}
++	if strings.Contains(string(out), "\r") {
++		t.Fatal("CR added")
++	}
++}
+diff --git a/libtailscale/p21relay/stats.go b/libtailscale/p21relay/stats.go
+new file mode 100644
+index 0000000..de2acde
+--- /dev/null
++++ b/libtailscale/p21relay/stats.go
+@@ -0,0 +1,109 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"context"
++	"errors"
++	"net"
++	"os"
++	"sync"
++	"syscall"
++	"time"
++)
++
++// counters is a set of named counters for Stats(); names never contain
++// personal data. Hot paths (media packets) use atomics elsewhere.
++type counters struct {
++	mu sync.Mutex
++	m  map[string]int64
++}
++
++func (c *counters) add(name string, n int64) {
++	c.mu.Lock()
++	if c.m == nil {
++		c.m = make(map[string]int64)
++	}
++	c.m[name] += n
++	c.mu.Unlock()
++}
++
++func (c *counters) inc(name string) { c.add(name, 1) }
++
++func (c *counters) get(name string) int64 {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.m[name]
++}
++
++func (c *counters) snapshot() map[string]int64 {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	out := make(map[string]int64, len(c.m))
++	for k, v := range c.m {
++		out[k] = v
++	}
++	return out
++}
++
++// rateLog forwards to Logf at most once per interval per key.
++type rateLog struct {
++	logf     func(format string, args ...any)
++	interval time.Duration
++	mu       sync.Mutex
++	last     map[string]time.Time
++}
++
++func (l *rateLog) printf(key, format string, args ...any) {
++	if l.logf == nil {
++		return
++	}
++	now := time.Now()
++	l.mu.Lock()
++	if l.last == nil {
++		l.last = make(map[string]time.Time)
++	}
++	if t, ok := l.last[key]; ok && now.Sub(t) < l.interval {
++		l.mu.Unlock()
++		return
++	}
++	l.last[key] = now
++	l.mu.Unlock()
++	l.logf(format, args...)
++}
++
++// fixedErr is an error whose text is safe to log as is.
++type fixedErr string
++
++func (e fixedErr) Error() string { return string(e) }
++
++// errClass reduces an error to a fixed word, so that no address, path or
++// other detail of a request ends up in the log.
++func errClass(err error) string {
++	var (
++		ne net.Error
++		fe fixedErr
++	)
++	switch {
++	case err == nil:
++		return "ok"
++	case errors.Is(err, context.Canceled):
++		return "canceled"
++	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
++		return "timeout"
++	case errors.As(err, &fe):
++		return string(fe)
++	case errors.Is(err, net.ErrClosed):
++		return "closed"
++	case errors.Is(err, syscall.ECONNREFUSED):
++		return "refused"
++	case errors.Is(err, syscall.ECONNRESET):
++		return "reset"
++	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
++		return "unreachable"
++	case errors.As(err, &ne) && ne.Timeout():
++		return "timeout"
++	}
++	return "error"
++}
+diff --git a/libtailscale/p21relay/stats_test.go b/libtailscale/p21relay/stats_test.go
+new file mode 100644
+index 0000000..3a6eb68
+--- /dev/null
++++ b/libtailscale/p21relay/stats_test.go
+@@ -0,0 +1,37 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"context"
++	"fmt"
++	"testing"
++	"time"
++)
++
++func TestRateLog(t *testing.T) {
++	n := 0
++	l := &rateLog{logf: func(string, ...any) { n++ }, interval: time.Hour}
++	l.printf("a", "x")
++	l.printf("a", "x")
++	l.printf("b", "x")
++	if n != 2 {
++		t.Fatalf("logged %d", n)
++	}
++	(&rateLog{}).printf("a", "nil logf must not panic")
++}
++
++func TestErrClass(t *testing.T) {
++	for err, want := range map[error]string{
++		nil:                      "ok",
++		context.Canceled:         "canceled",
++		context.DeadlineExceeded: "timeout",
++		fmt.Errorf("dial sip:test@127.0.0.1/secret: %w", fixedErr("no free media port pair")): "no free media port pair",
++		fmt.Errorf("GET /contacts/person.vcf failed"):                                         "error",
++	} {
++		if got := errClass(err); got != want {
++			t.Errorf("%v: %q, want %q", err, got, want)
++		}
++	}
++}

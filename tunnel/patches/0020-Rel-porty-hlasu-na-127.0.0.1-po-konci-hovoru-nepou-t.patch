@@ -1,0 +1,399 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:48:44 +0000
+Subject: [PATCH 20/33] =?UTF-8?q?Rel=C3=A9:=20porty=20hlasu=20na=20127.0.0?=
+ =?UTF-8?q?.1=20po=20konci=20hovoru=20nepou=C5=A1t=C4=9Bt=20hned?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Po zastavení relé během hovoru (změna stupně přístupu, změna adres
+v privátní síti, nové spuštění relé) i po uvolnění hovoru se porty hlasu
+na 127.0.0.1 hned zavřely. Volací knihovna ale do nich posílá mikrofon
+dál, dokud se o konci nedozví (nejdéle do limitu bez hlasu, 30 s). Cizí
+appka, která by uvolněný port obsadila, by slyšela mikrofon a knihovna
+by přehrávala, co z něj pošle.
+
+Teď se privátní dvojice zavře hned, přeposílání skončí a dvojice na
+127.0.0.1 zůstane obsazená bez čtení 60 s (zmenšený příjmový buffer,
+přebytek zahodí jádro). Držení je společné pro všechna relé, takže
+přežije zastavení relé a nové relé dostane jiné porty. Počet držených
+soketů je omezený (128); nad limit se nejstarší vrací dřív. Statistika
+clientPortsHeld, čítač media.hold_evicted, testy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/media.go      | 148 +++++++++++++++++++++++++---
+ libtailscale/p21relay/media_test.go |  71 ++++++++++++-
+ libtailscale/p21relay/relay.go      |   4 +-
+ libtailscale/p21relay/relay_test.go |  30 ++++++
+ 4 files changed, 232 insertions(+), 21 deletions(-)
+
+diff --git a/libtailscale/p21relay/media.go b/libtailscale/p21relay/media.go
+index bf8f361..f3f53da 100644
+--- a/libtailscale/p21relay/media.go
++++ b/libtailscale/p21relay/media.go
+@@ -22,6 +22,13 @@ const (
+ 	mediaPortMin      = 20000
+ 	mediaPortMax      = 60000
+ 	maxMediaPacket    = 2048
++
++	// clientPortHold: how long the 127.0.0.1 pair of a finished stream
++	// stays bound. Longer than the calling library's no-RTP timeout (30 s),
++	// after which it ends a call whose media stopped.
++	clientPortHold = 60 * time.Second
++	// maxHeldSockets bounds the held sockets of all relays together.
++	maxHeldSockets = 4 * maxMediaStreams
+ )
+ 
+ var (
+@@ -46,17 +53,110 @@ type mediaStream struct {
+ 	upRTP, upRTCP atomic.Uint32
+ 	upSend        atomic.Bool
+ 
+-	lastPkt   atomic.Int64 // unix nanoseconds
+-	closeOnce sync.Once
++	lastPkt    atomic.Int64 // unix nanoseconds
++	retireOnce sync.Once
+ }
+ 
+-func (s *mediaStream) close() {
+-	s.closeOnce.Do(func() {
+-		s.cRTP.Close()
+-		s.cRTCP.Close()
++// retire ends forwarding: the private pair is closed, the pumps stop, and
++// the 127.0.0.1 pair is returned still bound, for heldPorts.
++func (s *mediaStream) retire() []net.PacketConn {
++	var held []net.PacketConn
++	s.retireOnce.Do(func() {
+ 		s.uRTP.Close()
+ 		s.uRTCP.Close()
++		// Wake the pumps reading the client side without giving the
++		// ports up; the other two stop with the private sockets.
++		now := time.Now()
++		s.cRTP.SetReadDeadline(now)
++		s.cRTCP.SetReadDeadline(now)
++		held = []net.PacketConn{s.cRTP, s.cRTCP}
+ 	})
++	return held
++}
++
++// heldPorts keeps the 127.0.0.1 pairs of finished streams bound for a
++// while. The calling library keeps sending the microphone to such a port
++// until it learns that the call ended or moved (BYE, re-INVITE, or its
++// no-RTP timeout), also when the relay was stopped during a call. Another
++// app that bound a port given back too early would hear the microphone,
++// and the library would play what that app sends from it, because it comes
++// from the address the library expects. Held sockets are not read; the
++// kernel drops what does not fit their (shrunk) buffer. The hold is
++// package-wide, so it outlives Relay.Close, and a new relay simply gets
++// other ports.
++var heldPorts portHold
++
++type heldBatch struct {
++	conns []net.PacketConn
++	timer *time.Timer
++}
++
++type portHold struct {
++	mu      sync.Mutex
++	batches []*heldBatch // oldest first
++	n       int          // sockets held
++}
++
++// add holds conns for d. Above maxHeldSockets the oldest batches are given
++// back early; add returns how many sockets that were.
++func (h *portHold) add(conns []net.PacketConn, d time.Duration) (evicted int) {
++	if len(conns) == 0 {
++		return 0
++	}
++	for _, c := range conns {
++		if u, ok := c.(interface{ SetReadBuffer(int) error }); ok {
++			u.SetReadBuffer(1) // the kernel rounds up to its minimum
++		}
++	}
++	b := &heldBatch{conns: conns}
++	h.mu.Lock()
++	h.batches = append(h.batches, b)
++	h.n += len(conns)
++	var drop []*heldBatch
++	for h.n > maxHeldSockets && len(h.batches) > 1 {
++		old := h.batches[0]
++		h.batches = h.batches[1:]
++		h.n -= len(old.conns)
++		drop = append(drop, old)
++	}
++	// Set under the lock: expire needs the lock, so it cannot run before.
++	b.timer = time.AfterFunc(d, func() { h.expire(b) })
++	h.mu.Unlock()
++	for _, old := range drop {
++		old.timer.Stop()
++		closeConns(old.conns)
++		evicted += len(old.conns)
++	}
++	return evicted
++}
++
++func (h *portHold) expire(b *heldBatch) {
++	h.mu.Lock()
++	found := false
++	for i, x := range h.batches {
++		if x == b {
++			h.batches = append(h.batches[:i], h.batches[i+1:]...)
++			h.n -= len(b.conns)
++			found = true
++			break
++		}
++	}
++	h.mu.Unlock()
++	if found {
++		closeConns(b.conns)
++	}
++}
++
++func (h *portHold) count() int {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	return h.n
++}
++
++func closeConns(conns []net.PacketConn) {
++	for _, c := range conns {
++		c.Close()
++	}
+ }
+ 
+ type mediaCall struct {
+@@ -90,6 +190,7 @@ type mediaManager struct {
+ 	calls    map[string]*mediaCall
+ 	nstreams int
+ 	closed   bool
++	holdFor  time.Duration // clientPortHold; tests shorten it
+ 
+ 	pktToUp, pktToClient     atomic.Int64
+ 	bytesToUp, bytesToClient atomic.Int64
+@@ -105,6 +206,7 @@ func newMediaManager(nw Network, upIP netip.Addr, cnt *counters, log *rateLog) *
+ 		cnt:     cnt,
+ 		log:     log,
+ 		calls:   make(map[string]*mediaCall),
++		holdFor: clientPortHold,
+ 	}
+ }
+ 
+@@ -322,16 +424,29 @@ func (mm *mediaManager) release(callID, reason string) {
+ 		delete(mm.calls, callID)
+ 		mm.nstreams -= len(c.streams)
+ 	}
++	hold := mm.holdFor
+ 	mm.mu.Unlock()
+ 	if c == nil {
+ 		return
+ 	}
+-	for _, s := range c.streams {
+-		s.close()
+-	}
++	mm.retire([]*mediaCall{c}, hold)
+ 	mm.cnt.inc("media.released_" + reason)
+ }
+ 
++// retire stops the calls' streams and hands their 127.0.0.1 pairs to
++// heldPorts.
++func (mm *mediaManager) retire(calls []*mediaCall, hold time.Duration) {
++	var held []net.PacketConn
++	for _, c := range calls {
++		for _, s := range c.streams {
++			held = append(held, s.retire()...)
++		}
++	}
++	if n := heldPorts.add(held, hold); n > 0 {
++		mm.cnt.add("media.hold_evicted", int64(n))
++	}
++}
++
+ // expire releases calls whose time is up and returns the next deadline
+ // (zero when there are no calls).
+ func (mm *mediaManager) expire(now time.Time) time.Time {
+@@ -387,18 +502,20 @@ func (mm *mediaManager) counts() (calls, streams int) {
+ 	return len(mm.calls), mm.nstreams
+ }
+ 
++// closeAll releases every stream (127.0.0.1 pairs go to heldPorts, see
++// there) and waits for the pumps.
+ func (mm *mediaManager) closeAll() {
+ 	mm.mu.Lock()
+ 	mm.closed = true
+-	calls := mm.calls
++	calls := make([]*mediaCall, 0, len(mm.calls))
++	for _, c := range mm.calls {
++		calls = append(calls, c)
++	}
+ 	mm.calls = make(map[string]*mediaCall)
+ 	mm.nstreams = 0
++	hold := mm.holdFor
+ 	mm.mu.Unlock()
+-	for _, c := range calls {
+-		for _, s := range c.streams {
+-			s.close()
+-		}
+-	}
++	mm.retire(calls, hold)
+ 	mm.wg.Wait()
+ }
+ 
+@@ -415,6 +532,7 @@ func (mm *mediaManager) stats() map[string]int64 {
+ 		"dropForeignNetwork": mm.dropUpSrc.Load(),
+ 		"dropNoDestination":  mm.dropNoDest.Load(),
+ 		"writeErrors":        mm.writeErrors.Load(),
++		"clientPortsHeld":    int64(heldPorts.count()),
+ 	}
+ }
+ 
+diff --git a/libtailscale/p21relay/media_test.go b/libtailscale/p21relay/media_test.go
+index 4229140..b82a27a 100644
+--- a/libtailscale/p21relay/media_test.go
++++ b/libtailscale/p21relay/media_test.go
+@@ -37,6 +37,7 @@ func firstPort(t *testing.T, sdp []byte) int {
+ 
+ func TestMediaManagerAnchoring(t *testing.T) {
+ 	mm := newMediaManager(fakeNet{}, upIP, &counters{}, &rateLog{})
++	mm.holdFor = 300 * time.Millisecond
+ 	defer mm.closeAll()
+ 	cli, up := newRTPPair(t, loopback4), newRTPPair(t, upIP)
+ 	now := time.Now()
+@@ -75,15 +76,75 @@ func TestMediaManagerAnchoring(t *testing.T) {
+ 		t.Fatalf("counts %d %d", calls, streams)
+ 	}
+ 
+-	// Release closes the ports.
++	// Release gives the private ports back at once and keeps the
++	// 127.0.0.1 ones bound for a while, without forwarding anything.
+ 	mm.release("c1", "test")
+ 	if _, streams := mm.counts(); streams != 0 {
+ 		t.Fatal("not released")
+ 	}
+-	if c, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(rc)); err != nil {
+-		t.Fatalf("client-side port still bound: %v", err)
+-	} else {
+-		c.Close()
++	expectBindable(t, ru, true)
++	expectBindable(t, netip.AddrPortFrom(privIP, uint16(relayU+1)), true)
++	expectBindable(t, rc, false)
++	expectBindable(t, netip.AddrPortFrom(loopback4, uint16(relayC+1)), false)
++	cli.rtp.WriteToUDPAddrPort([]byte("after-release"), rc)
++	expectNoPacket(t, up.rtp)
++	waitFor(t, func() bool { return canBind(rc) && canBind(netip.AddrPortFrom(loopback4, uint16(relayC+1))) })
++}
++
++func canBind(ap netip.AddrPort) bool {
++	c, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(ap))
++	if err != nil {
++		return false
++	}
++	c.Close()
++	return true
++}
++
++func expectBindable(t *testing.T, ap netip.AddrPort, want bool) {
++	t.Helper()
++	if got := canBind(ap); got != want {
++		t.Fatalf("port %v bindable=%v, want %v", ap, got, want)
++	}
++}
++
++func TestPortHoldLimit(t *testing.T) {
++	var h portHold
++	open := func() []net.PacketConn {
++		a, b, _, err := listenPair(func(p int) (net.PacketConn, error) {
++			return net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(loopback4, uint16(p))))
++		})
++		if err != nil {
++			t.Fatal(err)
++		}
++		return []net.PacketConn{a, b}
++	}
++	first := open()
++	firstAddr := addrPortOf(first[0].LocalAddr())
++	if n := h.add(first, time.Hour); n != 0 {
++		t.Fatalf("evicted %d", n)
++	}
++	var last []net.PacketConn
++	evicted := 0
++	for i := 0; i < maxHeldSockets/2; i++ {
++		last = open()
++		evicted += h.add(last, time.Hour)
++	}
++	// One pair over the limit: the oldest went back early.
++	if evicted != 2 || h.count() != maxHeldSockets || !canBind(firstAddr) {
++		t.Fatalf("evicted %d, held %d, oldest bindable %v", evicted, h.count(), canBind(firstAddr))
++	}
++	if canBind(addrPortOf(last[0].LocalAddr())) {
++		t.Fatal("newest pair given back")
++	}
++	h.mu.Lock()
++	batches := append([]*heldBatch(nil), h.batches...)
++	h.mu.Unlock()
++	for _, b := range batches {
++		b.timer.Stop()
++		h.expire(b)
++	}
++	if h.count() != 0 {
++		t.Fatalf("held %d after expiry", h.count())
+ 	}
+ }
+ 
+diff --git a/libtailscale/p21relay/relay.go b/libtailscale/p21relay/relay.go
+index f0f7c0f..9aefdba 100644
+--- a/libtailscale/p21relay/relay.go
++++ b/libtailscale/p21relay/relay.go
+@@ -169,7 +169,9 @@ func Start(ctx context.Context, cfg Config, nw Network) (*Relay, Info, error) {
+ 	return r, info, nil
+ }
+ 
+-// Close stops listeners and releases all media ports.
++// Close stops listeners and releases all media ports. The 127.0.0.1 media
++// ports stay bound, unread, for a while (see heldPorts): a call that was
++// running keeps sending to them, and no other app may take them over.
+ func (r *Relay) Close() error {
+ 	if r == nil {
+ 		return nil
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+index 89d2386..b609da5 100644
+--- a/libtailscale/p21relay/relay_test.go
++++ b/libtailscale/p21relay/relay_test.go
+@@ -799,6 +799,36 @@ func TestStatsAndClose(t *testing.T) {
+ 	e.relay.Close() // idempotent
+ }
+ 
++// Stopping the relay during a call must not hand the call's 127.0.0.1
++// ports to another app: the calling library keeps sending the microphone
++// there until it notices that the call is gone.
++func TestCloseHoldsClientMediaPorts(t *testing.T) {
++	e := newEnv(t)
++	e.relay.media.mu.Lock()
++	e.relay.media.holdFor = 500 * time.Millisecond
++	e.relay.media.mu.Unlock()
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++	e.relay.Close()
++
++	for _, ap := range []netip.AddrPort{cl.relayClientRTP(), cl.relayClientRTCP()} {
++		if canBind(ap) {
++			t.Fatalf("another app could bind %v after Close", ap)
++		}
++	}
++	for _, ap := range []netip.AddrPort{cl.relayPrivRTP(), cl.relayPrivRTCP()} {
++		if !canBind(ap) {
++			t.Fatalf("private port %v still bound after Close", ap)
++		}
++	}
++	cl.cli.rtp.WriteToUDPAddrPort([]byte("mic-audio"), cl.relayClientRTP())
++	expectNoPacket(t, cl.up.rtp)
++	if e.mediaStat("clientPortsHeld") < 2 {
++		t.Fatalf("held %d", e.mediaStat("clientPortsHeld"))
++	}
++	waitFor(t, func() bool { return canBind(cl.relayClientRTP()) && canBind(cl.relayClientRTCP()) })
++}
++
+ func TestStartValidation(t *testing.T) {
+ 	sc, cc := makeCert(t, "relay"), makeCert(t, "client")
+ 	good := Config{UpstreamSIP: netip.MustParseAddrPort("127.0.0.3:5060"), ServerCertPEM: sc.certPEM, ServerKeyPEM: sc.keyPEM, ClientCertPEM: cc.certPEM}

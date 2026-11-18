@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:35:05 +0000
+Subject: [PATCH 16/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20re=C5=BEim:=20selh?=
+ =?UTF-8?q?=C3=A1n=C3=AD=20syst=C3=A9mov=C3=A9=20VPN=20nevypne=20tunel?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Když běžel vnitřní režim, appka požádala o systémovou VPN a ta
+selhala (místo drží jiná VPN, VPN nepřipravená, znovuspuštění služby
+po zabití procesu), uložilo se „tunel nechci“. Vnitřní režim se pak
+vrátil nad zastaveným tunelem: stav Zakázáno bez chyby, hovory
+nešly až do ručního zapnutí, a to i po restartu. Navíc smyčka tunelu
+až 30 s čekala sama na sebe.
+
+Dokud appka vnitřní režim žádá, selhání VPN „tunel nechci“ neukládá:
+zavře jen rozhraní a službu VPN a zapíše chybu, vnitřní režim pak
+tunel hned převezme (nové rozhraní, nová generace, relé znovu).
+Bez žádosti o vnitřní režim beze změny. Test rozhodnutí na počítači.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/backend.go                | 19 +++++++++----
+ libtailscale/p21_internal.go           |  4 ++-
+ libtailscale/p21internal/state.go      | 19 +++++++++++++
+ libtailscale/p21internal/state_test.go | 39 ++++++++++++++++++++++++++
+ 4 files changed, 75 insertions(+), 6 deletions(-)
+
+diff --git a/libtailscale/backend.go b/libtailscale/backend.go
+index e9f7251..71ab3ab 100644
+--- a/libtailscale/backend.go
++++ b/libtailscale/backend.go
+@@ -437,12 +437,21 @@ func (b *backend) isConfigNonNilAndDifferent(rcfg *router.Config, dcfg *dns.OSCo
+ func (a *App) closeVpnService(err error, b *backend) {
+ 	log.Printf("VPN update failed: %v", err)
+ 
+-	mp := new(ipn.MaskedPrefs)
+-	mp.WantRunning = false
+-	mp.WantRunningSet = true
++	// Phone21: while the app requests the internal mode, a failed VpnService
++	// must not turn the tunnel off. WantRunning=false would be stored (and
++	// survive restarts) and the internal mode would come back over a stopped
++	// backend. syncInternal brings the in-process interface back at the top
++	// of the next runBackend iteration instead (p21_internal.go).
++	if internalState.SystemVPNFailed(err) {
++		log.Printf("internal: VPN failed, tunnel kept on for the internal mode")
++	} else {
++		mp := new(ipn.MaskedPrefs)
++		mp.WantRunning = false
++		mp.WantRunningSet = true
+ 
+-	if _, localApiErr := a.EditPrefs(*mp); localApiErr != nil {
+-		log.Printf("localapi edit prefs error %v", localApiErr)
++		if _, localApiErr := a.EditPrefs(*mp); localApiErr != nil {
++			log.Printf("localapi edit prefs error %v", localApiErr)
++		}
+ 	}
+ 
+ 	if b.devices.Down() {
+diff --git a/libtailscale/p21_internal.go b/libtailscale/p21_internal.go
+index a81ecc2..d00232f 100644
+--- a/libtailscale/p21_internal.go
++++ b/libtailscale/p21_internal.go
+@@ -17,7 +17,9 @@ package libtailscale
+ //   - The system VpnService always wins: onVPNRequested ends the internal
+ //     mode (the in-process device is replaced in multiTUN by updateTUN). The
+ //     app's request stays recorded, so after ServiceDisconnect the internal
+-//     mode comes back on its own.
++//     mode comes back on its own. The same holds when the VpnService fails
++//     (closeVpnService): while the internal mode is requested it does not
++//     store WantRunning=false, and the internal mode takes the tunnel back.
+ //   - The internal path never calls closeVpnService, DisconnectVPN or
+ //     EditPrefs(WantRunning=false). Errors go to InternalStatus().error and
+ //     the log; the app retries with StopInternal + RequestInternal.
+diff --git a/libtailscale/p21internal/state.go b/libtailscale/p21internal/state.go
+index e17c0b4..db1f3d6 100644
+--- a/libtailscale/p21internal/state.go
++++ b/libtailscale/p21internal/state.go
+@@ -7,6 +7,7 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
++	"fmt"
+ 	"net/netip"
+ 	"sync"
+ 	"sync/atomic"
+@@ -110,6 +111,24 @@ func (s *State) SetVPNService(v bool) {
+ 	s.vpnService = v
+ }
+ 
++// SystemVPNFailed is called when the system VpnService could not carry the
++// tunnel and is being closed. It reports whether the tunnel must stay on,
++// that is, the caller must not store WantRunning=false: true while the app
++// requests the internal mode, which takes the tunnel back right away (the
++// request outlives the system VPN, also when the VPN fails). The failure is
++// then recorded as the last error, until the in-process interface is up
++// again. False means no internal mode to return to; the caller turns the
++// tunnel off as before.
++func (s *State) SystemVPNFailed(err error) (keepRunning bool) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if !s.requested {
++		return false
++	}
++	s.lastErr = fmt.Sprintf("system VPN failed: %v", err)
++	return true
++}
++
+ // SetError records the last internal-mode error ("" clears it).
+ func (s *State) SetError(err error) {
+ 	s.mu.Lock()
+diff --git a/libtailscale/p21internal/state_test.go b/libtailscale/p21internal/state_test.go
+index a92248b..18cab7e 100644
+--- a/libtailscale/p21internal/state_test.go
++++ b/libtailscale/p21internal/state_test.go
+@@ -284,3 +284,42 @@ func TestStateConcurrent(t *testing.T) {
+ 		return true
+ 	})
+ }
++
++// A system VPN that fails while the app still requests the internal mode
++// must not turn the tunnel off: the internal mode takes it back.
++func TestSystemVPNFailed(t *testing.T) {
++	s := NewState((&fakeStarter{}).start, func(string, ...any) {})
++	vpnErr := errors.New("VpnService not prepared")
++
++	// No internal mode requested: the tunnel is turned off as before.
++	if s.SystemVPNFailed(vpnErr) {
++		t.Fatal("keepRunning without an internal request")
++	}
++	if st := s.Status(); st.Error != "" {
++		t.Errorf("error recorded without an internal request: %q", st.Error)
++	}
++
++	// Requested (the system VPN won over it, then failed): keep running.
++	s.SetRequested(true)
++	s.SetVPNService(true)
++	if !s.SystemVPNFailed(vpnErr) {
++		t.Fatal("WantRunning=false would be stored while the internal mode is requested")
++	}
++	s.SetVPNService(false)
++	st := s.Status()
++	if !st.Requested || st.Up || st.Error != "system VPN failed: VpnService not prepared" {
++		t.Errorf("status after failure = %+v", st)
++	}
++
++	// The internal mode is back: a new generation, the failure is history.
++	s.Install(nil, phoneAddr)
++	if st := s.Status(); !st.Up || st.Error != "" {
++		t.Errorf("status after return = %+v", st)
++	}
++
++	// Withdrawn meanwhile: off as before.
++	s.SetRequested(false)
++	if s.SystemVPNFailed(vpnErr) {
++		t.Fatal("keepRunning after StopInternal")
++	}
++}

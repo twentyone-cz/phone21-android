@@ -1,0 +1,2413 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <dev@cc>
+Date: Wed, 18 Nov 2026 14:58:53 +0000
+Subject: [PATCH 28/33] =?UTF-8?q?Rel=C3=A9:=20hlas=20k=20volac=C3=AD=20kni?=
+ =?UTF-8?q?hovn=C4=9B=20jen=20=C5=A1ifrovan=C3=BD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Volací knihovna přijímá hlas od kohokoli, takže cizí appka v telefonu
+by mohla do hovoru podstrčit zvuk. Relé teď s knihovnou mluví jen
+šifrovaně a šifrování ukončuje; ústředna dostává dál obyčejný hlas
+tunelem a nic se pro ni nemění.
+
+- Popis relace: ke knihovně šifrovaný profil s klíčem relé (nový
+  náhodný klíč pro každý proud; v odpovědi značka a sada z nabídky
+  knihovny, v nabídce obě sady, používaná první). K ústředně profil
+  bez šifrování a bez všech atributů šifrování.
+- Nabídka knihovny bez použitelného klíče dostane 488 a k ústředně
+  nedojde. Odpověď knihovny bez něj: ústředna místo přijetí 488,
+  knihovna ACK a BYE, spojený hovor BYE na obou stranách.
+- Hlas od knihovny projde jen ověřený jejím klíčem (bez opakování),
+  ke knihovně jde zašifrovaný. Nový klíč knihovny v re-INVITE relé
+  převezme, jakmile jím knihovna podepíše paket; stejný klíč ponechá
+  kontext. Skok čísel paketů od ústředny v rámci jednoho zdroje relé
+  vyrovná, ať je knihovna nezahodí.
+- Počty zahozených paketů ve statistikách, nikdy klíče ani obsah.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/harness_test.go  |   2 +-
+ libtailscale/p21relay/media.go         | 372 ++++++++++++++++++-
+ libtailscale/p21relay/media_test.go    |  42 ++-
+ libtailscale/p21relay/relay_test.go    | 114 ++++--
+ libtailscale/p21relay/sdp.go           | 197 +++++++---
+ libtailscale/p21relay/sdp_test.go      |  19 +-
+ libtailscale/p21relay/sipproxy.go      | 230 ++++++++++--
+ libtailscale/p21relay/srtpcall_test.go | 491 +++++++++++++++++++++++++
+ libtailscale/p21relay/srtppeer_test.go | 332 +++++++++++++++++
+ 9 files changed, 1649 insertions(+), 150 deletions(-)
+ create mode 100644 libtailscale/p21relay/srtpcall_test.go
+ create mode 100644 libtailscale/p21relay/srtppeer_test.go
+
+diff --git a/libtailscale/p21relay/harness_test.go b/libtailscale/p21relay/harness_test.go
+index 6130878..855a0a2 100644
+--- a/libtailscale/p21relay/harness_test.go
++++ b/libtailscale/p21relay/harness_test.go
+@@ -432,7 +432,7 @@ func newEnvNet(t *testing.T, nw Network, hosts ...netip.Addr) *testEnv {
+ // checkLogs asserts that no personal data or secrets reached the log.
+ func (e *testEnv) checkLogs() {
+ 	l := e.logs.String()
+-	for _, bad := range []string{testUser + "@", testNumber, e.info.HTTPToken, "BEGIN", "v=0", "branch="} {
++	for _, bad := range []string{testUser + "@", testNumber, e.info.HTTPToken, "BEGIN", "v=0", "branch=", "inline:", "a=crypto"} {
+ 		if strings.Contains(l, bad) {
+ 			e.t.Errorf("log contains %q:\n%s", bad, l)
+ 		}
+diff --git a/libtailscale/p21relay/media.go b/libtailscale/p21relay/media.go
+index f3f53da..fba7fdb 100644
+--- a/libtailscale/p21relay/media.go
++++ b/libtailscale/p21relay/media.go
+@@ -8,6 +8,7 @@ import (
+ 	"math/rand/v2"
+ 	"net"
+ 	"net/netip"
++	"strconv"
+ 	"sync"
+ 	"sync/atomic"
+ 	"time"
+@@ -35,6 +36,10 @@ var (
+ 	loopback4    = netip.AddrFrom4([4]byte{127, 0, 0, 1})
+ 	errNoPorts   = fixedErr("no free media port pair")
+ 	errMediaGone = errors.New("media relay closed")
++	// errClientNoCrypto: popis relace od volací knihovny nemá pro některý
++	// proud použitelné a=crypto (nabídka), nebo nevybral žádnou z nabídnutých
++	// sad (odpověď). Hlas takového proudu relé nepředá.
++	errClientNoCrypto = errors.New("no usable media encryption from the calling library")
+ )
+ 
+ // mediaStream anchors one m= line: a 127.0.0.1 even/odd pair toward the
+@@ -55,6 +60,41 @@ type mediaStream struct {
+ 
+ 	lastPkt    atomic.Int64 // unix nanoseconds
+ 	retireOnce sync.Once
++
++	// Šifrování na úseku 127.0.0.1 (srtp.go).
++	recv srtpRecv // klíč volací knihovny: ověření a dešifrování
++	send srtpSend // klíč relé: šifrování pro knihovnu
++
++	// Vyjednávání klíčů, pod mediaManager.mu.
++	relayKeys map[srtpSuite]srtpKey // klíč relé pro každou sadu, stálý po celý hovor
++	offered   map[int]srtpSuite     // značky z poslední nabídky relé knihovně
++	cliOffer  *cryptoLine           // řádek vybraný z poslední nabídky knihovny
++	cliSecure bool                  // knihovna nabídla RTP/SAVP(F), ne „best effort“
++}
++
++// relayKey vrátí klíč relé pro sadu; vytvoří ho při prvním použití.
++func (s *mediaStream) relayKey(suite srtpSuite) srtpKey {
++	if k, ok := s.relayKeys[suite]; ok {
++		return k
++	}
++	if s.relayKeys == nil {
++		s.relayKeys = make(map[srtpSuite]srtpKey)
++	}
++	k := newRelayKey(suite)
++	s.relayKeys[suite] = k
++	return k
++}
++
++// answerChoice najde v odpovědi knihovny řádek se značkou a sadou, které
++// relé nabídlo.
++func (s *mediaStream) answerChoice(values []string) (cryptoLine, bool) {
++	for _, v := range values {
++		c, ok := parseCrypto(v)
++		if ok && s.offered != nil && s.offered[c.tag] == c.key.suite {
++			return c, true
++		}
++	}
++	return cryptoLine{}, false
+ }
+ 
+ // retire ends forwarding: the private pair is closed, the pumps stop, and
+@@ -164,6 +204,76 @@ type mediaCall struct {
+ 	established bool                 // a 2xx to INVITE passed
+ 	lastSIP     time.Time
+ 	releaseAt   time.Time // zero = not scheduled
++
++	// Kdo co nabídl (odpověď se pozná podle toho, zda požadavek nesl nabídku).
++	reqOffer  map[string]bool // offerKey požadavků s nabídkou
++	respOffer int8            // nabídka v odpovědi čeká na ACK/PRACK: 1 knihovna, 2 ústředna
++	cseq      [2]uint32       // nejvyšší CSeq požadavků: [0] knihovna, [1] ústředna
++}
++
++// sdpMsg popisuje zprávu, která nese popis relace.
++type sdpMsg struct {
++	isReq  bool
++	method string // metoda požadavku, u odpovědi metoda z CSeq
++	cseq   uint32
++}
++
++type sdpKind int
++
++const (
++	sdpOther sdpKind = iota // mimo výměnu nabídka/odpověď hovoru
++	sdpOffer
++	sdpAnswer
++)
++
++func sideOf(fromClient bool) int8 {
++	if fromClient {
++		return 1
++	}
++	return 2
++}
++
++func offerKey(fromClient bool, method string, cseq uint32) string {
++	return strconv.Itoa(int(sideOf(fromClient))) + "|" + method + "|" + strconv.FormatUint(uint64(cseq), 10)
++}
++
++// kind určí roli popisu relace (RFC 3264, RFC 3262, RFC 3311). c smí být nil.
++func (c *mediaCall) kind(fromClient bool, m sdpMsg) sdpKind {
++	switch m.method {
++	case "INVITE", "UPDATE", "PRACK", "ACK":
++	default:
++		return sdpOther
++	}
++	if m.isReq {
++		switch m.method {
++		case "ACK":
++			return sdpAnswer
++		case "PRACK":
++			if c != nil && c.respOffer == sideOf(!fromClient) {
++				return sdpAnswer
++			}
++		}
++		return sdpOffer
++	}
++	if c != nil && c.reqOffer[offerKey(!fromClient, m.method, m.cseq)] {
++		return sdpAnswer
++	}
++	return sdpOffer
++}
++
++// noteSDP si zapamatuje nabídku nebo vyřízení nabídky z odpovědi.
++func (c *mediaCall) noteSDP(fromClient bool, m sdpMsg, k sdpKind) {
++	switch {
++	case k == sdpOffer && m.isReq:
++		if c.reqOffer == nil || len(c.reqOffer) >= 16 {
++			c.reqOffer = make(map[string]bool)
++		}
++		c.reqOffer[offerKey(fromClient, m.method, m.cseq)] = true
++	case k == sdpOffer:
++		c.respOffer = sideOf(fromClient)
++	case k == sdpAnswer && m.isReq:
++		c.respOffer = 0
++	}
+ }
+ 
+ func (c *mediaCall) lastActive() time.Time {
+@@ -196,6 +306,14 @@ type mediaManager struct {
+ 	bytesToUp, bytesToClient atomic.Int64
+ 	dropClientSrc, dropUpSrc atomic.Int64
+ 	dropNoDest, writeErrors  atomic.Int64
++
++	// Šifrování: jen počty, nikdy obsah ani klíče.
++	srtpAuthFail, srtpReplay       atomic.Int64 // od knihovny: neověřený (i nešifrovaný) / opakovaný paket
++	srtpNoKey, srtpMalformed       atomic.Int64 // od knihovny: bez dohodnutého klíče / ani RTP ani RTCP
++	srtpRepeat, srtpKeySwitch      atomic.Int64 // předané bezprostřední opakování / přechod na nový klíč knihovny
++	srtpNoKeyToClient, srtpSealErr atomic.Int64 // pro knihovnu: bez klíče relé / nejde zašifrovat
++	srtpSeqResync                  atomic.Int64 // vyrovnaný skok v číslech paketů pro knihovnu
++	srtpKeyError                   atomic.Int64 // klíč z SDP nešel použít
+ }
+ 
+ func newMediaManager(nw Network, upIP netip.Addr, cnt *counters, log *rateLog) *mediaManager {
+@@ -213,20 +331,69 @@ func newMediaManager(nw Network, upIP netip.Addr, cnt *counters, log *rateLog) *
+ // rewrite anchors the media of an SDP body. fromClient: the body comes from
+ // the calling library and goes to the miniserver (advertise the private
+ // address); otherwise the reverse (advertise 127.0.0.1).
+-func (mm *mediaManager) rewrite(callID string, fromClient bool, body []byte, now time.Time) ([]byte, error) {
++//
++// Šifrování: k ústředně jde RTP/AVP(F) bez atributů šifrování, ke knihovně
++// RTP/SAVP(F) s a=crypto relé. Nabídka knihovny (požadavek) bez použitelného
++// a=crypto vrátí errClientNoCrypto a nic nepřidělí. Odpověď knihovny (nebo
++// nabídka v její odpovědi) bez použitelného a=crypto se přepíše, ale její
++// proudy nedostanou žádný klíč a vrátí se přepsané tělo spolu
++// s errClientNoCrypto: hovor je třeba ukončit.
++func (mm *mediaManager) rewrite(callID string, fromClient bool, msg sdpMsg, body []byte, now time.Time) ([]byte, error) {
++	d, err := parseSDP(body)
++	if err != nil {
++		return nil, err
++	}
+ 	mm.mu.Lock()
+ 	defer mm.mu.Unlock()
+ 	if mm.closed {
+ 		return nil, errMediaGone
+ 	}
++	call := mm.calls[callID]
++	kind := call.kind(fromClient, msg)
++	secure := true
++	if fromClient {
++		switch kind {
++		case sdpOffer:
++			for _, s := range d.streams {
++				if _, ok := firstSupportedCrypto(s.crypto); s.port != 0 && (!ok || !isRTPProto(s.proto)) {
++					secure = false
++				}
++			}
++			if !secure && msg.isReq {
++				return nil, errClientNoCrypto
++			}
++		case sdpAnswer:
++			for _, s := range d.streams {
++				if s.port == 0 {
++					continue
++				}
++				var st *mediaStream
++				if call != nil {
++					st = call.streams[s.index]
++				}
++				if st == nil {
++					secure = false
++				} else if _, ok := st.answerChoice(s.crypto); !ok {
++					secure = false
++				}
++			}
++		}
++	}
+ 	addr := loopback4
+ 	if fromClient {
+ 		addr = mm.localIP
+ 	}
+-	return rewriteSDP(body, addr, func(s sdpStream) (int, int, bool) {
++	out := d.rewrite(addr, func(s sdpStream) sdpStreamOut {
++		proto := secureProto(s.proto)
++		if fromClient {
++			proto = plainProto(s.proto)
++		}
++		if s.port == 0 {
++			return sdpStreamOut{proto: proto}
++		}
+ 		st := mm.streamLocked(callID, s.index, now)
+ 		if st == nil {
+-			return 0, 0, false
++			return sdpStreamOut{proto: proto}
+ 		}
+ 		rtcp := s.rtcpPort
+ 		if rtcp == 0 {
+@@ -235,24 +402,139 @@ func (mm *mediaManager) rewrite(callID string, fromClient bool, body []byte, now
+ 		if rtcp > 65535 {
+ 			rtcp = 0
+ 		}
+-		var advRTP int
++		o := sdpStreamOut{ok: true, proto: proto}
+ 		if fromClient {
+ 			st.cliRTP.Store(uint32(s.port))
+ 			st.cliRTCP.Store(uint32(rtcp))
+ 			st.cliSend.Store(!s.held)
+-			advRTP = st.uPort
++			o.rtp = st.uPort
++			if !secure {
++				st.recv.clear()
++				st.send.clear()
++			} else {
++				mm.clientKeysLocked(st, s, kind)
++			}
+ 		} else {
+ 			st.upRTP.Store(uint32(s.port))
+ 			st.upRTCP.Store(uint32(rtcp))
+ 			st.upSend.Store(!s.held)
+-			advRTP = st.cPort
++			o.rtp = st.cPort
++			o.proto, o.crypto, o.ok = mm.relayKeysLocked(st, s, kind)
+ 		}
+-		advRTCP := advRTP + 1
++		o.rtcp = o.rtp + 1
+ 		if s.rtcpPort == s.port { // RTCP multiplexed on the RTP port
+-			advRTCP = advRTP
++			o.rtcp = o.rtp
+ 		}
+-		return advRTP, advRTCP, true
++		return o
+ 	})
++	if call = mm.calls[callID]; call != nil {
++		call.noteSDP(fromClient, msg, kind)
++	}
++	if !secure {
++		return out, errClientNoCrypto
++	}
++	return out, nil
++}
++
++// clientKeysLocked převezme klíče z popisu relace od knihovny.
++func (mm *mediaManager) clientKeysLocked(st *mediaStream, s sdpStream, kind sdpKind) {
++	var line cryptoLine
++	var ok bool
++	switch kind {
++	case sdpOffer:
++		if line, ok = firstSupportedCrypto(s.crypto); ok {
++			st.cliOffer = &line
++			st.cliSecure = s.proto == "RTP/SAVP" || s.proto == "RTP/SAVPF"
++		}
++	case sdpAnswer:
++		// Knihovna vybrala jednu z nabídnutých sad; od teď šifruje relé
++		// klíčem, který pro ni nabídlo.
++		if line, ok = st.answerChoice(s.crypto); ok {
++			if err := st.send.setKey(st.relayKey(line.key.suite)); err != nil {
++				mm.keyError()
++			}
++		}
++	default:
++		return
++	}
++	if ok {
++		if err := st.recv.setKey(line.key); err != nil {
++			mm.keyError()
++		}
++	}
++}
++
++// relayKeysLocked vrátí protokol a řádky a=crypto pro knihovnu; ok=false
++// proud vypne (relé pro něj nemá klíč knihovny).
++func (mm *mediaManager) relayKeysLocked(st *mediaStream, s sdpStream, kind sdpKind) (proto string, crypto []string, ok bool) {
++	proto = secureProto(s.proto)
++	switch kind {
++	case sdpOffer:
++		// Používaná sada jde první: knihovna vybírá první sadu nabídky, kterou
++		// umí, a se stejnou sadou i klíčem zůstanou kontexty obou stran.
++		order := relaySuites
++		if k, ok := st.send.key(); ok && k.suite != relaySuites[0] {
++			order = []srtpSuite{k.suite}
++			for _, s := range relaySuites {
++				if s != k.suite {
++					order = append(order, s)
++				}
++			}
++		}
++		st.offered = make(map[int]srtpSuite, len(order))
++		for i, suite := range order {
++			c := cryptoLine{tag: i + 1, key: st.relayKey(suite)}
++			st.offered[c.tag] = suite
++			crypto = append(crypto, c.String())
++		}
++	case sdpAnswer:
++		// Odpověď na nabídku knihovny: stejná značka a sada, klíč relé.
++		if st.cliOffer == nil {
++			return proto, nil, false
++		}
++		if !st.cliSecure {
++			proto = s.proto
++		}
++		c := cryptoLine{tag: st.cliOffer.tag, key: st.relayKey(st.cliOffer.key.suite)}
++		if err := st.send.setKey(c.key); err != nil {
++			mm.keyError()
++			return proto, nil, false
++		}
++		crypto = []string{c.String()}
++	}
++	return proto, crypto, true
++}
++
++func (mm *mediaManager) keyError() {
++	mm.srtpKeyError.Add(1)
++	mm.log.printf("srtp-key", "p21relay: media key not usable")
++}
++
++// noteCSeq si zapamatuje nejvyšší CSeq požadavků jedné strany v hovoru.
++func (mm *mediaManager) noteCSeq(callID string, fromClient bool, num uint32) {
++	mm.mu.Lock()
++	if c := mm.calls[callID]; c != nil {
++		i := 1
++		if fromClient {
++			i = 0
++		}
++		c.cseq[i] = max(c.cseq[i], num)
++	}
++	mm.mu.Unlock()
++}
++
++// lastCSeq vrátí nejvyšší CSeq požadavků jedné strany (0 = neznámé).
++func (mm *mediaManager) lastCSeq(callID string, fromClient bool) uint32 {
++	mm.mu.Lock()
++	defer mm.mu.Unlock()
++	c := mm.calls[callID]
++	if c == nil {
++		return 0
++	}
++	if fromClient {
++		return c.cseq[0]
++	}
++	return c.cseq[1]
+ }
+ 
+ func (mm *mediaManager) streamLocked(callID string, index int, now time.Time) *mediaStream {
+@@ -324,10 +606,10 @@ func listenPair(listen func(port int) (net.PacketConn, error)) (a, b net.PacketC
+ 
+ func (mm *mediaManager) startPumps(st *mediaStream) {
+ 	mm.wg.Add(4)
+-	go mm.pump(st, st.cRTP, st.uRTP, true, &st.cliRTP, &st.upRTP)
+-	go mm.pump(st, st.cRTCP, st.uRTCP, true, &st.cliRTCP, &st.upRTCP)
+-	go mm.pump(st, st.uRTP, st.cRTP, false, &st.cliRTP, &st.upRTP)
+-	go mm.pump(st, st.uRTCP, st.cRTCP, false, &st.cliRTCP, &st.upRTCP)
++	go mm.pump(st, st.cRTP, st.uRTP, true, false, &st.cliRTP, &st.upRTP)
++	go mm.pump(st, st.cRTCP, st.uRTCP, true, true, &st.cliRTCP, &st.upRTCP)
++	go mm.pump(st, st.uRTP, st.cRTP, false, false, &st.cliRTP, &st.upRTP)
++	go mm.pump(st, st.uRTCP, st.cRTCP, false, true, &st.cliRTCP, &st.upRTCP)
+ }
+ 
+ // pump forwards datagrams from in to out. toUp: in faces the calling
+@@ -335,9 +617,14 @@ func (mm *mediaManager) startPumps(st *mediaStream) {
+ // otherwise in faces the miniserver (accept only from upIP, send to
+ // 127.0.0.1:cliPort). Nothing is buffered: without a destination the
+ // packet is dropped.
+-func (mm *mediaManager) pump(st *mediaStream, in, out net.PacketConn, toUp bool, cliPort, upPort *atomic.Uint32) {
++//
++// Od knihovny projde jen paket ověřený jejím klíčem (dešifruje se i bez
++// cíle, ať stav kontextu sleduje knihovnu); ke knihovně jde jen paket
++// zašifrovaný klíčem relé. rtcpSock: port RTCP (bez rtcp-mux).
++func (mm *mediaManager) pump(st *mediaStream, in, out net.PacketConn, toUp, rtcpSock bool, cliPort, upPort *atomic.Uint32) {
+ 	defer mm.wg.Done()
+ 	buf := make([]byte, maxMediaPacket)
++	work := make([]byte, maxMediaPacket+64)
+ 	for {
+ 		n, from, err := in.ReadFrom(buf)
+ 		if err != nil {
+@@ -345,12 +632,18 @@ func (mm *mediaManager) pump(st *mediaStream, in, out net.PacketConn, toUp bool,
+ 		}
+ 		src := addrPortOf(from)
+ 		var dst netip.AddrPort
++		pkt := buf[:n]
+ 		if toUp {
+ 			p := cliPort.Load()
+ 			if p == 0 || src.Addr() != loopback4 || src.Port() != uint16(p) {
+ 				mm.dropClientSrc.Add(1)
+ 				continue
+ 			}
++			plain, res := st.recv.open(work, pkt, rtcpSock, time.Now())
++			if !mm.countOpen(res) {
++				continue
++			}
++			pkt = plain
+ 			up := upPort.Load()
+ 			if up == 0 || !st.upSend.Load() {
+ 				mm.dropNoDest.Add(1)
+@@ -367,23 +660,58 @@ func (mm *mediaManager) pump(st *mediaStream, in, out net.PacketConn, toUp bool,
+ 				mm.dropNoDest.Add(1)
+ 				continue
+ 			}
++			sealed, res := st.send.seal(work, pkt, rtcpSock)
++			switch res {
++			case sealResync:
++				mm.srtpSeqResync.Add(1)
++			case sealNoKey:
++				mm.srtpNoKeyToClient.Add(1)
++				continue
++			case sealFail:
++				mm.srtpSealErr.Add(1)
++				continue
++			}
++			pkt = sealed
+ 			dst = netip.AddrPortFrom(loopback4, uint16(p))
+ 		}
+ 		st.lastPkt.Store(time.Now().UnixNano())
+-		if _, err := out.WriteTo(buf[:n], net.UDPAddrFromAddrPort(dst)); err != nil {
++		if _, err := out.WriteTo(pkt, net.UDPAddrFromAddrPort(dst)); err != nil {
+ 			mm.writeErrors.Add(1)
+ 			continue
+ 		}
+ 		if toUp {
+ 			mm.pktToUp.Add(1)
+-			mm.bytesToUp.Add(int64(n))
++			mm.bytesToUp.Add(int64(len(pkt)))
+ 		} else {
+ 			mm.pktToClient.Add(1)
+-			mm.bytesToClient.Add(int64(n))
++			mm.bytesToClient.Add(int64(len(pkt)))
+ 		}
+ 	}
+ }
+ 
++// countOpen započítá výsledek ověření paketu od knihovny; true = předat.
++func (mm *mediaManager) countOpen(res openResult) bool {
++	switch res {
++	case openOK:
++		return true
++	case openSwitch:
++		mm.srtpKeySwitch.Add(1)
++		return true
++	case openRepeat:
++		mm.srtpRepeat.Add(1)
++		return true
++	case openNoKey:
++		mm.srtpNoKey.Add(1)
++	case openAuthFail:
++		mm.srtpAuthFail.Add(1)
++	case openReplay:
++		mm.srtpReplay.Add(1)
++	default:
++		mm.srtpMalformed.Add(1)
++	}
++	return false
++}
++
+ // touch records signalling activity of a call (keeps it from idling out).
+ func (mm *mediaManager) touch(callID string, now time.Time) {
+ 	mm.mu.Lock()
+@@ -522,6 +850,16 @@ func (mm *mediaManager) closeAll() {
+ func (mm *mediaManager) stats() map[string]int64 {
+ 	calls, streams := mm.counts()
+ 	return map[string]int64{
++		"srtpAuthFail":       mm.srtpAuthFail.Load(),
++		"srtpReplay":         mm.srtpReplay.Load(),
++		"srtpNoKey":          mm.srtpNoKey.Load(),
++		"srtpMalformed":      mm.srtpMalformed.Load(),
++		"srtpRepeat":         mm.srtpRepeat.Load(),
++		"srtpKeySwitch":      mm.srtpKeySwitch.Load(),
++		"srtpNoKeyToClient":  mm.srtpNoKeyToClient.Load(),
++		"srtpSealError":      mm.srtpSealErr.Load(),
++		"srtpSeqResync":      mm.srtpSeqResync.Load(),
++		"srtpKeyError":       mm.srtpKeyError.Load(),
+ 		"calls":              int64(calls),
+ 		"streams":            int64(streams),
+ 		"packetsToUpstream":  mm.pktToUp.Load(),
+diff --git a/libtailscale/p21relay/media_test.go b/libtailscale/p21relay/media_test.go
+index b82a27a..2439c56 100644
+--- a/libtailscale/p21relay/media_test.go
++++ b/libtailscale/p21relay/media_test.go
+@@ -20,6 +20,18 @@ func sdpFor(addr string, port int, extra ...string) []byte {
+ 	return []byte(s)
+ }
+ 
++// secureSDP přepne profil na RTP/SAVP (popis relace od volací knihovny).
++func secureSDP(b []byte) []byte {
++	return []byte(strings.Replace(string(b), " RTP/AVP ", " RTP/SAVP ", -1))
++}
++
++var (
++	testInvite   = sdpMsg{isReq: true, method: "INVITE", cseq: 1}
++	testInvite2  = sdpMsg{isReq: true, method: "INVITE", cseq: 2}
++	testAnswer   = sdpMsg{method: "INVITE", cseq: 1}
++	testCryptoV1 = "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
++)
++
+ func firstPort(t *testing.T, sdp []byte) int {
+ 	t.Helper()
+ 	for _, l := range strings.Split(string(sdp), "\r\n") {
+@@ -39,21 +51,23 @@ func TestMediaManagerAnchoring(t *testing.T) {
+ 	mm := newMediaManager(fakeNet{}, upIP, &counters{}, &rateLog{})
+ 	mm.holdFor = 300 * time.Millisecond
+ 	defer mm.closeAll()
+-	cli, up := newRTPPair(t, loopback4), newRTPPair(t, upIP)
++	mp := &mediaPath{cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP), cs: newTestSRTP(t), us: &plainRTP{ssrc: 7}}
++	cli, up := mp.cli, mp.up
+ 	now := time.Now()
+ 
+ 	// Offer from the calling library.
+-	out, err := mm.rewrite("c1", true, sdpFor("127.0.0.1", cli.port), now)
++	out, err := mm.rewrite("c1", true, testInvite, secureSDP(sdpFor("127.0.0.1", cli.port, mp.cs.attr(1))), now)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if !strings.Contains(string(out), "c=IN IP4 "+privIP.String()) {
+ 		t.Fatalf("offer:\n%s", out)
+ 	}
++	expectPlainSDP(t, out)
+ 	relayU := firstPort(t, out)
+ 
+ 	// Answer from the miniserver (rtcp-mux on the RTP port).
+-	out, err = mm.rewrite("c1", false, sdpFor(upIP.String(), up.port, "a=rtcp:"+strconv.Itoa(up.port), "a=rtcp-mux"), now)
++	out, err = mm.rewrite("c1", false, testAnswer, sdpFor(upIP.String(), up.port, "a=rtcp:"+strconv.Itoa(up.port), "a=rtcp-mux"), now)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -61,16 +75,19 @@ func TestMediaManagerAnchoring(t *testing.T) {
+ 	if !strings.Contains(string(out), "a=rtcp:"+strconv.Itoa(relayC)+"\r\n") || !strings.Contains(string(out), "c=IN IP4 127.0.0.1") {
+ 		t.Fatalf("answer:\n%s", out)
+ 	}
+-	rc, ru := netip.AddrPortFrom(loopback4, uint16(relayC)), netip.AddrPortFrom(privIP, uint16(relayU))
+-	expectPacket(t, cli.rtp, rc, up.rtp, ru, "up")
+-	expectPacket(t, up.rtp, ru, cli.rtp, rc, "down")
++	mp.cs.learnAnswer(out, 1)
++	mp.relayC, mp.relayU = relayC, relayU
++	rc, ru := mp.relayCli(false), mp.relayPriv(false)
++	mp.toUp(t, false, "up")
++	mp.toClient(t, false, "down")
+ 
+ 	// A re-offer keeps the ports; a held (0.0.0.0) side gets nothing.
+-	out, _ = mm.rewrite("c1", true, []byte(strings.Replace(string(sdpFor("127.0.0.1", cli.port)), "c=IN IP4 127.0.0.1", "c=IN IP4 0.0.0.0", 1)), now)
++	held := strings.Replace(string(sdpFor("127.0.0.1", cli.port, mp.cs.attr(1))), "c=IN IP4 127.0.0.1", "c=IN IP4 0.0.0.0", 1)
++	out, _ = mm.rewrite("c1", true, testInvite2, secureSDP([]byte(held)), now)
+ 	if firstPort(t, out) != relayU || !strings.Contains(string(out), "c=IN IP4 0.0.0.0") {
+ 		t.Fatalf("re-offer:\n%s", out)
+ 	}
+-	up.rtp.WriteToUDPAddrPort([]byte("held"), ru)
++	up.rtp.WriteToUDPAddrPort(mp.us.next("held"), ru)
+ 	expectNoPacket(t, cli.rtp)
+ 	if calls, streams := mm.counts(); calls != 1 || streams != 1 {
+ 		t.Fatalf("counts %d %d", calls, streams)
+@@ -86,7 +103,8 @@ func TestMediaManagerAnchoring(t *testing.T) {
+ 	expectBindable(t, netip.AddrPortFrom(privIP, uint16(relayU+1)), true)
+ 	expectBindable(t, rc, false)
+ 	expectBindable(t, netip.AddrPortFrom(loopback4, uint16(relayC+1)), false)
+-	cli.rtp.WriteToUDPAddrPort([]byte("after-release"), rc)
++	_, sealed := mp.cs.sealRTP("after-release")
++	cli.rtp.WriteToUDPAddrPort(sealed, rc)
+ 	expectNoPacket(t, up.rtp)
+ 	waitFor(t, func() bool { return canBind(rc) && canBind(netip.AddrPortFrom(loopback4, uint16(relayC+1))) })
+ }
+@@ -156,9 +174,9 @@ func TestMediaManagerLimits(t *testing.T) {
+ 	var sdp strings.Builder
+ 	sdp.WriteString("v=0\r\nc=IN IP4 127.0.0.1\r\n")
+ 	for i := 0; i < maxStreamsPerCall+2; i++ {
+-		sdp.WriteString("m=audio " + strconv.Itoa(40000+2*i) + " RTP/AVP 0\r\n")
++		sdp.WriteString("m=audio " + strconv.Itoa(40000+2*i) + " RTP/SAVP 0\r\n" + testCryptoV1 + "\r\n")
+ 	}
+-	out, err := mm.rewrite("big", true, []byte(sdp.String()), now)
++	out, err := mm.rewrite("big", true, testInvite, []byte(sdp.String()), now)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -166,7 +184,7 @@ func TestMediaManagerLimits(t *testing.T) {
+ 		t.Fatalf("%d streams disabled:\n%s", n, out)
+ 	}
+ 	for i := 0; i < maxMediaCalls; i++ {
+-		mm.rewrite("call"+strconv.Itoa(i), true, sdpFor("127.0.0.1", 41000), now)
++		mm.rewrite("call"+strconv.Itoa(i), true, testInvite, secureSDP(sdpFor("127.0.0.1", 41000, testCryptoV1)), now)
+ 	}
+ 	if calls, _ := mm.counts(); calls != maxMediaCalls {
+ 		t.Fatalf("calls %d", calls)
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+index fa4459d..23ccce4 100644
+--- a/libtailscale/p21relay/relay_test.go
++++ b/libtailscale/p21relay/relay_test.go
+@@ -129,24 +129,36 @@ func TestRegister(t *testing.T) {
+ 
+ // call is an established (or ringing) call through the relay.
+ type call struct {
+-	callID   string
+-	branch   string // client's INVITE branch
+-	cli, up  *rtpPair
+-	relayC   int // relay's 127.0.0.1 RTP port
+-	relayU   int // relay's private RTP port
++	callID string
++	branch string // client's INVITE branch
++	mediaPath
+ 	upInvite upMsg
+ 	cseq     int
+ }
+ 
+-func (cl *call) relayClientRTP() netip.AddrPort {
+-	return netip.AddrPortFrom(loopback4, uint16(cl.relayC))
++func newCall(t *testing.T, prefix string, cseq int) *call {
++	return &call{
++		callID: prefix + newBranch(), branch: newBranch(), cseq: cseq,
++		mediaPath: mediaPath{
++			cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP),
++			cs: newTestSRTP(t), us: &plainRTP{ssrc: 0xA0A0A0A0, seq: 65000, ts: 1000},
++		},
++	}
+ }
+-func (cl *call) relayClientRTCP() netip.AddrPort {
+-	return netip.AddrPortFrom(loopback4, uint16(cl.relayC+1))
++
++func (cl *call) relayClientRTP() netip.AddrPort  { return cl.relayCli(false) }
++func (cl *call) relayClientRTCP() netip.AddrPort { return cl.relayCli(true) }
++func (cl *call) relayPrivRTP() netip.AddrPort    { return cl.relayPriv(false) }
++func (cl *call) relayPrivRTCP() netip.AddrPort   { return cl.relayPriv(true) }
++
++// sdpSecure je popis relace s profilem RTP/SAVP (pro testovací knihovnu).
++func sdpSecure(addr string, port int, extra ...string) string {
++	return strings.Replace(sdpBody(addr, port, extra...), " RTP/AVP ", " RTP/SAVP ", 1)
+ }
+-func (cl *call) relayPrivRTP() netip.AddrPort { return netip.AddrPortFrom(privIP, uint16(cl.relayU)) }
+-func (cl *call) relayPrivRTCP() netip.AddrPort {
+-	return netip.AddrPortFrom(privIP, uint16(cl.relayU+1))
++
++// offer je nabídka knihovny s jejím klíčem (značka 1).
++func (cl *call) offer(extra ...string) string {
++	return sdpSecure("127.0.0.1", cl.cli.port, append([]string{cl.cs.attr(1)}, extra...)...)
+ }
+ 
+ func (cl *call) clientHeaders(c *fakeClient, branch string, cseq int, method string, toTag bool) []string {
+@@ -166,13 +178,14 @@ func (cl *call) clientHeaders(c *fakeClient, branch string, cseq int, method str
+ // has it.
+ func startOutgoing(t *testing.T, e *testEnv, c *fakeClient) *call {
+ 	t.Helper()
+-	cl := &call{callID: "out-" + newBranch(), branch: newBranch(), cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP), cseq: 20}
++	cl := newCall(t, "out-", 20)
+ 	hdrs := append(cl.clientHeaders(c, cl.branch, cl.cseq, "INVITE", false), e.relayRoute())
+-	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), hdrs, sdpBody("127.0.0.1", cl.cli.port)))
++	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), hdrs, cl.offer()))
+ 	cl.upInvite = e.up.expectRequest("INVITE")
+ 	if cl.upInvite.conn != nil {
+ 		t.Fatal("small INVITE went over TCP")
+ 	}
++	expectPlainSDP(t, cl.upInvite.m.body)
+ 	addr, port := sdpMedia(t, cl.upInvite.m.body)
+ 	if addr != privIP.String() || port%2 != 0 || port == cl.cli.port {
+ 		t.Fatalf("offer toward miniserver not anchored: %s:%d", addr, port)
+@@ -205,18 +218,28 @@ func establishOutgoing(t *testing.T, e *testEnv, c *fakeClient) *call {
+ 		t.Fatalf("183 SDP not anchored: %s:%d", addr, port)
+ 	}
+ 	cl.relayC = port
++	early := cl.cs.learnAnswer(r183.body, 1)
+ 
+-	// Early media, both directions, RTP and RTCP, before the 200.
+-	expectPacket(t, cl.up.rtp, cl.relayPrivRTP(), cl.cli.rtp, cl.relayClientRTP(), "early-rtp-down")
+-	expectPacket(t, cl.up.rtcp, cl.relayPrivRTCP(), cl.cli.rtcp, cl.relayClientRTCP(), "early-rtcp-down")
+-	expectPacket(t, cl.cli.rtp, cl.relayClientRTP(), cl.up.rtp, cl.relayPrivRTP(), "early-rtp-up")
+-	expectPacket(t, cl.cli.rtcp, cl.relayClientRTCP(), cl.up.rtcp, cl.relayPrivRTCP(), "early-rtcp-up")
++	// Early media (tones of the miniserver), both directions, RTP and
++	// RTCP, before the 200; the sequence passes 65535.
++	for i := 0; i < 3; i++ {
++		cl.toClient(t, false, fmt.Sprintf("early-rtp-down-%d", i))
++	}
++	cl.toClient(t, true, "early-rtcp-down")
++	cl.toUp(t, false, "early-rtp-up")
++	cl.toUp(t, true, "early-rtcp-up")
+ 
+ 	e.up.reply(cl.upInvite, 200, "OK", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.up.port))
+ 	r200 := c.expectResponse(200, "INVITE")
+ 	if _, p := sdpMedia(t, r200.body); p != cl.relayC {
+ 		t.Fatalf("200 moved the stream: %d != %d", p, cl.relayC)
+ 	}
++	if got := cl.cs.learnAnswer(r200.body, 1); got.line != early.line {
++		t.Fatalf("relay key changed between 183 and 200: %q -> %q", early.line, got.line)
++	}
++	// After the answer the miniserver sends from a new source (new SSRC,
++	// the sequence goes on).
++	cl.us.ssrc = 0xB0B0B0B0
+ 	c.send(requestText("ACK", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq, "ACK", true), ""))
+ 	ack := e.up.expectRequest("ACK")
+ 	if ack.m.ruri != "sip:"+e.up.addr.String() {
+@@ -227,10 +250,7 @@ func establishOutgoing(t *testing.T, e *testEnv, c *fakeClient) *call {
+ 
+ func (cl *call) checkMedia(t *testing.T, tag string) {
+ 	t.Helper()
+-	expectPacket(t, cl.up.rtp, cl.relayPrivRTP(), cl.cli.rtp, cl.relayClientRTP(), tag+"-rtp-down")
+-	expectPacket(t, cl.cli.rtp, cl.relayClientRTP(), cl.up.rtp, cl.relayPrivRTP(), tag+"-rtp-up")
+-	expectPacket(t, cl.up.rtcp, cl.relayPrivRTCP(), cl.cli.rtcp, cl.relayClientRTCP(), tag+"-rtcp-down")
+-	expectPacket(t, cl.cli.rtcp, cl.relayClientRTCP(), cl.up.rtcp, cl.relayPrivRTCP(), tag+"-rtcp-up")
++	cl.both(t, tag)
+ }
+ 
+ func TestOutgoingCall(t *testing.T) {
+@@ -286,7 +306,7 @@ func TestIncomingCall(t *testing.T) {
+ 	e := newEnv(t)
+ 	c := newFakeClient(t, e)
+ 	register(t, e, c)
+-	cl := &call{callID: "in-" + newBranch(), cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP)}
++	cl := newCall(t, "in-", 0)
+ 
+ 	e.up.sendUDP(e.privSIP(), incomingInvite(t, e, cl.callID, 100, cl.up.port))
+ 	ci := c.expectRequest("INVITE")
+@@ -311,6 +331,8 @@ func TestIncomingCall(t *testing.T) {
+ 		t.Fatalf("offer to the client not anchored: %s", addr)
+ 	}
+ 	cl.relayC = port
++	// The client picks the 32-bit tag.
++	answer, _ := cl.cs.answerOffer(ci.body, 2)
+ 
+ 	c.send(responseText(ci, 180, "Ringing", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, ""))
+ 	r180 := e.up.expectResponse(180, "INVITE")
+@@ -323,16 +345,28 @@ func TestIncomingCall(t *testing.T) {
+ 	if r180.src != e.privSIP() {
+ 		t.Fatalf("180 from %v", r180.src)
+ 	}
+-	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", cl.cli.port)))
+-	r200 := e.up.expectResponse(200, "INVITE")
+-	addr, port = sdpMedia(t, r200.m.body)
++	// Early media of the calling library (183 with the answer).
++	c.send(responseText(ci, 183, "Session Progress", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpSecure("127.0.0.1", cl.cli.port, answer)))
++	r183 := e.up.expectResponse(183, "INVITE")
++	expectPlainSDP(t, r183.m.body)
++	addr, port = sdpMedia(t, r183.m.body)
+ 	if addr != privIP.String() {
+ 		t.Fatalf("answer not anchored: %s", addr)
+ 	}
+ 	cl.relayU = port
++	cl.checkMedia(t, "early")
++
++	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpSecure("127.0.0.1", cl.cli.port, answer)))
++	r200 := e.up.expectResponse(200, "INVITE")
++	expectPlainSDP(t, r200.m.body)
++	if _, p := sdpMedia(t, r200.m.body); p != cl.relayU {
++		t.Fatalf("200 moved the stream: %d != %d", p, cl.relayU)
++	}
+ 
+ 	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", cl.callID, 100, "cli-tag"))
+ 	c.expectRequest("ACK")
++	// The miniserver switches the source at the answer (new SSRC).
++	cl.us.ssrc = 0xB1B1B1B1
+ 	cl.checkMedia(t, "in")
+ 
+ 	// After the ACK the relay stops repeating its 200.
+@@ -428,10 +462,11 @@ func TestReinviteHold(t *testing.T) {
+ 	register(t, e, c)
+ 	cl := establishOutgoing(t, e, c)
+ 
+-	// Hold from the calling library.
++	// Hold from the calling library (same key).
+ 	c.send(requestText("INVITE", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "INVITE", true),
+-		sdpBody("127.0.0.1", cl.cli.port, "a=sendonly")))
++		cl.offer("a=sendonly")))
+ 	ri := e.up.expectRequest("INVITE")
++	expectPlainSDP(t, ri.m.body)
+ 	if _, p := sdpMedia(t, ri.m.body); p != cl.relayU {
+ 		t.Fatalf("re-INVITE moved the stream %d -> %d", cl.relayU, p)
+ 	}
+@@ -443,6 +478,11 @@ func TestReinviteHold(t *testing.T) {
+ 	if _, p := sdpMedia(t, r.body); p != cl.relayC {
+ 		t.Fatalf("answer moved the stream %d -> %d", cl.relayC, p)
+ 	}
++	before := cl.cs.decKey
++	cl.cs.learnAnswer(r.body, 1)
++	if cl.cs.decKey != before {
++		t.Fatal("relay changed its key on hold")
++	}
+ 	c.send(requestText("ACK", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "ACK", true), ""))
+ 	e.up.expectRequest("ACK")
+ 
+@@ -455,8 +495,13 @@ func TestReinviteHold(t *testing.T) {
+ 	if _, p := sdpMedia(t, ci.body); p != cl.relayC {
+ 		t.Fatalf("upstream re-INVITE moved the stream %d -> %d", cl.relayC, p)
+ 	}
+-	c.send(responseText(ci, 200, "OK", "c1", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", cl.cli.port)))
+-	e.up.expectResponse(200, "INVITE")
++	// The relay offers its unchanged key for the suite in use.
++	answer, offered := cl.cs.answerOffer(ci.body, 1)
++	if offered[0].suite+string(offered[0].master) != before {
++		t.Fatal("relay re-offered another key for the suite in use")
++	}
++	c.send(responseText(ci, 200, "OK", "c1", []string{"Contact: <" + c.contact() + ">"}, sdpSecure("127.0.0.1", cl.cli.port, answer)))
++	expectPlainSDP(t, e.up.expectResponse(200, "INVITE").m.body)
+ 	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", cl.callID, 300, "c1"))
+ 	c.expectRequest("ACK")
+ 	cl.up = newUp
+@@ -570,10 +615,10 @@ func TestTCPDialFailure(t *testing.T) {
+ 	c := newFakeClient(t, e)
+ 
+ 	nw.fails.Store(2)
+-	cl := &call{callID: "tcpfail-" + newBranch(), cli: newRTPPair(t, loopback4), cseq: 5}
++	cl := newCall(t, "tcpfail-", 5)
+ 	hdrs := append(cl.clientHeaders(c, newBranch(), cl.cseq, "INVITE", false), e.relayRoute(), "Subject: "+strings.Repeat("s", 1200))
+ 	start := time.Now()
+-	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), hdrs, sdpBody("127.0.0.1", cl.cli.port)))
++	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), hdrs, cl.offer()))
+ 	r := c.expectResponse(503, "INVITE")
+ 	if d := time.Since(start); d > 2*time.Second {
+ 		t.Fatalf("503 after %v", d)
+@@ -633,7 +678,8 @@ func TestRetransmissionsOverUDP(t *testing.T) {
+ 	callID := "rt-" + newBranch()
+ 	e.up.sendUDP(e.privSIP(), incomingInvite(t, e, callID, 7, upr.port))
+ 	ci := c.expectRequest("INVITE")
+-	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", newRTPPair(t, loopback4).port)))
++	answer, _ := newTestSRTP(t).answerOffer(ci.body, 1)
++	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpSecure("127.0.0.1", newRTPPair(t, loopback4).port, answer)))
+ 	r := e.up.expectResponse(200, "INVITE")
+ 	select {
+ 	case again := <-e.up.in: // no ACK yet: the relay repeats its 200
+diff --git a/libtailscale/p21relay/sdp.go b/libtailscale/p21relay/sdp.go
+index acbecbd..d1506ba 100644
+--- a/libtailscale/p21relay/sdp.go
++++ b/libtailscale/p21relay/sdp.go
+@@ -7,6 +7,7 @@ import (
+ 	"bytes"
+ 	"errors"
+ 	"net/netip"
++	"slices"
+ 	"strconv"
+ 	"strings"
+ )
+@@ -15,15 +16,25 @@ var errBadSDP = errors.New("malformed session description")
+ 
+ // sdpStream is one m= line as found in an incoming session description.
+ type sdpStream struct {
+-	index    int  // position among the m= lines
+-	port     int  // m= port, never 0 when passed to alloc
+-	rtcpPort int  // from a=rtcp, 0 if absent
+-	held     bool // effective c= address is unspecified (0.0.0.0): do not send
++	index    int      // position among the m= lines
++	port     int      // m= port; 0 = vypnutý proud
++	rtcpPort int      // from a=rtcp, 0 if absent
++	held     bool     // effective c= address is unspecified (0.0.0.0): do not send
++	proto    string   // přenosový protokol z m=, např. RTP/SAVP
++	crypto   []string // hodnoty atributů a=crypto proudu
+ }
+ 
+-// sdpAllocFunc returns the RTP and RTCP ports the relay advertises for a
+-// stream instead of the original ones; ok=false disables the stream (port 0).
+-type sdpAllocFunc func(s sdpStream) (rtp, rtcp int, ok bool)
++// sdpStreamOut říká, co relé dá na místo proudu.
++type sdpStreamOut struct {
++	rtp, rtcp int      // porty, které relé ohlásí místo původních
++	ok        bool     // false: proud vypnout (port 0)
++	proto     string   // přenosový protokol, "" = beze změny
++	crypto    []string // hodnoty a=crypto, které přidat; ostatní zmizí
++}
++
++// sdpAllocFunc rozhoduje o každém proudu, i o vypnutém (port 0), kde se
++// použije jen proto.
++type sdpAllocFunc func(s sdpStream) sdpStreamOut
+ 
+ // iceAttrs are dropped: candidates would point around the relay.
+ var iceAttrs = []string{
+@@ -41,6 +52,55 @@ func isICEAttr(l string) bool {
+ 	return false
+ }
+ 
++// secAttrs jsou atributy šifrování hlasu a jeho vyjednávání. Každá strana
++// dostane jen to, co nastaví relé: ústředna žádné šifrování, volací
++// knihovna a=crypto relé.
++var secAttrs = []string{
++	"crypto", "fingerprint", "setup", "tls-id", "tcap", "acap", "pcfg", "acfg",
++	"lcap", "zrtp-hash", "key-mgmt", "cryptex",
++}
++
++func isSecAttr(l string) bool {
++	name, ok := strings.CutPrefix(l, "a=")
++	if !ok {
++		return false
++	}
++	if i := strings.IndexByte(name, ':'); i >= 0 {
++		name = name[:i]
++	}
++	return slices.Contains(secAttrs, strings.ToLower(strings.TrimSpace(name)))
++}
++
++// plainProto je přenosový protokol směrem k ústředně.
++func plainProto(p string) string {
++	switch p {
++	case "RTP/SAVP":
++		return "RTP/AVP"
++	case "RTP/SAVPF":
++		return "RTP/AVPF"
++	}
++	return p
++}
++
++// secureProto je přenosový protokol směrem k volací knihovně.
++func secureProto(p string) string {
++	switch p {
++	case "RTP/AVP":
++		return "RTP/SAVP"
++	case "RTP/AVPF":
++		return "RTP/SAVPF"
++	}
++	return p
++}
++
++func isRTPProto(p string) bool {
++	switch p {
++	case "RTP/AVP", "RTP/AVPF", "RTP/SAVP", "RTP/SAVPF":
++		return true
++	}
++	return false
++}
++
+ // connAddrUnspecified reports whether a c= line carries 0.0.0.0 or ::.
+ func connAddrUnspecified(l string) bool {
+ 	f := strings.Fields(l[2:])
+@@ -52,32 +112,30 @@ func connAddrUnspecified(l string) bool {
+ 	return err == nil && ip.IsUnspecified()
+ }
+ 
+-// rewriteSDP replaces every connection and origin address with addr, every
+-// m= port and a=rtcp port with the ones alloc returns, and drops ICE
+-// attributes. Streams with port 0 stay untouched. Line endings are kept.
+-func rewriteSDP(body []byte, addr netip.Addr, alloc sdpAllocFunc) ([]byte, error) {
+-	eol := "\n"
++// sdpDoc je rozebraný popis relace.
++type sdpDoc struct {
++	lines   []string
++	eol     string
++	streams []*sdpStream
++}
++
++func parseSDP(body []byte) (*sdpDoc, error) {
++	d := &sdpDoc{eol: "\n"}
+ 	if bytes.Contains(body, []byte("\r\n")) {
+-		eol = "\r\n"
++		d.eol = "\r\n"
+ 	}
+ 	text := strings.TrimRight(string(body), "\r\n")
+-	lines := strings.Split(text, "\n")
+-	for i := range lines {
+-		lines[i] = strings.TrimSuffix(lines[i], "\r")
++	d.lines = strings.Split(text, "\n")
++	for i := range d.lines {
++		d.lines[i] = strings.TrimSuffix(d.lines[i], "\r")
+ 	}
+-	if len(lines) == 0 || !strings.HasPrefix(lines[0], "v=") {
++	if len(d.lines) == 0 || !strings.HasPrefix(d.lines[0], "v=") {
+ 		return nil, errBadSDP
+ 	}
+-
+-	type media struct {
+-		sdpStream
+-		hasC          bool
+-		newRTP, newRT int
+-		ok            bool
+-	}
+-	var ms []*media
+ 	sessHeld := false
+-	for _, l := range lines {
++	hasC := make(map[int]bool)
++	for _, l := range d.lines {
++		cur := len(d.streams) - 1
+ 		switch {
+ 		case strings.HasPrefix(l, "m="):
+ 			f := strings.Fields(l[2:])
+@@ -89,15 +147,15 @@ func rewriteSDP(body []byte, addr netip.Addr, alloc sdpAllocFunc) ([]byte, error
+ 			if err != nil || port < 0 || port > 65535 {
+ 				return nil, errBadSDP
+ 			}
+-			ms = append(ms, &media{sdpStream: sdpStream{index: len(ms), port: port}})
++			d.streams = append(d.streams, &sdpStream{index: len(d.streams), port: port, proto: f[2]})
+ 		case strings.HasPrefix(l, "c="):
+ 			held := connAddrUnspecified(l)
+-			if len(ms) == 0 {
++			if cur < 0 {
+ 				sessHeld = held
+ 			} else {
+-				ms[len(ms)-1].hasC, ms[len(ms)-1].held = true, held
++				hasC[cur], d.streams[cur].held = true, held
+ 			}
+-		case strings.HasPrefix(l, "a=rtcp:") && len(ms) > 0:
++		case strings.HasPrefix(l, "a=rtcp:") && cur >= 0:
+ 			f := strings.Fields(l[len("a=rtcp:"):])
+ 			if len(f) == 0 {
+ 				return nil, errBadSDP
+@@ -106,41 +164,64 @@ func rewriteSDP(body []byte, addr netip.Addr, alloc sdpAllocFunc) ([]byte, error
+ 			if err != nil || p <= 0 || p > 65535 {
+ 				return nil, errBadSDP
+ 			}
+-			ms[len(ms)-1].rtcpPort = p
++			d.streams[cur].rtcpPort = p
++		case strings.HasPrefix(l, "a=crypto:") && cur >= 0:
++			d.streams[cur].crypto = append(d.streams[cur].crypto, l[len("a=crypto:"):])
+ 		}
+ 	}
+-	for _, m := range ms {
+-		if m.port == 0 {
+-			continue
+-		}
+-		if !m.hasC {
+-			m.held = sessHeld
++	for i, s := range d.streams {
++		if !hasC[i] {
++			s.held = sessHeld
+ 		}
+-		m.newRTP, m.newRT, m.ok = alloc(m.sdpStream)
+ 	}
++	return d, nil
++}
+ 
++// rewrite nahradí každou adresu v c= a o= adresou addr, port a protokol
++// v m= a port v a=rtcp tím, co vrátí alloc, zahodí atributy ICE
++// a šifrování a na konec proudu přidá řádky a=crypto od alloc. Vypnuté
++// proudy (port 0) zůstanou vypnuté. Konce řádků zůstávají.
++func (d *sdpDoc) rewrite(addr netip.Addr, alloc sdpAllocFunc) []byte {
++	outs := make([]sdpStreamOut, len(d.streams))
++	for i, s := range d.streams {
++		outs[i] = alloc(*s)
++	}
+ 	var b strings.Builder
+-	b.Grow(len(body) + 64)
++	b.Grow(len(d.lines)*40 + 256)
+ 	ip := addr.String()
+ 	cur := -1
+-	for _, l := range lines {
++	endStream := func() {
++		if cur < 0 || d.streams[cur].port == 0 || !outs[cur].ok {
++			return
++		}
++		for _, c := range outs[cur].crypto {
++			b.WriteString("a=crypto:")
++			b.WriteString(c)
++			b.WriteString(d.eol)
++		}
++	}
++	for _, l := range d.lines {
+ 		switch {
+ 		case strings.HasPrefix(l, "m="):
++			endStream()
+ 			cur++
+-			m := ms[cur]
+-			if m.port != 0 {
+-				f := strings.Fields(l[2:])
++			s, o := d.streams[cur], outs[cur]
++			f := strings.Fields(l[2:])
++			if s.port != 0 {
+ 				_, count, hasCount := strings.Cut(f[1], "/")
+ 				np := 0
+-				if m.ok {
+-					np = m.newRTP
++				if o.ok {
++					np = o.rtp
+ 				}
+ 				f[1] = strconv.Itoa(np)
+ 				if hasCount {
+ 					f[1] += "/" + count
+ 				}
+-				l = "m=" + strings.Join(f, " ")
+ 			}
++			if o.proto != "" {
++				f[2] = o.proto
++			}
++			l = "m=" + strings.Join(f, " ")
+ 		case strings.HasPrefix(l, "c="):
+ 			if !connAddrUnspecified(l) {
+ 				l = "c=IN IP4 " + ip
+@@ -151,23 +232,33 @@ func rewriteSDP(body []byte, addr netip.Addr, alloc sdpAllocFunc) ([]byte, error
+ 				l = "o=" + strings.Join(f, " ")
+ 			}
+ 		case strings.HasPrefix(l, "a=rtcp:") && cur >= 0:
+-			m := ms[cur]
+-			if m.port != 0 && m.ok {
++			s, o := d.streams[cur], outs[cur]
++			if s.port != 0 && o.ok {
+ 				f := strings.Fields(l[len("a=rtcp:"):])
+-				l = "a=rtcp:" + strconv.Itoa(m.newRT)
++				l = "a=rtcp:" + strconv.Itoa(o.rtcp)
+ 				if len(f) >= 4 {
+-					if m.held {
++					if s.held {
+ 						l += " " + strings.Join(f[1:], " ")
+ 					} else {
+ 						l += " IN IP4 " + ip
+ 					}
+ 				}
+ 			}
+-		case isICEAttr(l):
++		case isICEAttr(l), isSecAttr(l):
+ 			continue
+ 		}
+ 		b.WriteString(l)
+-		b.WriteString(eol)
++		b.WriteString(d.eol)
++	}
++	endStream()
++	return []byte(b.String())
++}
++
++// rewriteSDP rozebere body a přepíše ho (viz sdpDoc.rewrite).
++func rewriteSDP(body []byte, addr netip.Addr, alloc sdpAllocFunc) ([]byte, error) {
++	d, err := parseSDP(body)
++	if err != nil {
++		return nil, err
+ 	}
+-	return []byte(b.String()), nil
++	return d.rewrite(addr, alloc), nil
+ }
+diff --git a/libtailscale/p21relay/sdp_test.go b/libtailscale/p21relay/sdp_test.go
+index e2ada6d..fc7bbea 100644
+--- a/libtailscale/p21relay/sdp_test.go
++++ b/libtailscale/p21relay/sdp_test.go
+@@ -28,15 +28,18 @@ func TestRewriteSDP(t *testing.T) {
+ 		"m=text 42000/2 RTP/AVP 98\r\n" +
+ 		"c=IN IP6 2001:db8::1\r\n"
+ 	var got []sdpStream
+-	out, err := rewriteSDP([]byte(in), netip.MustParseAddr("100.64.0.4"), func(s sdpStream) (int, int, bool) {
++	out, err := rewriteSDP([]byte(in), netip.MustParseAddr("100.64.0.4"), func(s sdpStream) sdpStreamOut {
++		if s.port == 0 {
++			return sdpStreamOut{}
++		}
+ 		got = append(got, s)
+ 		switch s.index {
+ 		case 0:
+-			return 30000, 30001, true
++			return sdpStreamOut{rtp: 30000, rtcp: 30001, ok: true}
+ 		case 2:
+-			return 30010, 30010, true
++			return sdpStreamOut{rtp: 30010, rtcp: 30010, ok: true}
+ 		}
+-		return 0, 0, false
++		return sdpStreamOut{}
+ 	})
+ 	if err != nil {
+ 		t.Fatal(err)
+@@ -62,10 +65,10 @@ func TestRewriteSDP(t *testing.T) {
+ 	if len(got) != 3 {
+ 		t.Fatalf("alloc calls %+v", got)
+ 	}
+-	if got[0] != (sdpStream{index: 0, port: 40000, rtcpPort: 40001}) {
++	if g := got[0]; g.index != 0 || g.port != 40000 || g.rtcpPort != 40001 || g.held || g.proto != "RTP/AVP" {
+ 		t.Fatalf("stream 0 %+v", got[0])
+ 	}
+-	if got[1] != (sdpStream{index: 2, port: 41000, rtcpPort: 41000, held: true}) {
++	if g := got[1]; g.index != 2 || g.port != 41000 || g.rtcpPort != 41000 || !g.held {
+ 		t.Fatalf("stream 2 %+v", got[1])
+ 	}
+ 	if got[2].index != 3 || got[2].port != 42000 || got[2].held {
+@@ -75,12 +78,12 @@ func TestRewriteSDP(t *testing.T) {
+ 
+ func TestRewriteSDPLineEndingsAndErrors(t *testing.T) {
+ 	out, err := rewriteSDP([]byte("v=0\nc=IN IP4 192.0.2.1\nm=audio 5000 RTP/AVP 0\n"), loopback4,
+-		func(sdpStream) (int, int, bool) { return 6000, 6001, true })
++		func(sdpStream) sdpStreamOut { return sdpStreamOut{rtp: 6000, rtcp: 6001, ok: true} })
+ 	if err != nil || string(out) != "v=0\nc=IN IP4 127.0.0.1\nm=audio 6000 RTP/AVP 0\n" {
+ 		t.Fatalf("%q %v", out, err)
+ 	}
+ 	for _, bad := range []string{"x=1\r\n", "v=0\r\nm=audio\r\n", "v=0\r\nm=audio x RTP/AVP 0\r\n", "v=0\r\nm=audio 1 RTP/AVP 0\r\na=rtcp:\r\n"} {
+-		if _, err := rewriteSDP([]byte(bad), loopback4, func(sdpStream) (int, int, bool) { return 1, 2, true }); err == nil {
++		if _, err := rewriteSDP([]byte(bad), loopback4, func(sdpStream) sdpStreamOut { return sdpStreamOut{rtp: 1, rtcp: 2, ok: true} }); err == nil {
+ 			t.Errorf("accepted %q", bad)
+ 		}
+ 	}
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+index 76d0626..364d72e 100644
+--- a/libtailscale/p21relay/sipproxy.go
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -39,6 +39,11 @@ const (
+ 	tcpQueueLen          = 64
+ 	branchPrefix         = "z9hG4bK-p21-"
+ 	viaConnParam         = "p21c" // which miniserver transport a request came on
++	// localBranchPrefix: požadavky, které relé posílá samo (ACK, BYE při
++	// ukončení hovoru bez šifrování); odpovědi na ně nikam nepokračují.
++	localBranchPrefix = branchPrefix + "x"
++	// insecureReason jde v BYE, kterým relé ukončí hovor bez šifrování.
++	insecureReason = `SIP;cause=488;text="Media encryption required"`
+ )
+ 
+ type evKind int
+@@ -173,7 +178,8 @@ type txEntry struct {
+ 	completed bool // final response seen (request entries only)
+ 	answered  bool // any response seen (request entries only)
+ 	tcp       *tcpConn
+-	tcpSends  int // connections tried
++	tcpSends  int  // connections tried
++	local     bool // final response of the relay itself: its ACK goes no further
+ 	ack       []byte
+ 	next      time.Time // zero: no more retransmissions
+ 	interval  time.Duration
+@@ -584,7 +590,7 @@ func (p *sipProxy) handle(ev sipEvent) {
+ // library gets 503 at once instead of waiting for its 32 s timeout.
+ func (p *sipProxy) tcpLost(tc *tcpConn) {
+ 	for k, tx := range p.txs {
+-		if tx.tcp != tc || tx.answered {
++		if tx.tcp != tc || tx.answered || tx.response {
+ 			continue
+ 		}
+ 		if tx.tcpSends < maxTCPSends {
+@@ -921,15 +927,22 @@ func (p *sipProxy) mediaOnResponse(m *sipMsg, method string) {
+ 	}
+ }
+ 
+-// rewriteBody anchors the media of an SDP body.
++// rewriteBody anchors the media of an SDP body. With errClientNoCrypto
++// the body may already be rewritten (see mediaManager.rewrite).
+ func (p *sipProxy) rewriteBody(m *sipMsg, fromClient bool, now time.Time) error {
+ 	callID := m.get("call-id")
+ 	if m.isSDP() {
+-		b, err := p.media.rewrite(callID, fromClient, m.body, now)
++		num, method, _ := m.cseq()
++		if m.isReq {
++			method = m.method
++		}
++		b, err := p.media.rewrite(callID, fromClient, sdpMsg{isReq: m.isReq, method: method, cseq: num}, m.body, now)
++		if b != nil {
++			m.body = b
++		}
+ 		if err != nil {
+ 			return err
+ 		}
+-		m.body = b
+ 	} else if ct := strings.ToLower(m.get("content-type")); strings.HasPrefix(ct, "multipart/") && strings.Contains(strings.ToLower(string(m.body)), "application/sdp") {
+ 		return errBadSDP // not supported; better fail than leak unanchored media
+ 	}
+@@ -981,13 +994,33 @@ func (p *sipProxy) clientRequest(m *sipMsg, cc *clientConn) {
+ 		m.ruri = u.String()
+ 	}
+ 	p.contactsToUpstream(m, m.method == "REGISTER")
++	callID := m.get("call-id")
++	num, _, _ := m.cseq()
+ 	if err := p.rewriteBody(m, true, now); err != nil {
+-		if m.method != "ACK" {
+-			p.replyClient(m, 488, "Not Acceptable Here")
++		switch {
++		case errors.Is(err, errClientNoCrypto) && m.method == "ACK":
++			// Odpověď v ACK bez šifrování: ACK projde (ústředna jinak
++			// opakuje 200), pak relé hovor ukončí. Hlas bez klíče neprojde.
++			p.cnt.inc("sip.insecure_answer")
++			d := dialogRef{callID: callID, cliParty: m.get("from"), upParty: m.get("to")}
++			defer p.endCall(d, true, now)
++		case errors.Is(err, errClientNoCrypto):
++			// Nabídka bez použitelného šifrování hlasu k ústředně nejde.
++			if m.method != "ACK" {
++				p.replyClient(m, 488, "Not Acceptable Here")
++			}
++			p.cnt.inc("sip.488_no_crypto")
++			p.drop("client_no_crypto")
++			return
++		default:
++			if m.method != "ACK" {
++				p.replyClient(m, 488, "Not Acceptable Here")
++			}
++			p.drop("client_sdp")
++			return
+ 		}
+-		p.drop("client_sdp")
+-		return
+ 	}
++	p.media.noteCSeq(callID, true, num)
+ 	p.mediaOnRequest(m, now)
+ 
+ 	branch := p.branch("c", cv.branch(), m)
+@@ -1039,6 +1072,10 @@ func (p *sipProxy) clientResponse(m *sipMsg) {
+ 		p.drop("via_not_ours")
+ 		return
+ 	}
++	if strings.HasPrefix(v.branch(), localBranchPrefix) {
++		p.cnt.inc("sip.local_answered") // odpověď na BYE relé
++		return
++	}
+ 	conn, _ := paramValue(v.params, viaConnParam)
+ 	m.popTopValue("via")
+ 	next, ok := m.topValue("via")
+@@ -1052,29 +1089,36 @@ func (p *sipProxy) clientResponse(m *sipMsg) {
+ 		return
+ 	}
+ 	num, method, _ := m.cseq()
++	var cliTarget string
++	if c, ok := m.topValue("contact"); ok {
++		cliTarget = parseNameAddr(c).uri
++	}
+ 	p.contactsToUpstream(m, false)
+ 	if err := p.rewriteBody(m, true, now); err != nil {
+-		p.drop("client_sdp")
+-		return
++		if !errors.Is(err, errClientNoCrypto) {
++			p.drop("client_sdp")
++			return
++		}
++		// Knihovna odpověděla (nebo v odpovědi nabídla) bez šifrování
++		// hlasu. Proudy nemají klíč, takže hlas neprojde ani teď.
++		p.cnt.inc("sip.insecure_answer")
++		p.log.printf("insecure-answer", "p21relay: answer without media encryption")
++		if m.status >= 200 && m.status < 300 {
++			d := dialogRef{callID: m.get("call-id"), cliParty: m.get("to"), upParty: m.get("from"), cliTarget: cliTarget}
++			if method == "INVITE" {
++				p.refuseInsecureAnswer(m, d, num, conn, nv, now)
++				return
++			}
++			defer p.endCall(d, true, now)
++		}
+ 	}
+ 	p.mediaOnResponse(m, method)
+ 	out := m.bytes()
+ 
+-	if conn != "" && conn != "u" {
+-		id, _ := strconv.ParseUint(conn, 10, 64)
+-		tc := p.tcps[id]
+-		if tc == nil || tc.closed() {
+-			tc = p.upstreamTCP() // RFC 3261 18.2.2: new connection to the sender
+-		}
+-		p.sendTCP(tc, out)
++	tc, dst, ok := p.sendResponseUpstream(out, conn, nv)
++	if !ok || tc != nil {
+ 		return
+ 	}
+-	dst, ok := p.viaDest(nv)
+-	if !ok {
+-		p.drop("bad_response_destination")
+-		return
+-	}
+-	p.sendUDP(out, dst)
+ 	switch {
+ 	case m.status < 200:
+ 	case method == "INVITE":
+@@ -1091,6 +1135,127 @@ func (p *sipProxy) clientResponse(m *sipMsg) {
+ 	}
+ }
+ 
++// sendResponseUpstream sends a response of the calling library the way its
++// request came: over that TCP connection (or a new one), else over UDP to
++// the top Via of the miniserver (nv).
++func (p *sipProxy) sendResponseUpstream(out []byte, conn string, nv *sipVia) (*tcpConn, netip.AddrPort, bool) {
++	if conn != "" && conn != "u" {
++		id, _ := strconv.ParseUint(conn, 10, 64)
++		tc := p.tcps[id]
++		if tc == nil || tc.closed() {
++			tc = p.upstreamTCP() // RFC 3261 18.2.2: new connection to the sender
++		}
++		p.sendTCP(tc, out)
++		return tc, netip.AddrPort{}, true
++	}
++	dst, ok := p.viaDest(nv)
++	if !ok {
++		p.drop("bad_response_destination")
++		return nil, dst, false
++	}
++	p.sendUDP(out, dst)
++	return nil, dst, true
++}
++
++// ---- hovor bez šifrování hlasu ----
++
++// dialogRef popisuje dialog, který relé ukončuje samo.
++type dialogRef struct {
++	callID    string
++	cliParty  string // From/To (name-addr se značkou) strany volací knihovny
++	upParty   string // totéž za ústřednu
++	cliTarget string // Contact knihovny, "" = podle registrace
++}
++
++// refuseInsecureAnswer vyřídí 2xx knihovny na INVITE z ústředny, které
++// nemá použitelné šifrování: ústředna místo něj dostane 488 (hovor se
++// nespojí; u re-INVITE zůstane původní relace), knihovna ACK a hned BYE.
++// U už spojeného hovoru dostane BYE i ústředna, ať hovor nezůstane viset.
++func (p *sipProxy) refuseInsecureAnswer(m *sipMsg, d dialogRef, num uint32, conn string, nv *sipVia, now time.Time) {
++	established := p.media.established(d.callID)
++	out := newResponse(m, 488, "Not Acceptable Here", "").bytes()
++	p.cnt.inc("sip.local_reply_488")
++	if tc, dst, ok := p.sendResponseUpstream(out, conn, nv); ok {
++		// Opakovat do ACK ústředny (po TCP jen pro jeho zachycení).
++		tx := &txEntry{data: out, dest: dst, response: true, local: true, tcp: tc, expire: now.Add(sipTxTimeout)}
++		if tc == nil {
++			tx.next, tx.interval = now.Add(sipT1), sipT1
++		}
++		p.addTx(rspKey(d.callID, num), tx)
++	}
++	ack := p.localRequest("ACK", p.clientTarget(d), p.localVia(true, d.callID, "ACK", num), d.upParty, d.cliParty, d.callID, num)
++	p.sendClient(ack.bytes())
++	p.endCall(d, established, now)
++}
++
++// endCall ukončí hovor bez šifrování hlasu: BYE knihovně a případně
++// ústředně (odpovědi na ně relé zachytí), a uvolní jeho hlas.
++func (p *sipProxy) endCall(d dialogRef, byeUpstream bool, now time.Time) {
++	reason := sipHeader{name: "Reason", key: "reason", value: insecureReason}
++	n := p.media.lastCSeq(d.callID, false) + 1
++	bye := p.localRequest("BYE", p.clientTarget(d), p.localVia(true, d.callID, "BYE", n), d.upParty, d.cliParty, d.callID, n, reason)
++	p.sendClient(bye.bytes())
++	if byeUpstream {
++		n := p.media.lastCSeq(d.callID, true) + 1
++		via := p.localVia(false, d.callID, "BYE", n)
++		out := p.localRequest("BYE", "sip:"+p.upstream.String(), via, d.cliParty, d.upParty, d.callID, n, reason).bytes()
++		p.sendUDP(out, p.upstream)
++		p.addTx("req|"+via.branch()+"|BYE", &txEntry{
++			data: out, dest: p.upstream,
++			next: now.Add(sipT1), interval: sipT1, expire: now.Add(sipTxTimeout),
++		})
++	}
++	p.cnt.inc("sip.local_bye")
++	p.media.release(d.callID, "insecure")
++}
++
++// localVia je Via požadavku relé: ke knihovně (TLS) nebo k ústředně (UDP).
++func (p *sipProxy) localVia(toClient bool, callID, method string, num uint32) *sipVia {
++	side := "u"
++	if toClient {
++		side = "c"
++	}
++	branch := localBranchPrefix + p.mac("local", side, callID, method, strconv.FormatUint(uint64(num), 10))
++	if toClient {
++		return &sipVia{transport: "TLS", host: loopback4.String(), port: p.sipPort, params: []sipParam{{k: "branch", v: branch, hasV: true}}}
++	}
++	return &sipVia{transport: "UDP", host: p.localIP.String(), port: p.upPort, params: []sipParam{{k: "branch", v: branch, hasV: true}, {k: "rport"}}}
++}
++
++// clientTarget je Request-URI pro knihovnu: její Contact, jinak kontakt
++// z registrace, jinak samotné spojení (knihovna hledá dialog podle
++// Call-ID a značek, ne podle Request-URI).
++func (p *sipProxy) clientTarget(d dialogRef) string {
++	if d.cliTarget != "" {
++		return d.cliTarget
++	}
++	if u, ok := parseURI(parseNameAddr(d.cliParty).uri); ok {
++		if c, ok := p.contacts[u.user]; ok {
++			return c
++		}
++	}
++	port := p.sipPort
++	if p.client != nil {
++		port = int(p.client.remote.Port())
++	}
++	return "sip:127.0.0.1:" + strconv.Itoa(port) + ";transport=tls"
++}
++
++// localRequest sestaví požadavek relé uvnitř dialogu.
++func (p *sipProxy) localRequest(method, ruri string, via *sipVia, from, to, callID string, num uint32, extra ...sipHeader) *sipMsg {
++	m := &sipMsg{isReq: true, method: method, ruri: ruri}
++	m.hdrs = append(m.hdrs,
++		sipHeader{name: "Via", key: "via", value: via.String()},
++		sipHeader{name: "Max-Forwards", key: "max-forwards", value: "70"},
++		sipHeader{name: "From", key: "from", value: from},
++		sipHeader{name: "To", key: "to", value: to},
++		sipHeader{name: "Call-ID", key: "call-id", value: callID},
++		sipHeader{name: "CSeq", key: "cseq", value: strconv.FormatUint(uint64(num), 10) + " " + method},
++	)
++	m.hdrs = append(m.hdrs, extra...)
++	return m
++}
++
+ func rspKey(callID string, num uint32) string {
+ 	return "rsp|" + callID + "|" + strconv.FormatUint(uint64(num), 10)
+ }
+@@ -1146,11 +1311,21 @@ func (p *sipProxy) upstreamRequest(m *sipMsg, tc *tcpConn, src netip.AddrPort) {
+ 	branch := p.branch("u", uv.branch(), m)
+ 	switch m.method {
+ 	case "ACK":
++		if tx := p.txs[rspKey(callID, num)]; tx != nil && tx.local {
++			// ACK na 488 relé (hovor bez šifrování): knihovna už má svůj.
++			delete(p.txs, rspKey(callID, num))
++			p.cnt.inc("sip.local_acked")
++			return
++		}
+ 		delete(p.txs, rspKey(callID, num))
+ 	case "INVITE":
+ 		if tx := p.txs[rspKey(callID, num)]; tx != nil {
+ 			// Retransmitted INVITE: our final answer got lost, repeat it.
+-			p.sendUDP(tx.data, tx.dest)
++			if tx.tcp != nil {
++				p.sendTCP(tx.tcp, tx.data)
++			} else {
++				p.sendUDP(tx.data, tx.dest)
++			}
+ 			p.cnt.inc("sip.retransmit_answered")
+ 			return
+ 		}
+@@ -1186,6 +1361,7 @@ func (p *sipProxy) upstreamRequest(m *sipMsg, tc *tcpConn, src netip.AddrPort) {
+ 		p.drop("upstream_sdp")
+ 		return
+ 	}
++	p.media.noteCSeq(callID, false, num)
+ 	p.mediaOnRequest(m, now)
+ 
+ 	conn := "u"
+@@ -1239,6 +1415,10 @@ func (p *sipProxy) upstreamResponse(m *sipMsg) {
+ 			return
+ 		}
+ 	}
++	if strings.HasPrefix(v.branch(), localBranchPrefix) {
++		p.cnt.inc("sip.local_answered") // odpověď na BYE relé
++		return
++	}
+ 	m.popTopValue("via")
+ 	if _, ok := m.topValue("via"); !ok {
+ 		p.drop("upstream_malformed")
+diff --git a/libtailscale/p21relay/srtpcall_test.go b/libtailscale/p21relay/srtpcall_test.go
+new file mode 100644
+index 0000000..b7a74d9
+--- /dev/null
++++ b/libtailscale/p21relay/srtpcall_test.go
+@@ -0,0 +1,491 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bytes"
++	"fmt"
++	"net"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestSDPCryptoRewrite(t *testing.T) {
++	mm := newMediaManager(fakeNet{}, upIP, &counters{}, &rateLog{})
++	defer mm.closeAll()
++	now := time.Now()
++
++	// Nabídka knihovny: první podporovaný řádek (_32), vše o šifrování pryč.
++	offer := "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n" +
++		"a=crypto:9 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + "\r\n" +
++		"a=tcap:1 RTP/SAVP\r\n" +
++		"m=audio 40000 RTP/SAVPF 0 101\r\n" +
++		"a=rtpmap:101 telephone-event/8000\r\n" +
++		"a=crypto:1 AES_256_CM_HMAC_SHA1_80 inline:" + testKey1 + testKey1[:16] + "\r\n" +
++		"a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:" + testKey2 + "\r\n" +
++		"a=crypto:3 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + "\r\n" +
++		"a=acap:1 crypto:4 AES_CM_128_HMAC_SHA1_80 inline:" + testKey1 + "\r\n" +
++		"a=pcfg:1 t=1 a=1\r\n" +
++		"a=fingerprint:sha-256 00:11\r\n" +
++		"a=setup:actpass\r\n" +
++		"a=zrtp-hash:1.10 00\r\n" +
++		"a=cryptex\r\n" +
++		"a=sendrecv\r\n" +
++		"m=video 0 RTP/SAVP 96\r\n"
++	out, err := mm.rewrite("x", true, testInvite, []byte(offer), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	expectPlainSDP(t, out)
++	for _, want := range []string{"m=audio ", " RTP/AVPF 0 101\r\n", "m=video 0 RTP/AVP 96\r\n", "a=rtpmap:101 telephone-event/8000\r\n", "a=sendrecv\r\n"} {
++		if !strings.Contains(string(out), want) {
++			t.Fatalf("missing %q:\n%s", want, out)
++		}
++	}
++	for _, gone := range []string{"zrtp", "cryptex", "fingerprint", "setup", "pcfg"} {
++		if strings.Contains(string(out), gone) {
++			t.Fatalf("%s left:\n%s", gone, out)
++		}
++	}
++
++	// Odpověď ústředny: stejná značka a sada, klíč relé, profil podle nabídky.
++	ans, err := mm.rewrite("x", false, testAnswer, []byte("v=0\r\nc=IN IP4 "+upIP.String()+"\r\nm=audio 30000 RTP/AVPF 0\r\nm=video 0 RTP/AVP 96\r\n"), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(ans), " RTP/SAVPF 0\r\n") || !strings.Contains(string(ans), "m=video 0 RTP/SAVP 96\r\n") {
++		t.Fatalf("answer protocols:\n%s", ans)
++	}
++	_, lines := sdpCryptos(t, ans)
++	if len(lines) != 1 || lines[0].tag != 2 || lines[0].suite != "AES_CM_128_HMAC_SHA1_32" || strings.Contains(lines[0].line, testKey2) {
++		t.Fatalf("answer crypto %+v\n%s", lines, ans)
++	}
++	if strings.Count(string(ans), "a=crypto:") != 1 {
++		t.Fatalf("crypto on a disabled stream:\n%s", ans)
++	}
++	relayKey := lines[0]
++
++	// Nabídka ústředny (re-INVITE): obě sady, používaná sada první se
++	// stejným klíčem.
++	reoffer, err := mm.rewrite("x", false, sdpMsg{isReq: true, method: "INVITE", cseq: 50}, []byte("v=0\r\nc=IN IP4 "+upIP.String()+"\r\nm=audio 30000 RTP/AVP 0\r\n"), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	_, lines = sdpCryptos(t, reoffer)
++	if len(lines) != 2 || lines[0].tag != 1 || lines[0].suite != "AES_CM_128_HMAC_SHA1_32" || lines[1].tag != 2 || lines[1].suite != "AES_CM_128_HMAC_SHA1_80" {
++		t.Fatalf("re-offer crypto %+v", lines)
++	}
++	if !bytes.Equal(lines[0].master, relayKey.master) {
++		t.Fatal("relay key of the suite in use changed in a re-offer")
++	}
++	// Na první nabídku (bez klíče relé) jde první sada _80.
++	first, err := mm.rewrite("z", false, testInvite, []byte("v=0\r\nc=IN IP4 "+upIP.String()+"\r\nm=audio 30000 RTP/AVP 0\r\n"), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, l := sdpCryptos(t, first); len(l) != 2 || l[0].suite != "AES_CM_128_HMAC_SHA1_80" {
++		t.Fatalf("first offer crypto %+v", l)
++	}
++
++	// Odpověď knihovny se značkou, kterou relé nenabídlo: bez klíče.
++	_, err = mm.rewrite("x", true, sdpMsg{method: "INVITE", cseq: 50}, secureSDP(sdpFor("127.0.0.1", 40000, "a=crypto:7 AES_CM_128_HMAC_SHA1_80 inline:"+testKey1)), now)
++	if err != errClientNoCrypto {
++		t.Fatalf("answer with a foreign tag: %v", err)
++	}
++	// … ani se sadou jinou, než relé pod značkou nabídlo.
++	_, err = mm.rewrite("x", true, sdpMsg{method: "INVITE", cseq: 50}, secureSDP(sdpFor("127.0.0.1", 40000, "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"+testKey1)), now)
++	if err != errClientNoCrypto {
++		t.Fatalf("answer with another suite: %v", err)
++	}
++	st := mm.calls["x"].streams[0]
++	if st.recv.hasKey() {
++		t.Fatal("insecure answer left a key")
++	}
++	if _, ok := st.send.key(); ok {
++		t.Fatal("insecure answer left the relay's key")
++	}
++
++	// Nabídka bez použitelného šifrování nic nepřidělí.
++	for _, bad := range []string{
++		string(sdpFor("127.0.0.1", 40000)),
++		string(secureSDP(sdpFor("127.0.0.1", 40000))),
++		string(secureSDP(sdpFor("127.0.0.1", 40000, "a=crypto:1 AES_256_CM_HMAC_SHA1_80 inline:"+testKey1+testKey1[:16]))),
++		string(secureSDP(sdpFor("127.0.0.1", 40000, "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"+testKey1+" UNENCRYPTED_SRTP"))),
++		strings.Replace(string(sdpFor("127.0.0.1", 40000, "a=fingerprint:sha-256 00", "a=setup:actpass")), "RTP/AVP", "UDP/TLS/RTP/SAVP", 1),
++	} {
++		if _, err := mm.rewrite("y", true, testInvite, []byte(bad), now); err != errClientNoCrypto {
++			t.Fatalf("offer accepted (%v):\n%s", err, bad)
++		}
++	}
++	if mm.calls["y"] != nil {
++		t.Fatal("refused offer allocated media")
++	}
++}
++
++// ---- hovory ----
++
++// Nabídka bez šifrování od knihovny dostane 488 a k ústředně nedojde.
++func TestSRTPOfferWithoutCrypto(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	for i, body := range []string{
++		sdpBody("127.0.0.1", 40000),
++		sdpSecure("127.0.0.1", 40000, "a=crypto:1 AES_256_CM_HMAC_SHA1_80 inline:"+testKey1+testKey1[:16]),
++	} {
++		cl := newCall(t, "plain-", 30)
++		c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), append(cl.clientHeaders(c, newBranch(), cl.cseq, "INVITE", false), e.relayRoute()), body))
++		r := c.expectResponse(488, "INVITE")
++		if !strings.Contains(r.get("to"), "tag=") {
++			t.Fatal("488 without To tag")
++		}
++		e.up.expectNothing()
++		if n := e.counter("sip.488_no_crypto"); n != int64(i+1) {
++			t.Fatalf("488_no_crypto %d", n)
++		}
++	}
++	if e.mediaStat("streams") != 0 {
++		t.Fatal("media allocated for a refused offer")
++	}
++}
++
++// Podvržené, poškozené a přehrané pakety z 127.0.0.1 se do hovoru nedostanou.
++func TestSRTPInjectionDropped(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++	cl.checkMedia(t, "before")
++	none := func(what string) {
++		t.Helper()
++		expectNoPacket(t, cl.mediaPath.up.rtp)
++		expectNoPacket(t, cl.mediaPath.up.rtcp)
++	}
++
++	// Nešifrovaný paket ze správného portu knihovny.
++	authFail := e.mediaStat("srtpAuthFail")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), rtpPkt(cl.cs.ssrc, cl.cs.seq+1, 0, "plain-inject"))
++	sendUDP(t, cl.cli.rtcp, cl.relayClientRTCP(), rtcpPkt(cl.cs.ssrc, "plain-rtcp-injection-payload"))
++	none("plain")
++	// Špatně podepsaný a cizím klíčem šifrovaný paket.
++	_, bad := cl.cs.sealRTP("tampered")
++	bad[len(bad)-1] ^= 0x55
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), bad)
++	other := newTestSRTP(t)
++	other.seq = cl.cs.seq + 10
++	_, foreign := other.sealRTP("other-key")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), foreign)
++	none("forged")
++	waitFor(t, func() bool { return e.mediaStat("srtpAuthFail") == authFail+4 })
++
++	// Správně šifrovaný paket z jiného portu na 127.0.0.1.
++	intruder, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback4.AsSlice()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer intruder.Close()
++	foreignSrc := e.mediaStat("dropForeignClient")
++	_, good := cl.cs.sealRTP("right-key-wrong-port")
++	sendUDP(t, intruder, cl.relayClientRTP(), good)
++	none("other port")
++	waitFor(t, func() bool { return e.mediaStat("dropForeignClient") == foreignSrc+1 })
++
++	// Přehrání: starší ověřený paket znovu.
++	_, p1 := cl.cs.sealRTP("first")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), p1)
++	recvFrom(t, cl.mediaPath.up.rtp, cl.relayPrivRTP(), "first")
++	cl.toUp(t, false, "second")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), p1)
++	_, r1 := cl.cs.sealRTCP("rtcp-once")
++	sendUDP(t, cl.cli.rtcp, cl.relayClientRTCP(), r1)
++	recvFrom(t, cl.mediaPath.up.rtcp, cl.relayPrivRTCP(), "rtcp-once")
++	sendUDP(t, cl.cli.rtcp, cl.relayClientRTCP(), r1)
++	none("replay")
++	waitFor(t, func() bool { return e.mediaStat("srtpReplay") == 2 })
++
++	// Konec tónové volby: knihovna pošle stejný paket třikrát hned po sobě;
++	// všechny tři dojdou ústředně, čtvrtý už ne.
++	plain, dtmf := cl.cs.sealRTP("dtmf-end")
++	for i := 0; i < 4; i++ {
++		sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), dtmf)
++		if i < 3 {
++			if got := recvFrom(t, cl.mediaPath.up.rtp, cl.relayPrivRTP(), "dtmf-end"); !bytes.Equal(got, plain) {
++				t.Fatalf("dtmf end %d: %x", i, got)
++			}
++		}
++	}
++	none("fourth repeat")
++	if e.mediaStat("srtpRepeat") != 2 {
++		t.Fatalf("srtpRepeat %d", e.mediaStat("srtpRepeat"))
++	}
++	cl.checkMedia(t, "after")
++}
++
++// Re-INVITE s novým klíčem knihovny: do přechodu platí starý, potom jen nový.
++func TestSRTPReinviteNewClientKey(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := establishOutgoing(t, e, c)
++	old := *cl.cs
++	cl.cs.rekey()
++	cl.cs.seq, cl.cs.ts = old.seq, old.ts // knihovna čísluje dál
++
++	c.send(requestText("INVITE", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "INVITE", true), cl.offer()))
++	ri := e.up.expectRequest("INVITE")
++	expectPlainSDP(t, ri.m.body)
++	// Před dokončením výměny knihovna šifruje starým klíčem.
++	oldPath := cl.mediaPath
++	oldPath.cs = &old
++	oldPath.toUp(t, false, "old-key")
++	cl.cs.seq, cl.cs.ts = old.seq, old.ts
++
++	e.up.reply(ri, 200, "OK", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.mediaPath.up.port))
++	cl.cs.learnAnswer(c.expectResponse(200, "INVITE").body, 1)
++	c.send(requestText("ACK", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "ACK", true), ""))
++	e.up.expectRequest("ACK")
++
++	cl.checkMedia(t, "new-key")
++	if n := e.mediaStat("srtpKeySwitch"); n != 1 {
++		t.Fatalf("srtpKeySwitch %d", n)
++	}
++	// Starý klíč už neprojde.
++	before := e.mediaStat("srtpAuthFail")
++	old.seq = cl.cs.seq + 5
++	_, stale := old.sealRTP("stale-key")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), stale)
++	expectNoPacket(t, cl.mediaPath.up.rtp)
++	waitFor(t, func() bool { return e.mediaStat("srtpAuthFail") == before+1 })
++}
++
++// Přetečení čísel paketů v obou směrech a pak re-INVITE se stejnými klíči
++// (držení a návrat): relé i knihovna drží kontext, hlas jde dál.
++func TestSRTPRolloverAcrossReinvite(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := establishOutgoing(t, e, c)
++	cl.us.seq, cl.cs.seq = 65530, 65530
++	for i := 0; i < 10; i++ {
++		cl.checkMedia(t, "wrap"+strconv.Itoa(i))
++	}
++	if cl.us.seq > 100 || cl.cs.seq > 100 {
++		t.Fatal("test did not wrap")
++	}
++
++	// Držení od knihovny, návrat od ústředny.
++	c.send(requestText("INVITE", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "INVITE", true), cl.offer("a=sendonly")))
++	ri := e.up.expectRequest("INVITE")
++	e.up.reply(ri, 200, "OK", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.mediaPath.up.port, "a=recvonly"))
++	cl.cs.learnAnswer(c.expectResponse(200, "INVITE").body, 1)
++	c.send(requestText("ACK", e.relayURI(), cl.clientHeaders(c, newBranch(), cl.cseq+1, "ACK", true), ""))
++	e.up.expectRequest("ACK")
++
++	inv := incomingInvite(t, e, cl.callID, 300, cl.mediaPath.up.port)
++	inv = strings.Replace(inv, "To: <sip:"+testUser+"@"+upIP.String()+">", "To: <sip:"+testUser+"@"+upIP.String()+">;tag=c1", 1)
++	e.up.sendUDP(e.privSIP(), inv)
++	ci := c.expectRequest("INVITE")
++	decBefore := cl.cs.dec
++	answer, _ := cl.cs.answerOffer(ci.body, 1)
++	if cl.cs.dec != decBefore {
++		t.Fatal("relay offered a new key for the suite in use")
++	}
++	c.send(responseText(ci, 200, "OK", "c1", []string{"Contact: <" + c.contact() + ">"}, sdpSecure("127.0.0.1", cl.cli.port, answer)))
++	e.up.expectResponse(200, "INVITE")
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", cl.callID, 300, "c1"))
++	c.expectRequest("ACK")
++	// Kontexty z doby před přetečením platí dál (ROC 1 na obou stranách).
++	cl.checkMedia(t, "resumed")
++	if e.mediaStat("srtpAuthFail") != 0 || e.mediaStat("srtpKeySwitch") != 0 {
++		t.Fatalf("media stats %v", e.relay.media.stats())
++	}
++}
++
++// Skok čísel paketů od ústředny v rámci jedné SSRC relé vyrovná, ať je
++// knihovna (okno 128) nezahodí.
++func TestSRTPSequenceJumpToClient(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++	last := cl.toClient(t, false, "a")
++	cl.us.seq -= 1000 // zpět o 1000
++	if got := cl.toClient(t, false, "after-back-jump"); got != last+1 {
++		t.Fatalf("seq %d after the jump, want %d", got, last+1)
++	}
++	cl.us.seq += 40000 // dopředu přes 2^15
++	if got := cl.toClient(t, false, "after-forward-jump"); got != last+2 {
++		t.Fatalf("seq %d after the jump, want %d", got, last+2)
++	}
++	cl.us.seq += 5 // malá mezera zůstane
++	if got := cl.toClient(t, false, "gap"); got != last+8 {
++		t.Fatalf("seq %d after a gap, want %d", got, last+8)
++	}
++	if n := e.mediaStat("srtpSeqResync"); n != 2 {
++		t.Fatalf("srtpSeqResync %d", n)
++	}
++	// Nová SSRC začíná vlastní řadou.
++	cl.us.ssrc++
++	cl.us.seq = 7
++	if got := cl.toClient(t, false, "new-ssrc"); got != 8 {
++		t.Fatalf("new SSRC seq %d", got)
++	}
++}
++
++// rtcp-mux na obou stranách: RTCP jde po portu RTP a šifruje se jako SRTCP.
++func TestSRTPRtcpMux(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := newCall(t, "mux-", 40)
++	mux := func(port int) []string { return []string{"a=rtcp:" + strconv.Itoa(port), "a=rtcp-mux"} }
++	c.send(requestText("INVITE", "sip:"+testNumber+"@"+upIP.String(), append(cl.clientHeaders(c, cl.branch, cl.cseq, "INVITE", false), e.relayRoute()),
++		cl.offer(mux(cl.cli.port)...)))
++	inv := e.up.expectRequest("INVITE")
++	_, cl.relayU = sdpMedia(t, inv.m.body)
++	if !strings.Contains(string(inv.m.body), "a=rtcp:"+strconv.Itoa(cl.relayU)+"\r\n") {
++		t.Fatalf("mux offer:\n%s", inv.m.body)
++	}
++	e.up.reply(inv, 200, "OK", []string{cl.upContact(e)}, sdpBody(upIP.String(), cl.mediaPath.up.port, mux(cl.mediaPath.up.port)...))
++	r := c.expectResponse(200, "INVITE")
++	_, cl.relayC = sdpMedia(t, r.body)
++	cl.cs.learnAnswer(r.body, 1)
++
++	// RTCP z portu RTP knihovny k portu RTP ústředny a zpět.
++	plain, sealed := cl.cs.sealRTCP("mux-rtcp-up")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), sealed)
++	if got := recvFrom(t, cl.mediaPath.up.rtp, cl.relayPrivRTP(), "mux-rtcp-up"); !bytes.Equal(got, plain) {
++		t.Fatalf("mux rtcp up %x", got)
++	}
++	plain = rtcpPkt(cl.us.ssrc, "mux-rtcp-down")
++	sendUDP(t, cl.mediaPath.up.rtp, cl.relayPrivRTP(), plain)
++	got := recvFrom(t, cl.cli.rtp, cl.relayClientRTP(), "mux-rtcp-down")
++	dec, err := cl.cs.dec.DecryptRTCP(nil, got, nil)
++	if err != nil || !bytes.Equal(dec, plain) {
++		t.Fatalf("mux rtcp down: %v %x", err, dec)
++	}
++	cl.toUp(t, false, "mux-rtp-up")
++	cl.toClient(t, false, "mux-rtp-down")
++}
++
++// Bez dohodnutých klíčů hlas neprojde ani jedním směrem (knihovna
++// odpověděla na nabídku relé bez použitelného a=crypto).
++func TestSRTPNoKeyMedia(t *testing.T) {
++	mm := newMediaManager(fakeNet{}, upIP, &counters{}, &rateLog{})
++	defer mm.closeAll()
++	mp := &mediaPath{cli: newRTPPair(t, loopback4), up: newRTPPair(t, upIP), cs: newTestSRTP(t), us: &plainRTP{ssrc: 7}}
++	now := time.Now()
++	out, err := mm.rewrite("n", false, testInvite, sdpFor(upIP.String(), mp.up.port), now)
++	if err != nil {
++		t.Fatal(err)
++	}
++	mp.relayC = firstPort(t, out)
++	out, err = mm.rewrite("n", true, testAnswer, secureSDP(sdpFor("127.0.0.1", mp.cli.port)), now)
++	if err != errClientNoCrypto {
++		t.Fatalf("answer without crypto: %v", err)
++	}
++	expectPlainSDP(t, out)
++	mp.relayU = firstPort(t, out)
++	sendUDP(t, mp.up.rtp, mp.relayPriv(false), mp.us.next("no-key-down"))
++	expectNoPacket(t, mp.cli.rtp)
++	_, sealed := mp.cs.sealRTP("no-key-up")
++	sendUDP(t, mp.cli.rtp, mp.relayCli(false), sealed)
++	expectNoPacket(t, mp.up.rtp)
++	waitFor(t, func() bool { return mm.srtpNoKeyToClient.Load() == 1 && mm.srtpNoKey.Load() == 1 })
++}
++
++// Knihovna přijme příchozí hovor bez šifrování: ústředna dostane 488
++// (hovor se nespojí), knihovna ACK a BYE; nic z toho nejde dál.
++func TestSRTPInsecureAnswerIncoming(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := newCall(t, "insec-", 0)
++	e.up.sendUDP(e.privSIP(), incomingInvite(t, e, cl.callID, 100, cl.mediaPath.up.port))
++	ci := c.expectRequest("INVITE")
++	c.send(responseText(ci, 200, "OK", "cli-tag", []string{"Contact: <" + c.contact() + ">"}, sdpBody("127.0.0.1", cl.cli.port)))
++
++	r := e.up.expectResponse(488, "INVITE")
++	if !strings.Contains(r.m.get("to"), "tag=cli-tag") || len(r.m.body) != 0 || r.m.has("contact") {
++		t.Fatalf("488 to the miniserver:\n%s", r.raw)
++	}
++	ack := c.expectRequest("ACK")
++	if ack.ruri != c.contact() || ack.get("cseq") != "100 ACK" || !strings.Contains(ack.get("to"), "tag=cli-tag") || !strings.Contains(ack.get("from"), "tag=u1") {
++		t.Fatalf("ACK to the client: %+v", ack)
++	}
++	bye := c.expectRequest("BYE")
++	if bye.get("cseq") != "101 BYE" || bye.get("call-id") != cl.callID || !strings.Contains(bye.get("reason"), "cause=488") ||
++		!strings.Contains(bye.get("to"), "tag=cli-tag") || !strings.Contains(bye.get("from"), "tag=u1") {
++		t.Fatalf("BYE to the client: %+v", bye)
++	}
++	c.send(responseText(bye, 200, "OK", "cli-tag", nil, ""))
++	waitFor(t, func() bool { return e.counter("sip.local_answered") == 1 })
++	// ACK ústředny na 488 ke knihovně nejde.
++	e.up.sendUDP(e.privSIP(), upRequest(e, "ACK", cl.callID, 100, "cli-tag"))
++	waitFor(t, func() bool { return e.counter("sip.local_acked") == 1 })
++	c.expectNothing()
++	e.up.expectNothing()
++	if e.counter("sip.insecure_answer") != 1 || e.mediaStat("streams") != 0 {
++		t.Fatalf("insecure_answer %d, streams %d", e.counter("sip.insecure_answer"), e.mediaStat("streams"))
++	}
++}
++
++// Spojený hovor, re-INVITE ústředny a knihovna odpoví bez šifrování: re-INVITE
++// dostane 488 a oba konce BYE.
++func TestSRTPInsecureAnswerReinvite(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	cl := establishOutgoing(t, e, c)
++	cl.checkMedia(t, "talk")
++
++	inv := incomingInvite(t, e, cl.callID, 300, cl.mediaPath.up.port)
++	inv = strings.Replace(inv, "To: <sip:"+testUser+"@"+upIP.String()+">", "To: <sip:"+testUser+"@"+upIP.String()+">;tag=c1", 1)
++	e.up.sendUDP(e.privSIP(), inv)
++	ci := c.expectRequest("INVITE")
++	// Odpověď se značkou, kterou relé nenabídlo.
++	c.send(responseText(ci, 200, "OK", "c1", []string{"Contact: <" + c.contact() + ">"},
++		sdpSecure("127.0.0.1", cl.cli.port, "a=crypto:9 AES_CM_128_HMAC_SHA1_80 inline:"+testKey1)))
++
++	e.up.expectResponse(488, "INVITE")
++	ubye := e.up.expectRequest("BYE")
++	if ubye.m.get("cseq") != fmt.Sprintf("%d BYE", cl.cseq+1) || !strings.Contains(ubye.m.get("from"), "tag=c1") ||
++		!strings.Contains(ubye.m.get("reason"), "cause=488") || ubye.src != e.privSIP() {
++		t.Fatalf("BYE to the miniserver:\n%s", ubye.raw)
++	}
++	c.expectRequest("ACK")
++	cbye := c.expectRequest("BYE")
++	if cbye.get("cseq") != "301 BYE" || !strings.Contains(cbye.get("to"), "tag=c1") {
++		t.Fatalf("BYE to the client: %+v", cbye)
++	}
++	e.up.reply(ubye, 200, "OK", nil, "")
++	c.send(responseText(cbye, 200, "OK", "c1", nil, ""))
++	waitFor(t, func() bool { return e.counter("sip.local_answered") == 2 })
++	c.expectNothing()
++	e.up.expectNothing()
++	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
++	// Hlas už nejde.
++	_, sealed := cl.cs.sealRTP("after-end")
++	sendUDP(t, cl.cli.rtp, cl.relayClientRTP(), sealed)
++	expectNoPacket(t, cl.mediaPath.up.rtp)
++}
++
++// Statistiky obsahují počty šifrování, log ani statistiky nikdy klíče.
++func TestSRTPStatsAndLogs(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	cl := establishOutgoing(t, e, c)
++	cl.checkMedia(t, "s")
++	m := e.stats()["media"].(map[string]any)
++	for _, k := range []string{"srtpAuthFail", "srtpReplay", "srtpNoKey", "srtpMalformed", "srtpRepeat", "srtpKeySwitch", "srtpNoKeyToClient", "srtpSealError", "srtpSeqResync", "srtpKeyError"} {
++		if _, ok := m[k]; !ok {
++			t.Errorf("stats without %s", k)
++		}
++	}
++	st := e.relay.Stats()
++	for _, bad := range []string{"inline", cl.cs.attr(1)[len("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"):]} {
++		if strings.Contains(st, bad) || strings.Contains(e.logs.String(), bad) {
++			t.Fatalf("key material leaked: %q", bad)
++		}
++	}
++}
+diff --git a/libtailscale/p21relay/srtppeer_test.go b/libtailscale/p21relay/srtppeer_test.go
+new file mode 100644
+index 0000000..2de4b6b
+--- /dev/null
++++ b/libtailscale/p21relay/srtppeer_test.go
+@@ -0,0 +1,332 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++// Testovací protějšky hlasu: volací knihovna mluví SRTP (kontexty pion
++// s vlastními klíči a s klíči z SDP, nezávisle na kódu relé), ústředna
++// obyčejné RTP.
++
++import (
++	"bytes"
++	"crypto/rand"
++	"encoding/base64"
++	"encoding/binary"
++	"fmt"
++	"net"
++	"net/netip"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/pion/srtp/v3"
++)
++
++var testSuites = map[string]srtp.ProtectionProfile{
++	"AES_CM_128_HMAC_SHA1_80": srtp.ProtectionProfileAes128CmHmacSha1_80,
++	"AES_CM_128_HMAC_SHA1_32": srtp.ProtectionProfileAes128CmHmacSha1_32,
++}
++
++// testSRTP je šifrování na straně volací knihovny.
++type testSRTP struct {
++	t      *testing.T
++	suite  string
++	master []byte // vlastní klíč a sůl (odesílání)
++	enc    *srtp.Context
++	dec    *srtp.Context // klíčem relé
++	decKey string        // řádek a=crypto relé, ze kterého je dec
++	ssrc   uint32
++	seq    uint16
++	ts     uint32
++}
++
++func newTestSRTP(t *testing.T) *testSRTP {
++	t.Helper()
++	c := &testSRTP{t: t, suite: "AES_CM_128_HMAC_SHA1_80", ssrc: 0xC1C1C1C1, seq: 40000, ts: 160}
++	c.rekey()
++	return c
++}
++
++// rekey vytvoří nový vlastní klíč (knihovna při změně klíče začíná znovu).
++func (c *testSRTP) rekey() {
++	c.master = make([]byte, 30)
++	rand.Read(c.master)
++	c.newEnc()
++}
++
++func (c *testSRTP) newEnc() {
++	c.t.Helper()
++	enc, err := srtp.CreateContext(c.master[:16], c.master[16:], testSuites[c.suite])
++	if err != nil {
++		c.t.Fatal(err)
++	}
++	c.enc = enc
++}
++
++func (c *testSRTP) attr(tag int) string {
++	return fmt.Sprintf("a=crypto:%d %s inline:%s", tag, c.suite, base64.StdEncoding.EncodeToString(c.master))
++}
++
++// testCrypto je řádek a=crypto, jak ho přečte test.
++type testCrypto struct {
++	tag    int
++	suite  string
++	master []byte
++	line   string
++}
++
++// sdpCryptos vrátí přenosový protokol a řádky a=crypto prvního m=.
++func sdpCryptos(t *testing.T, body []byte) (string, []testCrypto) {
++	t.Helper()
++	var proto string
++	var out []testCrypto
++	inMedia := false
++	for _, l := range strings.Split(strings.TrimRight(string(body), "\r\n"), "\r\n") {
++		if strings.HasPrefix(l, "m=") {
++			if inMedia {
++				break
++			}
++			inMedia = true
++			proto = strings.Fields(l)[2]
++			continue
++		}
++		v, ok := strings.CutPrefix(l, "a=crypto:")
++		if !ok {
++			continue
++		}
++		if !inMedia {
++			t.Fatalf("session-level a=crypto:\n%s", body)
++		}
++		f := strings.Fields(v)
++		if len(f) != 3 {
++			t.Fatalf("a=crypto with %d fields: %q", len(f), l)
++		}
++		tag, err := strconv.Atoi(f[0])
++		key, ok := strings.CutPrefix(f[2], "inline:")
++		raw, err2 := base64.StdEncoding.DecodeString(key)
++		if err != nil || !ok || err2 != nil || len(raw) != 30 || testSuites[f[1]] == 0 {
++			t.Fatalf("bad a=crypto %q", l)
++		}
++		out = append(out, testCrypto{tag: tag, suite: f[1], master: raw, line: l})
++	}
++	return proto, out
++}
++
++// expectPlainSDP ověří, že tělo pro ústřednu nemá šifrování.
++func expectPlainSDP(t *testing.T, body []byte) {
++	t.Helper()
++	for _, l := range strings.Split(string(body), "\r\n") {
++		if strings.HasPrefix(l, "m=") && strings.Contains(l, "SAVP") {
++			t.Fatalf("secure profile toward the miniserver:\n%s", body)
++		}
++		for _, a := range []string{"a=crypto", "a=fingerprint", "a=setup", "a=tcap", "a=acap", "a=pcfg", "inline:"} {
++			if strings.Contains(l, a) {
++				t.Fatalf("%s toward the miniserver:\n%s", a, body)
++			}
++		}
++	}
++}
++
++// learnAnswer převezme klíč relé z odpovědi na nabídku knihovny (jeden
++// řádek se značkou wantTag) a vrátí ho.
++func (c *testSRTP) learnAnswer(body []byte, wantTag int) testCrypto {
++	c.t.Helper()
++	proto, cs := sdpCryptos(c.t, body)
++	if proto != "RTP/SAVP" || len(cs) != 1 || cs[0].tag != wantTag || cs[0].suite != c.suite {
++		c.t.Fatalf("answer to the client: proto %s, crypto %+v\n%s", proto, cs, body)
++	}
++	c.useRelayKey(cs[0])
++	return cs[0]
++}
++
++// answerOffer vybere z nabídky relé řádek se značkou tag, převezme jeho
++// sadu a klíč relé a vrátí atribut odpovědi s vlastním klíčem.
++func (c *testSRTP) answerOffer(body []byte, tag int) (string, []testCrypto) {
++	c.t.Helper()
++	proto, cs := sdpCryptos(c.t, body)
++	if proto != "RTP/SAVP" || len(cs) != 2 || cs[0].tag != 1 || cs[1].tag != 2 || cs[0].suite == cs[1].suite ||
++		bytes.Equal(cs[0].master, cs[1].master) {
++		c.t.Fatalf("offer to the client: proto %s, crypto %+v\n%s", proto, cs, body)
++	}
++	for _, x := range cs {
++		if x.tag == tag {
++			if x.suite != c.suite {
++				c.suite = x.suite
++				c.newEnc()
++			}
++			c.useRelayKey(x)
++			return c.attr(tag), cs
++		}
++	}
++	c.t.Fatalf("no tag %d offered", tag)
++	return "", nil
++}
++
++// useRelayKey nastaví dešifrování; stejný klíč kontext ponechá (jako
++// volací knihovna).
++func (c *testSRTP) useRelayKey(x testCrypto) {
++	c.t.Helper()
++	if c.dec != nil && c.decKey == x.suite+string(x.master) {
++		return
++	}
++	dec, err := srtp.CreateContext(x.master[:16], x.master[16:], testSuites[x.suite], srtp.SRTPReplayProtection(128), srtp.SRTCPReplayProtection(128))
++	if err != nil {
++		c.t.Fatal(err)
++	}
++	c.dec, c.decKey = dec, x.suite+string(x.master)
++}
++
++// plainRTP je odesílatel na straně ústředny.
++type plainRTP struct {
++	ssrc uint32
++	seq  uint16
++	ts   uint32
++}
++
++func (p *plainRTP) next(payload string) []byte {
++	p.seq++
++	p.ts += 160
++	return rtpPkt(p.ssrc, p.seq, p.ts, payload)
++}
++
++// sealRTP zašifruje další paket knihovny.
++func (c *testSRTP) sealRTP(payload string) (plain, sealed []byte) {
++	c.t.Helper()
++	c.seq++
++	c.ts += 160
++	plain = rtpPkt(c.ssrc, c.seq, c.ts, payload)
++	sealed, err := c.enc.EncryptRTP(nil, plain, nil)
++	if err != nil {
++		c.t.Fatal(err)
++	}
++	return plain, sealed
++}
++
++func (c *testSRTP) sealRTCP(payload string) (plain, sealed []byte) {
++	c.t.Helper()
++	plain = rtcpPkt(c.ssrc, payload)
++	sealed, err := c.enc.EncryptRTCP(nil, plain, nil)
++	if err != nil {
++		c.t.Fatal(err)
++	}
++	return plain, sealed
++}
++
++// recvFrom přečte jeden datagram a ověří jeho zdroj.
++func recvFrom(t *testing.T, at *net.UDPConn, wantSrc netip.AddrPort, what string) []byte {
++	t.Helper()
++	at.SetReadDeadline(time.Now().Add(waitLong))
++	buf := make([]byte, 4096)
++	n, src, err := at.ReadFromUDPAddrPort(buf)
++	if err != nil {
++		t.Fatalf("%s not delivered: %v", what, err)
++	}
++	if src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port()); src != wantSrc {
++		t.Fatalf("%s from %v, want %v", what, src, wantSrc)
++	}
++	return buf[:n]
++}
++
++func sendUDP(t *testing.T, from *net.UDPConn, to netip.AddrPort, b []byte) {
++	t.Helper()
++	if _, err := from.WriteToUDPAddrPort(b, to); err != nil {
++		t.Fatal(err)
++	}
++}
++
++// ---- hlas jednoho proudu přes relé ----
++
++// mediaPath je proud mezi testovací knihovnou a testovací ústřednou.
++type mediaPath struct {
++	cli, up        *rtpPair
++	cs             *testSRTP
++	us             *plainRTP
++	relayC, relayU int // porty relé na 127.0.0.1 a v privátní síti
++}
++
++func (m *mediaPath) relayCli(rtcp bool) netip.AddrPort {
++	p := m.relayC
++	if rtcp {
++		p++
++	}
++	return netip.AddrPortFrom(loopback4, uint16(p))
++}
++
++func (m *mediaPath) relayPriv(rtcp bool) netip.AddrPort {
++	p := m.relayU
++	if rtcp {
++		p++
++	}
++	return netip.AddrPortFrom(privIP, uint16(p))
++}
++
++func (m *mediaPath) sock(p *rtpPair, rtcp bool) *net.UDPConn {
++	if rtcp {
++		return p.rtcp
++	}
++	return p.rtp
++}
++
++// toUp pošle šifrovaný paket knihovny a čeká ho dešifrovaný u ústředny.
++func (m *mediaPath) toUp(t *testing.T, rtcp bool, payload string) {
++	t.Helper()
++	var plain, sealed []byte
++	if rtcp {
++		plain, sealed = m.cs.sealRTCP(payload)
++	} else {
++		plain, sealed = m.cs.sealRTP(payload)
++	}
++	sendUDP(t, m.sock(m.cli, rtcp), m.relayCli(rtcp), sealed)
++	got := recvFrom(t, m.sock(m.up, rtcp), m.relayPriv(rtcp), payload)
++	if !bytes.Equal(got, plain) {
++		t.Fatalf("%s: miniserver got %x, want %x", payload, got, plain)
++	}
++}
++
++// toClient pošle obyčejný paket ústředny a čeká ho šifrovaný u knihovny;
++// vrátí číslo paketu, které knihovna dostala.
++func (m *mediaPath) toClient(t *testing.T, rtcp bool, payload string) uint16 {
++	t.Helper()
++	var plain []byte
++	if rtcp {
++		plain = rtcpPkt(m.us.ssrc, payload)
++	} else {
++		plain = m.us.next(payload)
++	}
++	sendUDP(t, m.sock(m.up, rtcp), m.relayPriv(rtcp), plain)
++	got := recvFrom(t, m.sock(m.cli, rtcp), m.relayCli(rtcp), payload)
++	if bytes.Equal(got, plain) || bytes.Contains(got, []byte(payload)) {
++		t.Fatalf("%s reached the client unencrypted", payload)
++	}
++	var dec []byte
++	var err error
++	if rtcp {
++		dec, err = m.cs.dec.DecryptRTCP(nil, got, nil)
++	} else {
++		dec, err = m.cs.dec.DecryptRTP(nil, got, nil)
++	}
++	if err != nil {
++		t.Fatalf("%s: client cannot decrypt: %v", payload, err)
++	}
++	if rtcp {
++		if !bytes.Equal(dec, plain) {
++			t.Fatalf("%s: client got %x, want %x", payload, dec, plain)
++		}
++		return 0
++	}
++	// Číslo paketu smí relé vyrovnat, zbytek musí sedět.
++	if !bytes.Equal(dec[:2], plain[:2]) || !bytes.Equal(dec[4:], plain[4:]) {
++		t.Fatalf("%s: client got %x, want %x", payload, dec, plain)
++	}
++	return binary.BigEndian.Uint16(dec[2:])
++}
++
++// both ověří hlas oběma směry, RTP i RTCP.
++func (m *mediaPath) both(t *testing.T, tag string) {
++	t.Helper()
++	m.toClient(t, false, tag+"-rtp-down")
++	m.toUp(t, false, tag+"-rtp-up")
++	m.toClient(t, true, tag+"-rtcp-down")
++	m.toUp(t, true, tag+"-rtcp-up")
++}

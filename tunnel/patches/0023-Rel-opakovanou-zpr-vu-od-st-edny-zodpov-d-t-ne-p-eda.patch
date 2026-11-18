@@ -1,0 +1,182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:54:11 +0000
+Subject: [PATCH 23/33] =?UTF-8?q?Rel=C3=A9:=20opakovanou=20zpr=C3=A1vu=20o?=
+ =?UTF-8?q?d=20=C3=BAst=C5=99edny=20zodpov=C4=9Bd=C4=9Bt,=20ne=20p=C5=99ed?=
+ =?UTF-8?q?at=20znovu?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Ústředna opakuje požadavky (SMS, BYE, NOTIFY) po UDP, dokud nedostane
+odpověď. Volací knihovna je od relé dostává šifrovaným spojením a po
+odpovědi transakci hned zapomíná. Když se odpověď cestou ztratila,
+relé opakování předalo knihovně jako nový požadavek: SMS se mohla
+zobrazit dvakrát a na BYE přišla odpověď 481. Při přímém spojení
+opakování pohltí sama knihovna, šlo tedy o zhoršení.
+
+Relé si teď konečnou odpověď na takový požadavek pamatuje 32 s (pod
+svou větví, odvozenou od větve ústředny) a na opakování odpoví samo,
+knihovně už nic nepředá. Paměť má nejvýš 64 odpovědí v rámci tabulky
+transakcí. Větev k knihovně se odvozuje před úpravami zprávy. Test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/relay_test.go | 40 +++++++++++++++++++++++++
+ libtailscale/p21relay/sipproxy.go   | 45 +++++++++++++++++++++++++++--
+ 2 files changed, 83 insertions(+), 2 deletions(-)
+
+diff --git a/libtailscale/p21relay/relay_test.go b/libtailscale/p21relay/relay_test.go
+index b609da5..fe8ee16 100644
+--- a/libtailscale/p21relay/relay_test.go
++++ b/libtailscale/p21relay/relay_test.go
+@@ -574,6 +574,46 @@ func TestInviteRetransmissionAnswered(t *testing.T) {
+ 	waitFor(t, func() bool { return e.mediaStat("streams") == 0 })
+ }
+ 
++// The calling library talks TLS and forgets a non-INVITE transaction as
++// soon as it answered; a retransmission from the miniserver (its answer
++// got lost on UDP) must get the same answer from the relay instead of
++// reaching the library as a new request (a second SMS, 481 to a BYE).
++func TestNonInviteRetransmissionAnswered(t *testing.T) {
++	e := newEnv(t)
++	c := newFakeClient(t, e)
++	register(t, e, c)
++	message := func(branch string) string {
++		return "MESSAGE sip:" + testUser + "@" + e.privSIP().String() + " SIP/2.0\r\n" +
++			"Via: SIP/2.0/UDP " + e.up.addr.String() + ";rport;branch=" + branch + "\r\n" +
++			"Max-Forwards: 70\r\nFrom: <sip:" + testNumber + "@" + upIP.String() + ">;tag=m1\r\n" +
++			"To: <sip:" + testUser + "@" + upIP.String() + ">\r\nCall-ID: sms-" + branch + "\r\nCSeq: 1 MESSAGE\r\n" +
++			"Content-Type: text/plain\r\nContent-Length: 4\r\n\r\ntext"
++	}
++	b := newBranch()
++	e.up.sendUDP(e.privSIP(), message(b))
++	cm := c.expectRequest("MESSAGE")
++	c.send(responseText(cm, 200, "OK", "cli-tag", nil, ""))
++	first := e.up.expectResponse(200, "MESSAGE")
++
++	e.up.sendUDP(e.privSIP(), message(b))
++	select {
++	case again := <-e.up.in:
++		if string(again.raw) != string(first.raw) {
++			t.Fatalf("answer to the retransmission differs:\n%s\n---\n%s", first.raw, again.raw)
++		}
++	case <-time.After(waitLong):
++		t.Fatal("retransmission not answered")
++	}
++	c.expectNothing()
++	if n := e.counter("sip.retransmit_answered"); n != 1 {
++		t.Fatalf("retransmit_answered %d", n)
++	}
++
++	// A new request (other branch) still reaches the calling library.
++	e.up.sendUDP(e.privSIP(), message(newBranch()))
++	c.expectRequest("MESSAGE")
++}
++
+ func TestMalformedInput(t *testing.T) {
+ 	e := newEnv(t)
+ 	c := newFakeClient(t, e)
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+index a471628..896ab45 100644
+--- a/libtailscale/p21relay/sipproxy.go
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -25,6 +25,7 @@ const (
+ 	sipTxTimeout         = 64 * sipT1
+ 	maxUDPRequest        = 1200 // bigger requests go to the miniserver over TCP
+ 	maxTxEntries         = 256
++	maxCachedAnswers     = 64 // of maxTxEntries
+ 	maxUpstreamTCP       = 8
+ 	maxRememberedContact = 16
+ 	maxPendingHandshakes = 16 // handshakes that have sent data
+@@ -157,6 +158,9 @@ func (t *tcpConn) close() {
+ 
+ // txEntry makes the UDP leg toward the miniserver reliable: the calling
+ // library talks TLS and therefore never retransmits.
++//
++// Entries under ansKey hold the final answer to a non-INVITE request from
++// the miniserver for its retransmissions (no timer, just expire).
+ type txEntry struct {
+ 	data      []byte
+ 	dest      netip.AddrPort
+@@ -1003,12 +1007,19 @@ func (p *sipProxy) clientResponse(m *sipMsg) {
+ 		return
+ 	}
+ 	p.sendUDP(out, dst)
+-	if method == "INVITE" && m.status >= 200 {
++	switch {
++	case m.status < 200:
++	case method == "INVITE":
+ 		// RFC 3261 13.3.1.4 / 17.2.1: repeat until the miniserver's ACK.
+ 		p.addTx(rspKey(m.get("call-id"), num), &txEntry{
+ 			data: out, dest: dst, response: true,
+ 			next: now.Add(sipT1), interval: sipT1, expire: now.Add(sipTxTimeout),
+ 		})
++	default:
++		// RFC 3261 17.2.2: retransmissions of the request get this answer
++		// until Timer J. Over TLS the calling library has already
++		// forgotten the transaction and would take them as new requests.
++		p.cacheAnswer(ansKey(v.branch(), method), out, dst, now)
+ 	}
+ }
+ 
+@@ -1016,6 +1027,28 @@ func rspKey(callID string, num uint32) string {
+ 	return "rsp|" + callID + "|" + strconv.FormatUint(uint64(num), 10)
+ }
+ 
++// ansKey: our branch toward the calling library is derived from the
++// miniserver's, so a retransmission maps to the same key.
++func ansKey(branch, method string) string {
++	return "ans|" + branch + "|" + method
++}
++
++func (p *sipProxy) cacheAnswer(key string, data []byte, dst netip.AddrPort, now time.Time) {
++	if _, ok := p.txs[key]; !ok {
++		n := 0
++		for k := range p.txs {
++			if strings.HasPrefix(k, "ans|") {
++				n++
++			}
++		}
++		if n >= maxCachedAnswers {
++			p.cnt.inc("sip.answer_cache_full")
++			return
++		}
++	}
++	p.addTx(key, &txEntry{data: data, dest: dst, expire: now.Add(sipTxTimeout)})
++}
++
+ // ---- miniserver -> calling library ----
+ 
+ func (p *sipProxy) fromUpstream(data []byte, tc *tcpConn, src netip.AddrPort) {
+@@ -1041,6 +1074,8 @@ func (p *sipProxy) upstreamRequest(m *sipMsg, tc *tcpConn, src netip.AddrPort) {
+ 	}
+ 	callID := m.get("call-id")
+ 	num, _, _ := m.cseq()
++	// Before anything is rewritten, so retransmissions map to the same one.
++	branch := p.branch("u", uv.branch(), m)
+ 	switch m.method {
+ 	case "ACK":
+ 		delete(p.txs, rspKey(callID, num))
+@@ -1051,6 +1086,12 @@ func (p *sipProxy) upstreamRequest(m *sipMsg, tc *tcpConn, src netip.AddrPort) {
+ 			p.cnt.inc("sip.retransmit_answered")
+ 			return
+ 		}
++	default:
++		if tx := p.txs[ansKey(branch, m.method)]; tx != nil && tc == nil {
++			p.sendUDP(tx.data, tx.dest)
++			p.cnt.inc("sip.retransmit_answered")
++			return
++		}
+ 	}
+ 	if p.client == nil {
+ 		if m.method != "ACK" {
+@@ -1084,7 +1125,7 @@ func (p *sipProxy) upstreamRequest(m *sipMsg, tc *tcpConn, src netip.AddrPort) {
+ 		conn = strconv.FormatUint(tc.id, 10)
+ 	}
+ 	via := &sipVia{transport: "TLS", host: loopback4.String(), port: p.sipPort, params: []sipParam{
+-		{k: "branch", v: p.branch("u", uv.branch(), m), hasV: true},
++		{k: "branch", v: branch, hasV: true},
+ 		{k: viaConnParam, v: conn, hasV: true},
+ 	}}
+ 	m.pushVia(via.String())

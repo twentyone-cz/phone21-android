@@ -1,0 +1,1062 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:07:25 +0000
+Subject: [PATCH 11/33] =?UTF-8?q?Rel=C3=A9:=20rozbor=20a=20skl=C3=A1d?=
+ =?UTF-8?q?=C3=A1n=C3=AD=20zpr=C3=A1v=20signalizace?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Žádosti a odpovědi včetně zkrácených názvů hlaviček, názvů bez ohledu
+na velikost písmen, zalomených řádků a více hodnot v jedné hlavičce
+(čárky v uvozovkách a ve špičatých závorkách se nedělí). Pořadí
+a zápis hlaviček zůstávají, délka obsahu se vždy přepočítá.
+
+Dělení proudu podle délky obsahu odolné vůči částečnému čtení,
+udržovací dvojité CRLF se pozná (odpověď jedním CRLF), limity
+velikosti hlaviček i obsahu; vadný proud se zavře.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/sipframe.go    | 105 +++++++
+ libtailscale/p21relay/sipmsg.go      | 449 +++++++++++++++++++++++++++
+ libtailscale/p21relay/sipmsg_test.go | 159 ++++++++++
+ libtailscale/p21relay/sipuri.go      | 295 ++++++++++++++++++
+ 4 files changed, 1008 insertions(+)
+ create mode 100644 libtailscale/p21relay/sipframe.go
+ create mode 100644 libtailscale/p21relay/sipmsg.go
+ create mode 100644 libtailscale/p21relay/sipmsg_test.go
+ create mode 100644 libtailscale/p21relay/sipuri.go
+
+diff --git a/libtailscale/p21relay/sipframe.go b/libtailscale/p21relay/sipframe.go
+new file mode 100644
+index 0000000..337bc60
+--- /dev/null
++++ b/libtailscale/p21relay/sipframe.go
+@@ -0,0 +1,105 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bufio"
++	"errors"
++	"io"
++	"strconv"
++	"strings"
++)
++
++var errFraming = errors.New("SIP stream framing error")
++
++// sipStreamReader splits a SIP byte stream (TLS or TCP) into messages by
++// Content-Length and recognises RFC 5626 keepalive pings (CRLFCRLF).
++type sipStreamReader struct {
++	r *bufio.Reader
++}
++
++func newSIPStreamReader(r io.Reader) *sipStreamReader {
++	return &sipStreamReader{r: bufio.NewReaderSize(r, 8<<10)}
++}
++
++// next returns the next complete message, or ping=true when the peer sent a
++// keepalive ping that should be answered with a single CRLF.
++func (s *sipStreamReader) next() (msg []byte, ping bool, err error) {
++	// Between messages only CRLFs may appear.
++	crlf := 0
++	for {
++		c, err := s.r.ReadByte()
++		if err != nil {
++			return nil, false, err
++		}
++		switch c {
++		case '\r':
++			c2, err := s.r.ReadByte()
++			if err != nil {
++				return nil, false, err
++			}
++			if c2 != '\n' {
++				return nil, false, errFraming
++			}
++			fallthrough
++		case '\n':
++			crlf++
++			if crlf == 2 {
++				return nil, true, nil
++			}
++			continue
++		}
++		if err := s.r.UnreadByte(); err != nil {
++			return nil, false, err
++		}
++		break
++	}
++
++	var head []byte
++	cl := 0
++	for {
++		line, err := s.readLine(maxSIPHeaderBytes - len(head))
++		if err != nil {
++			return nil, false, err
++		}
++		head = append(head, line...)
++		if len(line) <= 2 && strings.TrimRight(string(line), "\r\n") == "" {
++			break // empty line: end of headers
++		}
++		name, value, ok := strings.Cut(string(line), ":")
++		if ok && canonHeaderName(strings.TrimSpace(name)) == "content-length" {
++			n, err := strconv.Atoi(strings.TrimSpace(value))
++			if err != nil || n < 0 || n > maxSIPBodyBytes {
++				return nil, false, errFraming
++			}
++			cl = n
++		}
++	}
++	msg = make([]byte, len(head)+cl)
++	copy(msg, head)
++	if _, err := io.ReadFull(s.r, msg[len(head):]); err != nil {
++		return nil, false, err
++	}
++	return msg, false, nil
++}
++
++// readLine reads one line including its terminator, at most max bytes.
++func (s *sipStreamReader) readLine(max int) ([]byte, error) {
++	var line []byte
++	for {
++		frag, err := s.r.ReadSlice('\n')
++		if len(line)+len(frag) > max {
++			return nil, errFraming
++		}
++		line = append(line, frag...)
++		switch err {
++		case nil:
++			return line, nil
++		case bufio.ErrBufferFull:
++			continue
++		default:
++			return nil, err
++		}
++	}
++}
+diff --git a/libtailscale/p21relay/sipmsg.go b/libtailscale/p21relay/sipmsg.go
+new file mode 100644
+index 0000000..3eacff8
+--- /dev/null
++++ b/libtailscale/p21relay/sipmsg.go
+@@ -0,0 +1,449 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"bytes"
++	"errors"
++	"strconv"
++	"strings"
++)
++
++// Size limits of one SIP message. The calling library and the miniserver
++// never come close; anything bigger is treated as garbage.
++const (
++	maxSIPHeaderBytes = 32 << 10
++	maxSIPBodyBytes   = 64 << 10
++	maxSIPHeaders     = 200
++)
++
++var errMalformed = errors.New("malformed SIP message")
++
++// compactForms maps compact header names (RFC 3261 7.3.3 and extensions)
++// to their full lowercase names.
++var compactForms = map[string]string{
++	"a": "accept-contact",
++	"b": "referred-by",
++	"c": "content-type",
++	"d": "request-disposition",
++	"e": "content-encoding",
++	"f": "from",
++	"i": "call-id",
++	"j": "reject-contact",
++	"k": "supported",
++	"l": "content-length",
++	"m": "contact",
++	"n": "identity-info",
++	"o": "event",
++	"r": "refer-to",
++	"s": "subject",
++	"t": "to",
++	"u": "allow-events",
++	"v": "via",
++	"x": "session-expires",
++	"y": "identity",
++}
++
++// canonHeaderName returns the lowercase full name of a header.
++func canonHeaderName(n string) string {
++	l := strings.ToLower(n)
++	if f, ok := compactForms[l]; ok {
++		return f
++	}
++	return l
++}
++
++func isTokenChar(c byte) bool {
++	switch {
++	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
++		return true
++	}
++	return strings.IndexByte("-.!%*_+`'~", c) >= 0
++}
++
++func isToken(s string) bool {
++	if s == "" {
++		return false
++	}
++	for i := 0; i < len(s); i++ {
++		if !isTokenChar(s[i]) {
++			return false
++		}
++	}
++	return true
++}
++
++type sipHeader struct {
++	name  string // as received (full or compact form, original case)
++	key   string // canonical lowercase full name
++	value string // unfolded, trimmed
++}
++
++// sipMsg is a parsed SIP request or response. Headers keep their order
++// and spelling; only the ones the relay touches are rewritten.
++type sipMsg struct {
++	isReq  bool
++	method string // request only
++	ruri   string // request only
++	status int    // response only
++	reason string // response only
++	hdrs   []sipHeader
++	body   []byte
++}
++
++// parseSIP parses one complete message (a datagram or a framed stream
++// message). With Content-Length the body is cut to that length; without it
++// the rest of the buffer is the body (RFC 3261 18.3).
++func parseSIP(b []byte) (*sipMsg, error) {
++	for len(b) > 0 && (b[0] == '\r' || b[0] == '\n') {
++		b = b[1:]
++	}
++	headEnd, bodyStart := -1, -1
++	if i := bytes.Index(b, []byte("\r\n\r\n")); i >= 0 {
++		headEnd, bodyStart = i, i+4
++	}
++	if j := bytes.Index(b, []byte("\n\n")); j >= 0 && (headEnd < 0 || j < headEnd) {
++		headEnd, bodyStart = j, j+2
++	}
++	if headEnd < 0 || headEnd > maxSIPHeaderBytes {
++		return nil, errMalformed
++	}
++	lines := strings.Split(string(b[:headEnd]), "\n")
++	for i := range lines {
++		lines[i] = strings.TrimSuffix(lines[i], "\r")
++	}
++	m := &sipMsg{}
++	if err := m.parseStartLine(lines[0]); err != nil {
++		return nil, err
++	}
++	for _, ln := range lines[1:] {
++		if ln == "" {
++			return nil, errMalformed
++		}
++		if ln[0] == ' ' || ln[0] == '\t' { // folded continuation line
++			if len(m.hdrs) == 0 {
++				return nil, errMalformed
++			}
++			h := &m.hdrs[len(m.hdrs)-1]
++			h.value = strings.TrimSpace(h.value + " " + strings.TrimSpace(ln))
++			continue
++		}
++		colon := strings.IndexByte(ln, ':')
++		if colon <= 0 {
++			return nil, errMalformed
++		}
++		name := strings.TrimRight(ln[:colon], " \t")
++		if !isToken(name) || len(m.hdrs) >= maxSIPHeaders {
++			return nil, errMalformed
++		}
++		m.hdrs = append(m.hdrs, sipHeader{
++			name:  name,
++			key:   canonHeaderName(name),
++			value: strings.TrimSpace(ln[colon+1:]),
++		})
++	}
++	body := b[bodyStart:]
++	if cl, ok := m.lookup("content-length"); ok {
++		n, err := strconv.Atoi(cl)
++		if err != nil || n < 0 || n > len(body) {
++			return nil, errMalformed
++		}
++		body = body[:n]
++	}
++	if len(body) > maxSIPBodyBytes {
++		return nil, errMalformed
++	}
++	if len(body) > 0 {
++		m.body = append([]byte(nil), body...)
++	}
++	return m, nil
++}
++
++func (m *sipMsg) parseStartLine(l string) error {
++	if len(l) > 8 && strings.EqualFold(l[:8], "SIP/2.0 ") {
++		code, reason, _ := strings.Cut(l[8:], " ")
++		n, err := strconv.Atoi(code)
++		if err != nil || len(code) != 3 || n < 100 || n > 699 {
++			return errMalformed
++		}
++		m.status, m.reason = n, reason
++		return nil
++	}
++	parts := strings.Split(l, " ")
++	if len(parts) != 3 || !isToken(parts[0]) || parts[1] == "" || !strings.EqualFold(parts[2], "SIP/2.0") {
++		return errMalformed
++	}
++	m.isReq, m.method, m.ruri = true, parts[0], parts[1]
++	return nil
++}
++
++// bytes serialises the message; Content-Length always matches the body.
++func (m *sipMsg) bytes() []byte {
++	var b bytes.Buffer
++	b.Grow(512 + len(m.body))
++	if m.isReq {
++		b.WriteString(m.method)
++		b.WriteByte(' ')
++		b.WriteString(m.ruri)
++		b.WriteString(" SIP/2.0\r\n")
++	} else {
++		b.WriteString("SIP/2.0 ")
++		b.WriteString(strconv.Itoa(m.status))
++		b.WriteByte(' ')
++		b.WriteString(m.reason)
++		b.WriteString("\r\n")
++	}
++	haveCL := false
++	for _, h := range m.hdrs {
++		v := h.value
++		if h.key == "content-length" {
++			if haveCL {
++				continue
++			}
++			haveCL = true
++			v = strconv.Itoa(len(m.body))
++		}
++		b.WriteString(h.name)
++		b.WriteString(": ")
++		b.WriteString(v)
++		b.WriteString("\r\n")
++	}
++	if !haveCL {
++		b.WriteString("Content-Length: ")
++		b.WriteString(strconv.Itoa(len(m.body)))
++		b.WriteString("\r\n")
++	}
++	b.WriteString("\r\n")
++	b.Write(m.body)
++	return b.Bytes()
++}
++
++// lookup returns the value of the first header with the canonical key.
++func (m *sipMsg) lookup(key string) (string, bool) {
++	for _, h := range m.hdrs {
++		if h.key == key {
++			return h.value, true
++		}
++	}
++	return "", false
++}
++
++func (m *sipMsg) get(key string) string {
++	v, _ := m.lookup(key)
++	return v
++}
++
++func (m *sipMsg) index(key string) int {
++	for i, h := range m.hdrs {
++		if h.key == key {
++			return i
++		}
++	}
++	return -1
++}
++
++func (m *sipMsg) has(key string) bool { return m.index(key) >= 0 }
++
++func (m *sipMsg) del(key string) {
++	out := m.hdrs[:0]
++	for _, h := range m.hdrs {
++		if h.key != key {
++			out = append(out, h)
++		}
++	}
++	m.hdrs = out
++}
++
++func (m *sipMsg) insert(i int, h sipHeader) {
++	m.hdrs = append(m.hdrs, sipHeader{})
++	copy(m.hdrs[i+1:], m.hdrs[i:])
++	m.hdrs[i] = h
++}
++
++// set replaces the value of the first header with key, or appends one.
++func (m *sipMsg) set(key, name, value string) {
++	if i := m.index(key); i >= 0 {
++		m.hdrs[i].value = value
++		return
++	}
++	m.hdrs = append(m.hdrs, sipHeader{name: name, key: key, value: value})
++}
++
++// values returns all comma-separated values of all headers with key.
++func (m *sipMsg) values(key string) []string {
++	var out []string
++	for _, h := range m.hdrs {
++		if h.key == key {
++			out = append(out, splitComma(h.value)...)
++		}
++	}
++	return out
++}
++
++// mapValues calls f for every comma-separated value of every header with
++// key; f returns the replacement, or "" to drop the value. Headers left
++// without values are removed.
++func (m *sipMsg) mapValues(key string, f func(v string) string) {
++	out := m.hdrs[:0]
++	for _, h := range m.hdrs {
++		if h.key == key {
++			var keep []string
++			for _, v := range splitComma(h.value) {
++				if nv := f(v); nv != "" {
++					keep = append(keep, nv)
++				}
++			}
++			if len(keep) == 0 {
++				continue
++			}
++			h.value = strings.Join(keep, ", ")
++		}
++		out = append(out, h)
++	}
++	m.hdrs = out
++}
++
++// topValue returns the first value of the first header with key.
++func (m *sipMsg) topValue(key string) (string, bool) {
++	i := m.index(key)
++	if i < 0 {
++		return "", false
++	}
++	vs := splitComma(m.hdrs[i].value)
++	if len(vs) == 0 {
++		return "", false
++	}
++	return vs[0], true
++}
++
++// setTopValue replaces the first value of the first header with key.
++func (m *sipMsg) setTopValue(key, v string) {
++	i := m.index(key)
++	if i < 0 {
++		return
++	}
++	vs := splitComma(m.hdrs[i].value)
++	if len(vs) == 0 {
++		return
++	}
++	vs[0] = v
++	m.hdrs[i].value = strings.Join(vs, ", ")
++}
++
++// popTopValue removes the first value of the first header with key.
++func (m *sipMsg) popTopValue(key string) {
++	i := m.index(key)
++	if i < 0 {
++		return
++	}
++	vs := splitComma(m.hdrs[i].value)
++	if len(vs) <= 1 {
++		m.hdrs = append(m.hdrs[:i], m.hdrs[i+1:]...)
++		return
++	}
++	m.hdrs[i].value = strings.Join(vs[1:], ", ")
++}
++
++// pushVia adds a Via on top of all others.
++func (m *sipMsg) pushVia(v string) {
++	i := m.index("via")
++	if i < 0 {
++		i = 0
++	}
++	m.insert(i, sipHeader{name: "Via", key: "via", value: v})
++}
++
++// cseq returns the CSeq number and method.
++func (m *sipMsg) cseq() (uint32, string, bool) {
++	f := strings.Fields(m.get("cseq"))
++	if len(f) != 2 || !isToken(f[1]) {
++		return 0, "", false
++	}
++	n, err := strconv.ParseUint(f[0], 10, 32)
++	if err != nil {
++		return 0, "", false
++	}
++	return uint32(n), f[1], true
++}
++
++// valid checks the headers every message must carry.
++func (m *sipMsg) valid() bool {
++	if m.get("call-id") == "" || m.get("from") == "" || m.get("to") == "" {
++		return false
++	}
++	if _, ok := m.topValue("via"); !ok {
++		return false
++	}
++	_, method, ok := m.cseq()
++	if !ok {
++		return false
++	}
++	if m.isReq && method != m.method {
++		return false
++	}
++	return true
++}
++
++// isSDP reports whether the body is a session description.
++func (m *sipMsg) isSDP() bool {
++	if len(m.body) == 0 {
++		return false
++	}
++	ct, _, _ := strings.Cut(m.get("content-type"), ";")
++	return strings.EqualFold(strings.TrimSpace(ct), "application/sdp")
++}
++
++// splitComma splits a header value at commas that are outside quoted
++// strings and angle brackets; parts are trimmed, empty ones dropped.
++func splitComma(s string) []string {
++	var out []string
++	inQuote, inAngle, esc := false, false, false
++	start := 0
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		switch {
++		case esc:
++			esc = false
++		case inQuote:
++			switch c {
++			case '\\':
++				esc = true
++			case '"':
++				inQuote = false
++			}
++		case c == '"':
++			inQuote = true
++		case c == '<':
++			inAngle = true
++		case c == '>':
++			inAngle = false
++		case c == ',' && !inAngle:
++			if p := strings.TrimSpace(s[start:i]); p != "" {
++				out = append(out, p)
++			}
++			start = i + 1
++		}
++	}
++	if p := strings.TrimSpace(s[start:]); p != "" {
++		out = append(out, p)
++	}
++	return out
++}
++
++// newResponse builds a locally generated response to req (RFC 3261 8.2.6).
++func newResponse(req *sipMsg, status int, reason, toTag string) *sipMsg {
++	r := &sipMsg{status: status, reason: reason}
++	for _, h := range req.hdrs {
++		switch h.key {
++		case "via", "from", "call-id", "cseq":
++			r.hdrs = append(r.hdrs, h)
++		case "to":
++			if toTag != "" && !hasParam(nameAddrParams(h.value), "tag") {
++				h.value += ";tag=" + toTag
++			}
++			r.hdrs = append(r.hdrs, h)
++		}
++	}
++	return r
++}
+diff --git a/libtailscale/p21relay/sipmsg_test.go b/libtailscale/p21relay/sipmsg_test.go
+new file mode 100644
+index 0000000..dcf3b8f
+--- /dev/null
++++ b/libtailscale/p21relay/sipmsg_test.go
+@@ -0,0 +1,159 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"io"
++	"strings"
++	"testing"
++)
++
++func TestParseCompactAndFolded(t *testing.T) {
++	raw := "INVITE sip:+420000000000@100.64.0.1 SIP/2.0\r\n" +
++		"v: SIP/2.0/UDP 100.64.0.1:5060;branch=z9hG4bKa, SIP/2.0/TCP 100.64.0.9;branch=z9hG4bKb\r\n" +
++		"VIA: SIP / 2.0 / TLS 127.0.0.1:5061 ;branch=z9hG4bKc\r\n" +
++		"f: <sip:test@100.64.0.1>;tag=1\r\n" +
++		"t: <sip:+420000000000@100.64.0.1>\r\n" +
++		"i: call-1\r\n" +
++		"CSeq: 1 INVITE\r\n" +
++		"m: \"Test, User\" <sip:test@127.0.0.1:5061;transport=tls>;expires=60,\r\n" +
++		"  <sip:test@127.0.0.2>\r\n" +
++		"Subject: folded\r\n\tline\r\n" +
++		"c: application/sdp\r\n" +
++		"l: 5\r\n" +
++		"\r\n" +
++		"v=0\r\nEXTRA"
++	m, err := parseSIP([]byte(raw))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !m.isReq || m.method != "INVITE" || !m.valid() {
++		t.Fatalf("bad parse: %+v", m)
++	}
++	if got := m.values("via"); len(got) != 3 || !strings.HasPrefix(got[2], "SIP / 2.0 / TLS") {
++		t.Fatalf("via values %q", got)
++	}
++	if got := m.values("contact"); len(got) != 2 || !strings.HasPrefix(got[0], "\"Test, User\"") {
++		t.Fatalf("contact values %q", got)
++	}
++	if m.get("subject") != "folded line" {
++		t.Fatalf("folding: %q", m.get("subject"))
++	}
++	if string(m.body) != "v=0\r\n" || !m.isSDP() {
++		t.Fatalf("body %q", m.body)
++	}
++	v, ok := parseVia(m.values("via")[2])
++	if !ok || v.transport != "TLS" || v.host != "127.0.0.1" || v.port != 5061 || v.branch() != "z9hG4bKc" {
++		t.Fatalf("via parse %+v", v)
++	}
++	m.popTopValue("via")
++	if top, _ := m.topValue("via"); !strings.Contains(top, "z9hG4bKb") {
++		t.Fatalf("pop: top %q", top)
++	}
++	m.pushVia("SIP/2.0/UDP 127.0.0.2:4000;branch=z9hG4bK-p21-x")
++	out := string(m.bytes())
++	if !strings.Contains(out, "Via: SIP/2.0/UDP 127.0.0.2:4000;branch=z9hG4bK-p21-x\r\nv: SIP/2.0/TCP") {
++		t.Fatalf("push order wrong:\n%s", out)
++	}
++	if !strings.Contains(out, "l: 5\r\n") {
++		t.Fatalf("content-length name/value not kept:\n%s", out)
++	}
++}
++
++func TestParseRejects(t *testing.T) {
++	bad := []string{
++		"",
++		"garbage\r\n\r\n",
++		"INVITE sip:a@b SIP/3.0\r\nCall-ID: x\r\n\r\n",
++		"SIP/2.0 99 Low\r\n\r\n",
++		"INVITE sip:a@b SIP/2.0\r\nno colon here\r\n\r\n",
++		"INVITE sip:a@b SIP/2.0\r\nContent-Length: 10\r\n\r\nshort",
++		"INVITE sip:a@b SIP/2.0\r\nContent-Length: -1\r\n\r\n",
++		" folded first\r\n\r\n",
++	}
++	for _, s := range bad {
++		if _, err := parseSIP([]byte(s)); err == nil {
++			t.Errorf("accepted %q", s)
++		}
++	}
++	// Parsable but missing mandatory headers.
++	m, err := parseSIP([]byte("OPTIONS sip:a@b SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\nCSeq: 1 OPTIONS\r\n\r\n"))
++	if err != nil || m.valid() {
++		t.Fatalf("missing headers not caught: %v", err)
++	}
++	m, err = parseSIP([]byte("OPTIONS sip:a@b SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\nCall-ID: c\r\nFrom: <sip:a@b>\r\nTo: <sip:a@b>\r\nCSeq: 1 INVITE\r\n\r\n"))
++	if err != nil || m.valid() {
++		t.Fatalf("CSeq method mismatch not caught: %v", err)
++	}
++}
++
++func TestURIAndNameAddr(t *testing.T) {
++	u, ok := parseURI("sip:+420000000000;phone-context=x@127.0.0.1:5061;transport=TLS;lr?h=1")
++	if !ok || u.user != "+420000000000;phone-context=x" || u.host != "127.0.0.1" || u.port != 5061 || u.headers != "?h=1" {
++		t.Fatalf("uri %+v", u)
++	}
++	u.params = removeParam(u.params, "transport")
++	if got := u.String(); got != "sip:+420000000000;phone-context=x@127.0.0.1:5061;lr?h=1" {
++		t.Fatalf("uri string %q", got)
++	}
++	if u, ok := parseURI("sip:[fd00::1]:5060"); !ok || u.host != "[fd00::1]" || u.port != 5060 {
++		t.Fatalf("v6 uri %+v", u)
++	}
++	if _, ok := parseURI("tel:+420000000000"); ok {
++		t.Fatal("tel URI accepted")
++	}
++	na := parseNameAddr(`"A <b>" <sip:test@127.0.0.1>;+sip.instance="<urn:uuid:0>";expires=60`)
++	if na.uri != "sip:test@127.0.0.1" || na.params != `;+sip.instance="<urn:uuid:0>";expires=60` {
++		t.Fatalf("name-addr %+v", na)
++	}
++	na = parseNameAddr("sip:test@127.0.0.1;expires=0")
++	if na.uri != "sip:test@127.0.0.1" || na.params != ";expires=0" {
++		t.Fatalf("addr-spec %+v", na)
++	}
++	if got := na.String(); got != "<sip:test@127.0.0.1>;expires=0" {
++		t.Fatalf("addr-spec string %q", got)
++	}
++	if got := splitComma(`"a,b" <sip:x>, <sip:y;p=1,2>, z`); len(got) != 3 {
++		t.Fatalf("splitComma %q", got)
++	}
++}
++
++// slowReader returns one byte per Read.
++type slowReader struct{ r io.Reader }
++
++func (s slowReader) Read(p []byte) (int, error) { return s.r.Read(p[:1]) }
++
++func TestStreamFraming(t *testing.T) {
++	msg1 := "MESSAGE sip:a@b SIP/2.0\r\nl: 4\r\n\r\nbody"
++	msg2 := "SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n"
++	stream := "\r\n\r\n" + msg1 + "\r\n" + msg2 + "\r\n\r\n"
++	r := newSIPStreamReader(slowReader{strings.NewReader(stream)})
++	if _, ping, err := r.next(); err != nil || !ping {
++		t.Fatalf("ping: %v %v", ping, err)
++	}
++	if m, _, err := r.next(); err != nil || string(m) != msg1 {
++		t.Fatalf("msg1 %q %v", m, err)
++	}
++	if m, _, err := r.next(); err != nil || string(m) != msg2 {
++		t.Fatalf("msg2 %q %v", m, err)
++	}
++	if _, ping, err := r.next(); err != nil || !ping {
++		t.Fatalf("ping 2: %v %v", ping, err)
++	}
++	if _, _, err := r.next(); err != io.EOF {
++		t.Fatalf("want EOF, got %v", err)
++	}
++
++	big := "MESSAGE sip:a@b SIP/2.0\r\nContent-Length: 999999\r\n\r\n"
++	if _, _, err := newSIPStreamReader(strings.NewReader(big)).next(); err != errFraming {
++		t.Fatalf("oversized body: %v", err)
++	}
++	long := "MESSAGE sip:a@b SIP/2.0\r\nX: " + strings.Repeat("a", maxSIPHeaderBytes) + "\r\n\r\n"
++	if _, _, err := newSIPStreamReader(strings.NewReader(long)).next(); err != errFraming {
++		t.Fatalf("oversized header: %v", err)
++	}
++	if _, _, err := newSIPStreamReader(strings.NewReader("\rX")).next(); err != errFraming {
++		t.Fatalf("bare CR: %v", err)
++	}
++}
+diff --git a/libtailscale/p21relay/sipuri.go b/libtailscale/p21relay/sipuri.go
+new file mode 100644
+index 0000000..2de5657
+--- /dev/null
++++ b/libtailscale/p21relay/sipuri.go
+@@ -0,0 +1,295 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package p21relay
++
++import (
++	"net/netip"
++	"strconv"
++	"strings"
++)
++
++// sipParam is one ;name[=value] parameter.
++type sipParam struct {
++	k, v string
++	hasV bool
++}
++
++func parseParams(s string) []sipParam {
++	var out []sipParam
++	for _, p := range strings.Split(s, ";") {
++		p = strings.TrimSpace(p)
++		if p == "" {
++			continue
++		}
++		k, v, has := strings.Cut(p, "=")
++		out = append(out, sipParam{k: strings.TrimSpace(k), v: strings.TrimSpace(v), hasV: has})
++	}
++	return out
++}
++
++func formatParams(ps []sipParam) string {
++	var b strings.Builder
++	for _, p := range ps {
++		b.WriteByte(';')
++		b.WriteString(p.k)
++		if p.hasV {
++			b.WriteByte('=')
++			b.WriteString(p.v)
++		}
++	}
++	return b.String()
++}
++
++func paramValue(ps []sipParam, k string) (string, bool) {
++	for _, p := range ps {
++		if strings.EqualFold(p.k, k) {
++			return p.v, true
++		}
++	}
++	return "", false
++}
++
++func hasParam(ps []sipParam, k string) bool {
++	_, ok := paramValue(ps, k)
++	return ok
++}
++
++func setParam(ps []sipParam, k, v string) []sipParam {
++	for i := range ps {
++		if strings.EqualFold(ps[i].k, k) {
++			ps[i].v, ps[i].hasV = v, true
++			return ps
++		}
++	}
++	return append(ps, sipParam{k: k, v: v, hasV: true})
++}
++
++func removeParam(ps []sipParam, k string) []sipParam {
++	out := ps[:0]
++	for _, p := range ps {
++		if !strings.EqualFold(p.k, k) {
++			out = append(out, p)
++		}
++	}
++	return out
++}
++
++// splitHostPort splits host[:port]; IPv6 hosts keep their brackets.
++func splitHostPort(s string) (host string, port int, ok bool) {
++	if s == "" {
++		return "", 0, false
++	}
++	if s[0] == '[' {
++		end := strings.IndexByte(s, ']')
++		if end < 0 {
++			return "", 0, false
++		}
++		host, s = s[:end+1], s[end+1:]
++		if s == "" {
++			return host, 0, true
++		}
++		if s[0] != ':' {
++			return "", 0, false
++		}
++		s = s[1:]
++	} else {
++		h, p, has := strings.Cut(s, ":")
++		host = h
++		if !has {
++			return host, 0, host != ""
++		}
++		s = p
++	}
++	n, err := strconv.Atoi(s)
++	if err != nil || n <= 0 || n > 65535 || host == "" {
++		return "", 0, false
++	}
++	return host, n, true
++}
++
++func joinHostPort(host string, port int) string {
++	if port == 0 {
++		return host
++	}
++	return host + ":" + strconv.Itoa(port)
++}
++
++// hostAddr parses a URI/Via host as an IP address.
++func hostAddr(host string) (netip.Addr, bool) {
++	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
++	if err != nil {
++		return netip.Addr{}, false
++	}
++	return a.Unmap(), true
++}
++
++// sipVia is one parsed Via value.
++type sipVia struct {
++	transport string // upper case: UDP, TCP, TLS, ...
++	host      string
++	port      int // 0 = not present
++	params    []sipParam
++}
++
++func parseVia(s string) (*sipVia, bool) {
++	s = strings.TrimSpace(s)
++	// sent-protocol: name / version / transport, LWS allowed around "/".
++	var fields [3]string
++	for i := 0; i < 3; i++ {
++		s = strings.TrimLeft(s, " \t")
++		j := 0
++		for j < len(s) && isTokenChar(s[j]) {
++			j++
++		}
++		fields[i], s = s[:j], s[j:]
++		if fields[i] == "" {
++			return nil, false
++		}
++		if i < 2 {
++			s = strings.TrimLeft(s, " \t")
++			if s == "" || s[0] != '/' {
++				return nil, false
++			}
++			s = s[1:]
++		}
++	}
++	if !strings.EqualFold(fields[0], "SIP") || fields[1] != "2.0" {
++		return nil, false
++	}
++	if s == "" || (s[0] != ' ' && s[0] != '\t') {
++		return nil, false
++	}
++	sentBy, params, _ := strings.Cut(strings.TrimSpace(s), ";")
++	host, port, ok := splitHostPort(strings.TrimSpace(sentBy))
++	if !ok {
++		return nil, false
++	}
++	return &sipVia{
++		transport: strings.ToUpper(fields[2]),
++		host:      host,
++		port:      port,
++		params:    parseParams(params),
++	}, true
++}
++
++func (v *sipVia) String() string {
++	return "SIP/2.0/" + v.transport + " " + joinHostPort(v.host, v.port) + formatParams(v.params)
++}
++
++func (v *sipVia) branch() string {
++	b, _ := paramValue(v.params, "branch")
++	return b
++}
++
++// sipURI is a parsed sip: or sips: URI.
++type sipURI struct {
++	scheme   string
++	user     string // userinfo without "@"
++	hasUser  bool
++	host     string
++	port     int
++	params   []sipParam
++	headers  string // raw, including the leading "?"
++	original string
++}
++
++func parseURI(s string) (*sipURI, bool) {
++	s = strings.TrimSpace(s)
++	scheme, rest, ok := strings.Cut(s, ":")
++	if !ok || !(strings.EqualFold(scheme, "sip") || strings.EqualFold(scheme, "sips")) {
++		return nil, false
++	}
++	u := &sipURI{scheme: strings.ToLower(scheme), original: s}
++	// "@" never appears unescaped outside the userinfo.
++	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
++		u.user, u.hasUser, rest = rest[:at], true, rest[at+1:]
++	}
++	if q := strings.IndexByte(rest, '?'); q >= 0 {
++		u.headers, rest = rest[q:], rest[:q]
++	}
++	hp, params, _ := strings.Cut(rest, ";")
++	host, port, ok := splitHostPort(hp)
++	if !ok {
++		return nil, false
++	}
++	u.host, u.port, u.params = host, port, parseParams(params)
++	return u, true
++}
++
++func (u *sipURI) String() string {
++	var b strings.Builder
++	b.WriteString(u.scheme)
++	b.WriteByte(':')
++	if u.hasUser {
++		b.WriteString(u.user)
++		b.WriteByte('@')
++	}
++	b.WriteString(joinHostPort(u.host, u.port))
++	b.WriteString(formatParams(u.params))
++	b.WriteString(u.headers)
++	return b.String()
++}
++
++// isHost reports whether the URI host is the address a.
++func (u *sipURI) isHost(a netip.Addr) bool {
++	h, ok := hostAddr(u.host)
++	return ok && h == a
++}
++
++func (u *sipURI) isLoopback() bool {
++	if strings.EqualFold(u.host, "localhost") {
++		return true
++	}
++	h, ok := hostAddr(u.host)
++	return ok && h.IsLoopback()
++}
++
++// nameAddr is a Contact/Route/From/To value: [display] <uri> ;params, or
++// the addr-spec form uri;params (params are then header parameters).
++type nameAddr struct {
++	display string // text before "<", untrimmed
++	uri     string
++	params  string // raw header parameters, starting with ";" or empty
++}
++
++func parseNameAddr(s string) nameAddr {
++	s = strings.TrimSpace(s)
++	inQuote, esc := false, false
++	for i := 0; i < len(s); i++ {
++		c := s[i]
++		switch {
++		case esc:
++			esc = false
++		case inQuote:
++			if c == '\\' {
++				esc = true
++			} else if c == '"' {
++				inQuote = false
++			}
++		case c == '"':
++			inQuote = true
++		case c == '<':
++			end := strings.IndexByte(s[i:], '>')
++			if end < 0 {
++				return nameAddr{uri: s}
++			}
++			return nameAddr{display: s[:i], uri: s[i+1 : i+end], params: strings.TrimSpace(s[i+end+1:])}
++		}
++	}
++	uri, params, has := strings.Cut(s, ";")
++	if has {
++		params = ";" + params
++	}
++	return nameAddr{uri: strings.TrimSpace(uri), params: params}
++}
++
++// String always uses the angle-bracket form, so URI parameters survive.
++func (n nameAddr) String() string {
++	return n.display + "<" + n.uri + ">" + n.params
++}
++
++// nameAddrParams returns the header parameters of a name-addr value.
++func nameAddrParams(s string) []sipParam {
++	return parseParams(parseNameAddr(s).params)
++}

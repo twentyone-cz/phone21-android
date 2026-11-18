@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:32:04 +0000
+Subject: [PATCH 01/33] =?UTF-8?q?p21relay:=20rozhran=C3=AD=20rel=C3=A9=20(?=
+ =?UTF-8?q?kostra)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ libtailscale/p21relay/relay.go | 64 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 64 insertions(+)
+ create mode 100644 libtailscale/p21relay/relay.go
+
+diff --git a/libtailscale/p21relay/relay.go b/libtailscale/p21relay/relay.go
+new file mode 100644
+index 0000000..95315ba
+--- /dev/null
++++ b/libtailscale/p21relay/relay.go
+@@ -0,0 +1,64 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++// Package p21relay is the in-app relay of Phone21 for the "calls only"
++// access level: the calling library talks to 127.0.0.1 and the relay
++// carries SIP, RTP/RTCP and HTTP to the miniserver over the in-process
++// private-network interface. Nothing here may become reachable for other
++// apps on the phone: SIP is TLS with a pinned client certificate, RTP is
++// accepted only from the calling library's own ports, HTTP needs a token.
++package p21relay
++
++import (
++	"context"
++	"errors"
++	"net"
++	"net/netip"
++)
++
++// Network is the private-network side (in-process interface of the tunnel).
++type Network interface {
++	// LocalAddr is this phone's IPv4 address in the private network.
++	LocalAddr() netip.Addr
++	// ListenUDP binds UDP on LocalAddr():port (0 = any free port).
++	ListenUDP(port uint16) (net.PacketConn, error)
++	// ListenTCP listens on LocalAddr():port (0 = any free port).
++	ListenTCP(port uint16) (net.Listener, error)
++	// DialTCP connects to addr in the private network.
++	DialTCP(ctx context.Context, addr netip.AddrPort) (net.Conn, error)
++}
++
++// Config of one relay instance.
++type Config struct {
++	// UpstreamSIP is the miniserver's SIP address (UDP and TCP), e.g. 100.64.0.1:5060.
++	UpstreamSIP netip.AddrPort
++	// HTTPAllowedHosts are the only targets of the HTTP relay.
++	HTTPAllowedHosts []netip.Addr
++	// ServerCertPEM/ServerKeyPEM: TLS identity of the relay toward the calling library.
++	ServerCertPEM, ServerKeyPEM []byte
++	// ClientCertPEM: the only client certificate accepted (exact match).
++	ClientCertPEM []byte
++	// Logf receives diagnostics; must never get SIP bodies, numbers or tokens.
++	Logf func(format string, args ...any)
++}
++
++// Info tells the app where the relay listens on 127.0.0.1.
++type Info struct {
++	SIPPort   int    `json:"sipPort"`   // TLS
++	HTTPPort  int    `json:"httpPort"`  // plain HTTP, needs HTTPToken
++	HTTPToken string `json:"httpToken"` // header X-Phone21-Relay
++}
++
++// Relay is a running relay.
++type Relay struct{}
++
++// Start starts the relay. Skeleton: replaced by the implementation.
++func Start(ctx context.Context, cfg Config, nw Network) (*Relay, Info, error) {
++	return nil, Info{}, errors.New("p21relay: not implemented")
++}
++
++// Close stops listeners and releases all media ports.
++func (r *Relay) Close() error { return nil }
++
++// Stats returns a JSON summary for diagnostics (counts, no personal data).
++func (r *Relay) Stats() string { return "{}" }

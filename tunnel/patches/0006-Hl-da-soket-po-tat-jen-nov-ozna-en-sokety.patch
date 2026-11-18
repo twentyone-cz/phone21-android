@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:53:49 +0000
+Subject: [PATCH 06/33] =?UTF-8?q?Hl=C3=ADda=C4=8D=20soket=C5=AF:=20po?=
+ =?UTF-8?q?=C4=8D=C3=ADtat=20jen=20nov=C4=9B=20ozna=C4=8Den=C3=A9=20sokety?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Při přechodu do vnitřního režimu stačí tunel přestavovat jen tehdy,
+když se od posledního úklidu nějaký soket označil. Datagramové sokety,
+které zůstaly sledované z minula, už opakované přestavění nespouštějí.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21internal/guard.go      | 8 ++++++--
+ libtailscale/p21internal/guard_test.go | 7 ++++++-
+ 2 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/libtailscale/p21internal/guard.go b/libtailscale/p21internal/guard.go
+index 3907bf5..0d52aac 100644
+--- a/libtailscale/p21internal/guard.go
++++ b/libtailscale/p21internal/guard.go
+@@ -31,6 +31,7 @@ type Guard struct {
+ 	mu      sync.Mutex
+ 	allow   bool
+ 	tracked map[int]uint64 // fd -> socket inode when it was marked
++	marks   int            // sockets marked since the last Sweep
+ }
+ 
+ // NewGuard returns an enabled guard.
+@@ -47,12 +48,13 @@ func (g *Guard) Enable() {
+ 
+ // Disable makes all wrapped mark functions fail from now on, including ones
+ // captured earlier by a socket creation that is still in flight. It returns
+-// the number of sockets tracked so far (alive or not).
++// the number of sockets marked since the last Sweep (alive or not); zero
++// means there is nothing new to break.
+ func (g *Guard) Disable() int {
+ 	g.mu.Lock()
+ 	defer g.mu.Unlock()
+ 	g.allow = false
+-	return len(g.tracked)
++	return g.marks
+ }
+ 
+ // Wrap returns mark wrapped so that the socket is tracked before it is
+@@ -69,6 +71,7 @@ func (g *Guard) Wrap(mark func(fd int) error) func(fd int) error {
+ 		var st unix.Stat_t
+ 		if err := unix.Fstat(fd, &st); err == nil && st.Mode&unix.S_IFMT == unix.S_IFSOCK {
+ 			g.tracked[fd] = st.Ino
++			g.marks++
+ 		}
+ 		return mark(fd)
+ 	}
+@@ -94,6 +97,7 @@ type SweepResult struct {
+ func (g *Guard) Sweep() SweepResult {
+ 	g.mu.Lock()
+ 	defer g.mu.Unlock()
++	g.marks = 0
+ 	var r SweepResult
+ 	for fd, ino := range g.tracked {
+ 		switch g.checkLocked(fd, ino, true) {
+diff --git a/libtailscale/p21internal/guard_test.go b/libtailscale/p21internal/guard_test.go
+index 5304148..f5a5e66 100644
+--- a/libtailscale/p21internal/guard_test.go
++++ b/libtailscale/p21internal/guard_test.go
+@@ -81,12 +81,17 @@ func TestGuardSweepBreaksMarkedTCP(t *testing.T) {
+ 	defer udp.Close()
+ 
+ 	if n := g.Disable(); n != 2 {
+-		t.Fatalf("Disable tracked %d, want 2", n)
++		t.Fatalf("Disable: %d marked, want 2", n)
+ 	}
+ 	r := g.Sweep()
+ 	if r.Shutdown != 1 || r.Left != 1 || r.Gone != 0 {
+ 		t.Fatalf("Sweep = %+v", r)
+ 	}
++	// Nothing new marked since: the next switch has nothing to break,
++	// even though the UDP socket is still tracked.
++	if n := g.Disable(); n != 0 {
++		t.Fatalf("second Disable: %d marked, want 0", n)
++	}
+ 
+ 	// The marked connection is broken: the read returns promptly.
+ 	c.SetReadDeadline(time.Now().Add(5 * time.Second))

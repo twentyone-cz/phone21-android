@@ -1,0 +1,274 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 14:04:12 +0000
+Subject: [PATCH 26/33] =?UTF-8?q?Hl=C3=ADd=C3=A1n=C3=AD=20spojen=C3=AD:=20?=
+ =?UTF-8?q?data=20=C4=8Dekaj=C3=ADc=C3=AD=20u=C5=BE=20p=C5=99i=20p=C5=99ij?=
+ =?UTF-8?q?et=C3=AD=20se=20po=C4=8D=C3=ADtaj=C3=AD=20jako=20postup?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Při silném zahlcení se připojení volací knihovny občas (zhruba jednou
+ze sta) přesto vyřadilo jako tiché. Úvodní zprávu už poslalo, jen ji
+relé ještě nestihlo přečíst, a mezitím přišlo 64 dalších spojení.
+
+Při přijetí se teď bez čtení zjistí, jestli už nějaká data čekají.
+Taková spojení se rovnou počítají jako posílající. Limit posílajících
+rozpracovaných spojení na portu signalizace je 64 místo 16. Stovky
+opakování testu zahlcení prošly bez selhání, i s detektorem souběhu.
+Test.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/p21relay/guard.go      | 66 ++++++++++++++++++++---------
+ libtailscale/p21relay/guard_test.go | 46 ++++++++++++++++++++
+ libtailscale/p21relay/peek_linux.go | 30 +++++++++++++
+ libtailscale/p21relay/peek_other.go | 10 +++++
+ libtailscale/p21relay/sipproxy.go   |  2 +-
+ 5 files changed, 134 insertions(+), 20 deletions(-)
+ create mode 100644 libtailscale/p21relay/peek_linux.go
+ create mode 100644 libtailscale/p21relay/peek_other.go
+
+diff --git a/libtailscale/p21relay/guard.go b/libtailscale/p21relay/guard.go
+index a946a79..4c4ba93 100644
+--- a/libtailscale/p21relay/guard.go
++++ b/libtailscale/p21relay/guard.go
+@@ -18,7 +18,8 @@ import (
+ //
+ //   - silent: accepted, nothing received yet. Closed after silentTimeout;
+ //     above maxSilent the oldest silent one goes. The app's own clients
+-//     send right after connecting, so they leave this state at once.
++//     send right after connecting, so they leave this state at once; data
++//     that already waits when the connection is accepted counts as well.
+ //   - busy: has sent data. Above maxBusy the one that has waited longest
+ //     for more data goes, never one marked in use (an authorised HTTP
+ //     request in progress). A handshake that keeps making progress thus
+@@ -50,6 +51,18 @@ type guardedConn struct {
+ 
+ func (g *connGuard) add(c net.Conn) *guardedConn {
+ 	gc := &guardedConn{Conn: c, g: g}
++	if hasData(c) {
++		// The goroutine that will read it may take a while to run; the
++		// connection must not count as silent meanwhile.
++		gc.last.Store(time.Now().UnixNano())
++		g.mu.Lock()
++		victim := g.addBusyLocked(gc)
++		g.mu.Unlock()
++		if victim != nil {
++			g.evict(victim, "evicted_busy")
++		}
++		return gc
++	}
+ 	g.mu.Lock()
+ 	g.silent = append(g.silent, gc)
+ 	var victim *guardedConn
+@@ -82,32 +95,39 @@ func (g *connGuard) started(gc *guardedConn) {
+ 		g.mu.Unlock()
+ 		return // evicted, timed out or no longer tracked
+ 	}
+-	gc.timer.Stop()
++	gc.stopTimer()
++	victim := g.addBusyLocked(gc)
++	g.mu.Unlock()
++	if victim != nil {
++		g.evict(victim, "evicted_busy")
++	}
++}
++
++// addBusyLocked adds gc to the busy ones and, above maxBusy, removes and
++// returns the one that has waited longest for data.
++func (g *connGuard) addBusyLocked(gc *guardedConn) (victim *guardedConn) {
+ 	g.busy = append(g.busy, gc)
+-	var victim *guardedConn
+-	if len(g.busy) > g.maxBusy {
+-		for _, c := range g.busy {
+-			if c == gc || c.inUse.Load() > 0 {
+-				continue
+-			}
+-			if victim == nil || c.last.Load() < victim.last.Load() {
+-				victim = c
+-			}
++	if len(g.busy) <= g.maxBusy {
++		return nil
++	}
++	for _, c := range g.busy {
++		if c == gc || c.inUse.Load() > 0 {
++			continue
+ 		}
+-		if victim == nil {
+-			victim = gc // all others are in use
++		if victim == nil || c.last.Load() < victim.last.Load() {
++			victim = c
+ 		}
+-		removeConn(&g.busy, victim)
+ 	}
+-	g.mu.Unlock()
+-	if victim != nil {
+-		g.evict(victim, "evicted_busy")
++	if victim == nil {
++		victim = gc // all others are in use
+ 	}
++	removeConn(&g.busy, victim)
++	return victim
+ }
+ 
+ func (g *connGuard) evict(gc *guardedConn, why string) {
+ 	g.cnt.inc(g.name + "." + why)
+-	gc.timer.Stop()
++	gc.stopTimer()
+ 	gc.Conn.Close() // its owner sees the error and closes the wrapper
+ }
+ 
+@@ -117,10 +137,18 @@ func (g *connGuard) forget(gc *guardedConn) {
+ 	if !removeConn(&g.silent, gc) {
+ 		removeConn(&g.busy, gc)
+ 	}
+-	gc.timer.Stop()
++	gc.stopTimer()
+ 	g.mu.Unlock()
+ }
+ 
++// stopTimer stops the silence timeout; gc.timer is only written under
++// g.mu before gc can be seen by others.
++func (gc *guardedConn) stopTimer() {
++	if gc.timer != nil {
++		gc.timer.Stop()
++	}
++}
++
+ func (g *connGuard) counts() (silent, busy int) {
+ 	g.mu.Lock()
+ 	defer g.mu.Unlock()
+diff --git a/libtailscale/p21relay/guard_test.go b/libtailscale/p21relay/guard_test.go
+index 4c4cc96..63018ae 100644
+--- a/libtailscale/p21relay/guard_test.go
++++ b/libtailscale/p21relay/guard_test.go
+@@ -65,6 +65,7 @@ func TestHandshakeChurn(t *testing.T) {
+ 		before := e.counter("client.accepted")
+ 		conn, err := dialClient(t, e.info.SIPPort, &e.clientCert.tls)
+ 		if err != nil {
++			t.Logf("handshake %d: %v", i, err)
+ 			failed++
+ 			continue
+ 		}
+@@ -73,6 +74,7 @@ func TestHandshakeChurn(t *testing.T) {
+ 			time.Sleep(time.Millisecond)
+ 		}
+ 		if e.counter("client.accepted") == before {
++			t.Logf("handshake %d: not accepted", i)
+ 			failed++
+ 		}
+ 		conn.Close()
+@@ -139,3 +141,47 @@ func TestHandshakeSilentTimeout(t *testing.T) {
+ 		t.Fatalf("silent_timeout %d", e.counter("client.handshake.silent_timeout"))
+ 	}
+ }
++
++// Data that already waits when a connection is accepted counts as
++// progress (and stays readable).
++func TestGuardDataAtAccept(t *testing.T) {
++	ln, err := net.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	g := &connGuard{name: "test", maxSilent: 4, maxBusy: 4, silentTimeout: time.Minute, cnt: &counters{}}
++	accept := func(payload string) *guardedConn {
++		c, err := net.Dial("tcp4", ln.Addr().String())
++		if err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() { c.Close() })
++		if payload != "" {
++			c.Write([]byte(payload))
++		}
++		s, err := ln.Accept()
++		if err != nil {
++			t.Fatal(err)
++		}
++		if payload != "" {
++			waitFor(t, func() bool { return hasData(s) })
++		}
++		gc := g.add(s)
++		t.Cleanup(func() { gc.Close() })
++		return gc
++	}
++	accept("")
++	gc := accept("x")
++	if silent, busy := g.counts(); silent != 1 || busy != 1 {
++		t.Fatalf("%d silent, %d busy", silent, busy)
++	}
++	buf := make([]byte, 4)
++	if n, err := gc.Read(buf); err != nil || string(buf[:n]) != "x" {
++		t.Fatalf("read %q %v", buf[:n], err)
++	}
++	gc.Close()
++	if silent, busy := g.counts(); silent != 1 || busy != 0 {
++		t.Fatalf("after close: %d silent, %d busy", silent, busy)
++	}
++}
+diff --git a/libtailscale/p21relay/peek_linux.go b/libtailscale/p21relay/peek_linux.go
+new file mode 100644
+index 0000000..ce6857f
+--- /dev/null
++++ b/libtailscale/p21relay/peek_linux.go
+@@ -0,0 +1,30 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux
++
++package p21relay
++
++import (
++	"net"
++	"syscall"
++)
++
++// hasData reports whether data already waits on c, without reading it.
++func hasData(c net.Conn) bool {
++	sc, ok := c.(syscall.Conn)
++	if !ok {
++		return false
++	}
++	rc, err := sc.SyscallConn()
++	if err != nil {
++		return false
++	}
++	var buf [1]byte
++	n := 0
++	rc.Read(func(fd uintptr) bool {
++		n, _, _ = syscall.Recvfrom(int(fd), buf[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
++		return true // never wait
++	})
++	return n > 0
++}
+diff --git a/libtailscale/p21relay/peek_other.go b/libtailscale/p21relay/peek_other.go
+new file mode 100644
+index 0000000..0284ac2
+--- /dev/null
++++ b/libtailscale/p21relay/peek_other.go
+@@ -0,0 +1,10 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !linux
++
++package p21relay
++
++import "net"
++
++func hasData(net.Conn) bool { return false }
+diff --git a/libtailscale/p21relay/sipproxy.go b/libtailscale/p21relay/sipproxy.go
+index b8d4f74..76d0626 100644
+--- a/libtailscale/p21relay/sipproxy.go
++++ b/libtailscale/p21relay/sipproxy.go
+@@ -29,7 +29,7 @@ const (
+ 	maxUpstreamTCP       = 8
+ 	maxTCPSends          = 2 // connections a request without an answer is sent over
+ 	maxRememberedContact = 16
+-	maxPendingHandshakes = 16 // handshakes that have sent data
++	maxPendingHandshakes = 64 // handshakes that have sent data
+ 	maxSilentHandshakes  = 64 // accepted, nothing received yet
+ 	helloTimeout         = time.Second
+ 	handshakeTimeout     = 10 * time.Second

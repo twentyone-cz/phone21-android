@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 12:53:49 +0000
+Subject: [PATCH 07/33] =?UTF-8?q?Vnit=C5=99n=C3=AD=20re=C5=BEim=20tunelu:?=
+ =?UTF-8?q?=20rozhran=C3=AD=20v=20procesu=20m=C3=ADsto=20syst=C3=A9mov?=
+ =?UTF-8?q?=C3=A9=20VPN?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pro stupeň „jen hovory“ může tunel běžet přes rozhraní v procesu appky,
+takže nezabírá jediné systémové místo pro VPN.
+
+- Požadavek appky se vyhodnocuje na začátku každého kola hlavní
+  smyčky: bez systémové VPN se přejde do vnitřního režimu, po jejím
+  odpojení se do něj tunel vrátí sám.
+- Zařízení se vytváří jen při změně vlastních adres v privátní síti;
+  změny tras a DNS ho nepřestavují. Každé nové zařízení má novou
+  generaci.
+- Systémová VPN má vždy přednost: vnitřní rozhraní zneplatní, relé
+  zastaví a stávající cesta zařízení vymění.
+- Vnitřní cesta nikdy nevolá ukončení VPN služby ani nevypíná tunel
+  v nastavení (dřívější past „Zakázáno“); chyby jen hlásí ve stavu.
+- Při vstupu se přestanou sokety označovat, přestaví se UDP sokety
+  tunelu, přeruší spojení na přenosové servery a hlídač ukončí ostatní
+  dříve označená proudová spojení (řízení, odesílání logů).
+- Systémová cesta se chová jako dřív, jen její značkovací funkce
+  obaluje hlídač soketů.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libtailscale/backend.go      |  35 +++++-
+ libtailscale/p21_internal.go | 236 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 267 insertions(+), 4 deletions(-)
+ create mode 100644 libtailscale/p21_internal.go
+
+diff --git a/libtailscale/backend.go b/libtailscale/backend.go
+index bfd0a11..e9f7251 100644
+--- a/libtailscale/backend.go
++++ b/libtailscale/backend.go
+@@ -112,6 +112,9 @@ type backend struct {
+ 	avoidEmptyDNS bool
+ 
+ 	appCtx AppContext
++
++	// internal is Phone21's internal tunnel mode (p21_internal.go).
++	internal internalMode
+ }
+ 
+ type settingsFunc func(*router.Config, *dns.OSConfig) error
+@@ -188,6 +191,10 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
+ 		return true
+ 	})
+ 	for {
++		// Phone21: enter or leave the internal mode as requested by the
++		// app, once no VpnService carries the tunnel.
++		b.syncInternal(state, cfg.rcfg, cfg.dcfg)
++
+ 		select {
+ 		case s := <-stateCh:
+ 			state = s
+@@ -200,8 +207,21 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
+ 					a.closeVpnService(err, b)
+ 				}
+ 			}
++			if b.internal.active && vpnService.service == nil && state >= ipn.Starting && b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
++				// Phone21 internal mode; errors only reported, never closeVpnService.
++				b.applyInternal(cfg.rcfg, cfg.dcfg)
++			}
+ 		case c := <-configs:
+ 			cfg = c
++			if b.internal.active && vpnService.service == nil {
++				// Phone21 internal mode; errors only reported, never closeVpnService.
++				if !b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
++					configErrs <- nil
++					break
++				}
++				configErrs <- b.applyInternal(cfg.rcfg, cfg.dcfg)
++				break
++			}
+ 			if vpnService.service == nil || !b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
+ 				configErrs <- nil
+ 				break
+@@ -212,7 +232,12 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
+ 				// Still the same VPN instance, do nothing
+ 				break
+ 			}
+-			netns.SetAndroidProtectFunc(func(fd int) error {
++			// Phone21: the system VPN wins over the internal mode; and
++			// every socket marked from now on is tracked, so that a later
++			// switch to the internal mode can break it (p21_internal.go).
++			b.leaveInternalForVPN()
++			sockGuard.Enable()
++			netns.SetAndroidProtectFunc(sockGuard.Wrap(func(fd int) error {
+ 				if !s.Protect(int32(fd)) {
+ 					// TODO(bradfitz): return an error back up to netns if this fails, once
+ 					// we've had some experience with this and analyzed the logs over a wide
+@@ -225,13 +250,13 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
+ 					log.Printf("[unexpected] VpnService.protect(%d) returned false", fd)
+ 				}
+ 				return nil // even on error. see big TODO above.
+-			})
+-			netns.SetAndroidBindToNetworkFunc(func(fd int) error {
++			}))
++			netns.SetAndroidBindToNetworkFunc(sockGuard.Wrap(func(fd int) error {
+ 				if ok := a.appCtx.BindSocketToNetwork(int32(fd)); !ok {
+ 					log.Printf("[unexpected] IPNService.bindSocketToNetwork(%d) returned false", fd)
+ 				}
+ 				return nil
+-			})
++			}))
+ 			log.Printf("onVPNRequested: rebind required")
+ 			// TODO(catzkorn): When we start the android application
+ 			// we bind sockets before we have access to the VpnService.protect()
+@@ -267,6 +292,8 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
+ 			// that independently of userspace engine network changes which may
+ 			// eliminate some unnecessary work.
+ 			go b.NetworkChanged(i)
++		case <-onInternalChanged:
++			// Handled by syncInternal at the top of the loop.
+ 		}
+ 	}
+ }
+diff --git a/libtailscale/p21_internal.go b/libtailscale/p21_internal.go
+new file mode 100644
+index 0000000..a81ecc2
+--- /dev/null
++++ b/libtailscale/p21_internal.go
+@@ -0,0 +1,236 @@
++// Copyright (c) Phone21
++// SPDX-License-Identifier: BSD-3-Clause
++
++package libtailscale
++
++// Phone21 internal tunnel mode.
++//
++// For the "calls only" access level the tunnel runs over an in-process
++// network interface (package internaltun) instead of a system VpnService, so
++// Phone21 never occupies Android's single VPN slot and any other VPN app can
++// run at the same time. A relay on 127.0.0.1 (package p21relay) carries SIP,
++// RTP and HTTP between the calling library and the miniserver over that
++// interface.
++//
++// Rules (see docs/PLAN-vnitrni-tunel.md in the Phone21 repo):
++//
++//   - The system VpnService always wins: onVPNRequested ends the internal
++//     mode (the in-process device is replaced in multiTUN by updateTUN). The
++//     app's request stays recorded, so after ServiceDisconnect the internal
++//     mode comes back on its own.
++//   - The internal path never calls closeVpnService, DisconnectVPN or
++//     EditPrefs(WantRunning=false). Errors go to InternalStatus().error and
++//     the log; the app retries with StopInternal + RequestInternal.
++//   - In the internal mode no socket of the tunnel may bypass a VPN the user
++//     runs: nothing is protected or bound to the underlying network, and
++//     sockets marked earlier under a VpnService are broken (enterInternal).
++//   - The system VPN path behaves as before; it only gained the socket
++//     tracking wrapper around the protect/bind functions.
++//
++// All backend methods below run on the runBackend goroutine.
++
++import (
++	"errors"
++	"fmt"
++	"log"
++	"net/netip"
++	"slices"
++
++	"github.com/tailscale/tailscale-android/libtailscale/internaltun"
++	"github.com/tailscale/tailscale-android/libtailscale/p21internal"
++	"tailscale.com/ipn"
++	"tailscale.com/net/dns"
++	"tailscale.com/net/netns"
++	"tailscale.com/wgengine/router"
++)
++
++var (
++	// internalState is shared with the app (exported functions in p21_export.go).
++	internalState = p21internal.NewState(p21internal.StartP21Relay, log.Printf)
++
++	// sockGuard tracks every socket marked to bypass the VPN (protect,
++	// bind to the underlying network) while a VpnService is in use.
++	sockGuard = p21internal.NewGuard()
++
++	// onInternalChanged wakes runBackend after RequestInternal/StopInternal.
++	// It is level-triggered: runBackend reads internalState.Requested().
++	onInternalChanged = make(chan struct{}, 1)
++)
++
++func init() {
++	internalState.SetLeftoverFunc(sockGuard.Leftover)
++}
++
++func notifyInternalChanged() {
++	select {
++	case onInternalChanged <- struct{}{}:
++	default: // a wake-up is already pending
++	}
++}
++
++// internalMode is the runBackend-only part of the internal mode state.
++type internalMode struct {
++	// active: the in-process interface carries the tunnel (or will, once
++	// the backend has addresses); marking sockets is disabled.
++	active bool
++	// addrs are the LocalAddrs of the current in-process device, nil if
++	// there is none.
++	addrs []netip.Prefix
++}
++
++// syncInternal brings the internal mode in line with the app's request and
++// the presence of a VpnService. It runs at the top of every runBackend loop
++// iteration, so it also reacts to ServiceDisconnect and to a VpnService that
++// went away after an error.
++func (b *backend) syncInternal(state ipn.State, rcfg *router.Config, dcfg *dns.OSConfig) {
++	hasVPN := vpnService.service != nil
++	internalState.SetVPNService(hasVPN)
++	want := internalState.Requested() && !hasVPN
++	switch {
++	case want && !b.internal.active:
++		b.enterInternal()
++		if state >= ipn.Starting && b.isConfigNonNilAndDifferent(rcfg, dcfg) {
++			b.applyInternal(rcfg, dcfg)
++		}
++	case !want && b.internal.active && hasVPN:
++		// Normally done in onVPNRequested already; never touch the
++		// devices here, they belong to the system VPN now.
++		b.leaveInternalForVPN()
++	case !want && b.internal.active:
++		b.stopInternal("stopped by the app")
++	}
++}
++
++// enterInternal switches the tunnel's own sockets to the internal mode.
++//
++// Sockets created under a VpnService were protected and/or bound to the
++// underlying network; that mark lives as long as the socket and would let it
++// bypass any VPN the user starts later. Covered here:
++//
++//   - new sockets: the protect/bind hooks are removed, and the guard makes a
++//     hook captured by a socket creation still in flight fail instead of
++//     marking (that dial fails and is retried unmarked);
++//   - the magicsock UDP sockets (peer traffic, STUN, disco): closed and bound
++//     again (DebugRebind), then endpoints re-discovered (DebugReSTUN);
++//   - DERP connections: closed and redialled (DebugBreakDERPConns);
++//   - every other marked stream socket that is still open (control
++//     connection, log upload, DNS over TCP/HTTPS, forwarded connections):
++//     shut down by the guard, the owner redials unmarked.
++//
++// Not covered: marked datagram sockets other than magicsock's (DNS forwarder
++// queries, port mapping probes). They are short-lived (one query, seconds)
++// and cannot be broken safely; InternalStatus().leftoverSockets shows how
++// many are still open. LocalBackend.DebugBreakTCPConns is deliberately not
++// used: on Android/Linux it close(2)s every TCP descriptor of the process,
++// including the calling library's and the app's.
++func (b *backend) enterInternal() {
++	b.internal.active = true
++	marked := sockGuard.Disable()
++	netns.SetAndroidProtectFunc(nil)
++	netns.SetAndroidBindToNetworkFunc(nil)
++	// The in-process device does not exist yet: make the next config apply.
++	b.lastCfg = nil
++	b.lastDNSCfg = nil
++	if marked == 0 {
++		log.Printf("internal: entering; no socket marked to bypass a VPN since the last switch")
++		return
++	}
++	b.backend.DebugRebind()
++	b.backend.DebugReSTUN()
++	if err := b.backend.DebugBreakDERPConns(); err != nil {
++		log.Printf("internal: break DERP connections: %v", err)
++	}
++	r := sockGuard.Sweep()
++	log.Printf("internal: entering; marked sockets: %d stream shut down, %d already closed, %d left open (datagram or listening)",
++		r.Shutdown, r.Gone, r.Left)
++}
++
++// leaveInternalForVPN hands the tunnel over to a new VpnService. The
++// in-process device stays in b.devices until updateTUN adds the system one
++// (multiTUN then closes it), so there is no gap with no device at all.
++func (b *backend) leaveInternalForVPN() {
++	if !b.internal.active {
++		return
++	}
++	b.internal.active = false
++	b.internal.addrs = nil
++	internalState.Invalidate("system VPN takes over")
++	// lastCfg describes the in-process device; make updateTUN run.
++	b.lastCfg = nil
++	b.lastDNSCfg = nil
++}
++
++// stopInternal ends the internal mode with no VpnService to take over.
++// Socket marking stays disabled (there is no VPN to protect from).
++func (b *backend) stopInternal(why string) {
++	b.internal.active = false
++	b.dropInternalDevice(why)
++}
++
++// dropInternalDevice closes the in-process device (if any) and brings the
++// multiTUN down, like updateTUN does for an empty config.
++func (b *backend) dropInternalDevice(why string) {
++	b.internal.addrs = nil
++	internalState.Invalidate(why)
++	if b.devices.Down() {
++		log.Printf("internal: tunnel brought down (%s)", why)
++	}
++	b.CloseTUNs()
++}
++
++// applyInternal applies a router config to the in-process device and
++// records the outcome for InternalStatus.
++func (b *backend) applyInternal(rcfg *router.Config, dcfg *dns.OSConfig) error {
++	err := b.updateTUNInternal(rcfg, dcfg)
++	if err != nil {
++		log.Printf("internal: %v", err)
++		internalState.SetError(err)
++	}
++	return err
++}
++
++// updateTUNInternal is updateTUN for the internal mode. The device depends
++// only on the local addresses: routes and DNS are not used by the in-process
++// interface (the relay dials explicit addresses), so changes of those just
++// update lastCfg and never recreate the device.
++func (b *backend) updateTUNInternal(rcfg *router.Config, dcfg *dns.OSConfig) error {
++	if len(rcfg.LocalAddrs) == 0 {
++		b.dropInternalDevice("no addresses")
++		return nil
++	}
++	if b.internal.addrs != nil && slices.Equal(b.internal.addrs, rcfg.LocalAddrs) {
++		b.lastCfg = rcfg
++		b.lastDNSCfg = dcfg
++		return nil
++	}
++
++	addrs := make([]netip.Addr, 0, len(rcfg.LocalAddrs))
++	var v4 netip.Addr
++	for _, p := range rcfg.LocalAddrs {
++		a := p.Addr()
++		addrs = append(addrs, a)
++		if a.Is4() && !v4.IsValid() {
++			v4 = a
++		}
++	}
++	if !v4.IsValid() {
++		b.dropInternalDevice("no IPv4 address")
++		return errors.New("internal: no IPv4 address in the private network")
++	}
++	dev, tnet, err := internaltun.CreateNetTUN(addrs, nil, defaultMTU)
++	if err != nil {
++		b.dropInternalDevice("interface creation failed")
++		return fmt.Errorf("internal: create interface: %w", err)
++	}
++	// Stop the relay of the previous device before it is closed.
++	internalState.Invalidate("addresses changed")
++	b.devices.add(dev) // multiTUN closes the previous device, if any
++	if b.devices.Up() {
++		log.Printf("internal: tunnel brought up")
++	}
++	b.internal.addrs = slices.Clone(rcfg.LocalAddrs)
++	internalState.Install(tnet, v4)
++	b.lastCfg = rcfg
++	b.lastDNSCfg = dcfg
++	return nil
++}
