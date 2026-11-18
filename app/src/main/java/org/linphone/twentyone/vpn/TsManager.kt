@@ -235,6 +235,16 @@ object TsManager {
      *  WantRunning=false — první notifikace jádra tunel zapne zpátky. */
     @Volatile
     private var legacySlotLost = false
+
+    /** První start po aktualizaci z verze bez zrcadla WantRunning (≤ 21p.44)
+     *  se stupněm „jen hovory“: tam odebrání místa jinou VPN zapsalo
+     *  WantRunning=false bez jakékoli stopy. Když jádro hlásí přihlášený,
+     *  ale zastavený uzel (STOPPED), tunel se jednou zapne zpátky. */
+    @Volatile
+    private var legacyInternalOff = false
+
+    @Volatile
+    private var legacyOffAwaitState = false
     val browseToUrl = MutableLiveData<String?>(null)
     val loggedIn = MutableLiveData(false)
     val directConnection = MutableLiveData(false)
@@ -330,6 +340,12 @@ object TsManager {
                 // ukáže TsModeController.
                 remindSlotLost(appContext)
             }
+        }
+
+        if (mirror == null &&
+            TsModeController.desiredAccessMode(appContext) == TsModeController.Mode.INTERNAL
+        ) {
+            legacyInternalOff = true
         }
 
         val ctx = TsAppContext(appContext)
@@ -592,6 +608,12 @@ object TsManager {
         val changed = value != wantRunningNow || !wantRunningKnownNow
         wantRunningNow = value
         wantRunningKnownNow = true
+        if (legacyInternalOff) {
+            legacyInternalOff = false
+            // rozhodne až stav jádra: STOPPED = přihlášený, jen vypnutý
+            // (čistá instalace hlásí NEEDS_LOGIN a nezapíná se nic)
+            if (!value && !legacySlotLost) legacyOffAwaitState = true
+        }
         if (legacySlotLost) {
             legacySlotLost = false
             if (!value) {
@@ -1006,6 +1028,18 @@ object TsManager {
             currentState = newState
             state.postValue(newState)
             TsRelay.poke()
+            if (legacyOffAwaitState && newState != State.NO_STATE) {
+                legacyOffAwaitState = false
+                if (newState == State.STOPPED && !wantRunningNow &&
+                    TsModeController.desiredAccessMode(appContext) == TsModeController.Mode.INTERNAL
+                ) {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN",
+                        "po aktualizaci: tunel byl vypnutý (nejspíš ho vypnula jiná VPN) — jen hovory teď jedou bez systémové VPN, zapínám")
+                    setWantRunning(true)
+                    TsModeController.reconcile("po aktualizaci (jen hovory)")
+                }
+            }
             if (newState == State.RUNNING || newState == State.STARTING) {
                 browseToUrl.postValue(null)
             }
