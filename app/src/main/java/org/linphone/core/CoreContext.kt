@@ -314,7 +314,7 @@ class CoreContext
                 // startu znovu a chybová hláška se vrací "sama od sebe"
                 val staleUri = core.provisioningUri
                 if (!staleUri.isNullOrEmpty()) {
-                    Log.w("$TAG Clearing stale provisioning URI [$staleUri] after failure")
+                    Log.w("$TAG Clearing stale provisioning URI [${org.linphone.twentyone.TwentyOneProvisioning.redact(staleUri)}] after failure")
                     core.provisioningUri = null
                 }
                 showRedToastEvent.postValue(
