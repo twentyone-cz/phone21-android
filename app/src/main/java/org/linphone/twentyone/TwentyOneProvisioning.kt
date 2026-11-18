@@ -3,13 +3,17 @@
  *
  * Dva důvody. Knihovna při chybě neumí říct proč (jen „failed"), takže se
  * nedalo poznat, jestli je vadná síť, adresa, nebo obsah. A hlavně: když
- * běží náš tunel, provoz aplikace jde skrz něj — jenže miniserver se při
- * nastavování stahuje z domácí wifi, kam tunel nevede. Proto se stažení
- * váže výslovně na síť bez VPN a knihovně se předá hotový soubor.
+ * běží naše systémová VPN, provoz aplikace jde skrz ni — jenže miniserver
+ * se při nastavování stahuje z domácí wifi, kam tunel nevede. Proto se
+ * stažení při neúspěchu výchozí cestou zkusí ještě vázané na wifi mimo
+ * VPN — ale JEN pod naší systémovou VPN. Drží-li výchozí síť jiná VPN
+ * (vnitřní tunel ji nechává běžet), záloha by ji obešla, a to appka
+ * nedělá; chyba pak radí, že jiná VPN možná nepouští do domácí sítě.
  *
  * QR zobrazené na dálku míří na miniserver v privátní síti a za # nese
  * jednorázový klíč do ní: telefon se nejdřív připojí a konfiguraci si pak
- * stáhne tunelem.
+ * stáhne tunelem — ve vnitřním režimu přes relé uvnitř appky, bez
+ * souhlasu s VPN (TsHttp; přímo na adresu v privátní síti nikdy).
  */
 package org.linphone.twentyone
 
@@ -24,6 +28,9 @@ import java.util.concurrent.Executors
 import org.linphone.LinphoneApplication.Companion.coreContext
 import org.linphone.compatibility.Compatibility
 import org.linphone.core.tools.Log
+import org.linphone.twentyone.vpn.TsHttp
+import org.linphone.twentyone.vpn.TsModeController
+import org.linphone.twentyone.vpn.TsRelay
 
 object TwentyOneProvisioning {
     private const val TAG = "[Provisioning]"
@@ -94,6 +101,11 @@ object TwentyOneProvisioning {
             } catch (_: Exception) {
                 url
             }
+            val host = try {
+                URL(url).host.removePrefix("[").removeSuffix("]")
+            } catch (_: Exception) {
+                ""
+            }
             if (!Compatibility.isAccessLocalNetworkPermissionGranted(
                     coreContext.context)) {
                 TwentyOneDiag.log("P21-E10", "chybí oprávnění Místní síť, cíl=%s"
@@ -104,10 +116,23 @@ object TwentyOneProvisioning {
                     "QR znovu.")
                 return@execute
             }
-            val viaTunnel = joinKey.isNotEmpty()
+            // Adresa v privátní síti jde vždy tunelem (i bez klíče v QR) —
+            // přímo by odešla výchozí sítí nešifrovaně.
+            val viaTunnel = joinKey.isNotEmpty() || TsHttp.isPrivateNetworkUrl(url)
+            if (viaTunnel) {
+                // relé smí na miniserver z QR; bez účtu podle něj i naběhne
+                TsRelay.addHttpHost(host)
+            }
             if (viaTunnel && !org.linphone.twentyone.vpn.TsManager.isTunnelUp()) {
                 if (!joinNetwork(joinKey)) {
                     TwentyOneDiag.log("P21-E18", "cíl=%s %s".format(target, networkFacts()))
+                    if (internalWanted()) {
+                        onError("[P21-E18] Telefon se do privátní sítě nepřipojil — " +
+                            "tunel uvnitř aplikace nenaběhl. Klíč v QR platí jen " +
+                            "jednou, vygeneruj nový QR a zkus to znovu.")
+                        return@execute
+                    }
+                    // „jiná VPN blokuje QR“ jen tam, kde je potřeba místo pro VPN
                     if (org.linphone.twentyone.vpn.TsManager.otherVpnActive(coreContext.context)) {
                         onError(coreContext.context.getString(
                             org.linphone.R.string.twentyone_qr_join_other_vpn))
@@ -156,7 +181,20 @@ object TwentyOneProvisioning {
                     core.start()
                 }
             } catch (e: Exception) {
-                Log.e("$TAG Download of [$url] via [$lastRoute] failed: $e")
+                Log.e("$TAG Download of [${redact(url)}] via [$lastRoute] failed: $e")
+                if (e is TsHttp.RelayException) {
+                    // zapsáno do deníku (P21-E23/E24) v TsHttp
+                    onError(
+                        if (e.code == "P21-E23") {
+                            "[P21-E23] Relé uvnitř aplikace požadavek odmítlo. " +
+                                "Zkus QR naskenovat znovu za chvíli."
+                        } else {
+                            "[P21-E24] Miniserver $target přes privátní síť " +
+                                "neodpovídá (HTTP ${e.status}). Je miniserver zapnutý a v síti?"
+                        }
+                    )
+                    return@execute
+                }
                 if (viaTunnel && e !is IllegalStateException) {
                     TwentyOneDiag.log("P21-E19", "cíl=%s %s výjimka=%s %s".format(
                         target, networkFacts(), e.javaClass.simpleName, e.message ?: ""))
@@ -176,10 +214,26 @@ object TwentyOneProvisioning {
     @Volatile
     private var lastRoute = "?"
 
-    /** Přihlásí telefon do privátní sítě klíčem z QR a počká, až tunel běží. */
+    /** Stupeň „jen hovory“ bez synchronizace = vnitřní tunel, bez VPN. */
+    private fun internalWanted(): Boolean =
+        TsModeController.desiredAccessMode(coreContext.context) == TsModeController.Mode.INTERNAL
+
+    /**
+     * Přihlásí telefon do privátní sítě klíčem z QR a počká, až tunel běží.
+     * Ve vnitřním režimu bez souhlasu s VPN a bez převzetí místa — nic
+     * z toho se nepotřebuje a jiná VPN v telefonu běží dál.
+     */
     private fun joinNetwork(key: String): Boolean {
         val context = coreContext.context
-        TwentyOneDiag.log("P21-TUN", "QR nese klíč do sítě — připojuji telefon před stažením konfigurace")
+        val internal = internalWanted()
+        TwentyOneDiag.log(
+            "P21-TUN",
+            if (key.isNotEmpty()) {
+                "QR nese klíč do sítě — připojuji telefon před stažením konfigurace (%s)"
+            } else {
+                "QR míří do privátní sítě — zapínám tunel před stažením konfigurace (%s)"
+            }.format(TsModeController.label(if (internal) TsModeController.Mode.INTERNAL else TsModeController.Mode.SYSTEM))
+        )
         coreContext.showGreenToastEvent.postValue(
             org.linphone.utils.Event(
                 Pair(org.linphone.R.string.twentyone_qr_joining, org.linphone.R.drawable.info)
@@ -187,7 +241,7 @@ object TwentyOneProvisioning {
         )
         val startedAt = android.os.SystemClock.elapsedRealtime()
         val tm = org.linphone.twentyone.vpn.TsManager
-        if (tm.isLoggedIn() && (tm.isSlotLost() || tm.otherVpnActive(context))) {
+        if (!internal && tm.isLoggedIn() && (tm.isSlotLost() || tm.otherVpnActive(context))) {
             // Místo pro VPN drží jiná aplikace (nebo o něj Phone21 přišlo):
             // samotné spuštění služby by rozhraní nepostavilo. Zpátky přes
             // potvrzení a souhlas, stejně jako tlačítko ve výstraze.
@@ -203,8 +257,12 @@ object TwentyOneProvisioning {
             }
         } else if (tm.isLoggedIn()) {
             // přihlášený telefon: klíč se nepoužije, jen se spustí rozhraní
+            // (vnitřní tunel bez souhlasu s VPN — pokyn ho nepotřebuje)
             TwentyOneDiag.log("P21-TUN", "telefon už v síti je — klíč z QR nepoužit, čekám na rozhraní")
-            tm.startService()
+            tm.startService(userInitiated = !internal)
+        } else if (key.isEmpty()) {
+            TwentyOneDiag.log("P21-TUN", "telefon v síti není a QR nenese klíč do ní")
+            return false
         } else {
             val intent = android.content.Intent(
                 context, org.linphone.twentyone.vpn.TsConsentActivity::class.java
@@ -233,13 +291,18 @@ object TwentyOneProvisioning {
         return false
     }
 
-    /** Stažení tunelem, několik pokusů; HTTP chyba se neopakuje. */
+    /** Stažení tunelem, několik pokusů; HTTP chyba miniserveru se
+     *  neopakuje (odmítnutí relé ano — relé mohlo zrovna převzít nový cíl). */
     private fun downloadViaTunnel(url: String): ByteArray {
-        lastRoute = "privátní síť"
+        lastRoute = if (TsModeController.modeInUse() == TsModeController.Mode.INTERNAL) {
+            "privátní síť (relé v aplikaci)"
+        } else {
+            "privátní síť"
+        }
         var last: Exception? = null
         repeat(TUNNEL_DOWNLOAD_ATTEMPTS) { attempt ->
             try {
-                return fetch(URL(url).openConnection() as HttpURLConnection)
+                return fetch(TsHttp.open(URL(url)))
             } catch (e: IllegalStateException) {
                 throw e
             } catch (e: Exception) {
@@ -254,28 +317,38 @@ object TwentyOneProvisioning {
     private fun download(url: String): ByteArray {
         // Nejdřív stejnou cestou jako prohlížeč (bez vázání na síť) — na
         // reálném telefonu prošla, zatímco socket vázaný na wifi vytimeoutoval.
-        // Vázání zůstává jako záloha pro případ, že výchozí cestu drží tunel.
+        // Vázání zůstává jako záloha pro případ, že výchozí cestu drží NÁŠ
+        // tunel (systémová VPN). Výchozí síť jiné VPN se neobchází.
         val parsed = URL(url)
-        try {
+        val first = try {
             lastRoute = "výchozí síť"
-            return fetch(parsed.openConnection() as HttpURLConnection)
+            return fetch(TsHttp.open(parsed))
         } catch (e: Exception) {
             if (e is IllegalStateException) throw e     // HTTP chyba — síť fungovala
-            Log.w("$TAG Default-network fetch failed [$e], retrying bound to wifi")
+            e
         }
+        if (!org.linphone.twentyone.vpn.TsManager.isSystemVpnUp()) {
+            Log.w("$TAG Default-network fetch failed [$first], no fallback without our system VPN")
+            throw first
+        }
+        Log.w("$TAG Default-network fetch failed [$first], retrying bound to wifi")
         val (network, route) = nonVpnNetwork(coreContext.context)
         lastRoute = route
         if (network == null) {
             throw java.net.NoRouteToHostException("bez wifi")
         }
-        return fetch(network.openConnection(parsed) as HttpURLConnection)
+        return fetch(
+            (network.openConnection(parsed) as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+            }
+        )
     }
 
     private fun fetch(connection: HttpURLConnection): ByteArray {
         connection.connectTimeout = 10_000
         connection.readTimeout = 10_000
         try {
-            val code = connection.responseCode
+            val code = TsHttp.responseCode(connection, "konfigurace z QR")
             if (code != 200) {
                 throw IllegalStateException("HTTP $code")
             }
@@ -318,39 +391,53 @@ object TwentyOneProvisioning {
         return "<config" in head
     }
 
-    /** Změřené okolnosti pro deník: běží tunel? je zapnutá systémová
-     *  blokace provozu mimo VPN? Diagnóza místo hádání. */
+    /** Změřené okolnosti pro deník: režim, běží tunel (a relé)? je zapnutá
+     *  systémová blokace provozu mimo VPN? Diagnóza místo hádání. */
     private fun networkFacts(): String {
-        val lockdown = when (org.linphone.twentyone.vpn.TsManager.lockdownDetected) {
-            true -> "zapnutá"
-            false -> "vypnutá"
-            null -> "?"
+        val system = TsModeController.modeInUse() == TsModeController.Mode.SYSTEM
+        // „Blokovat připojení bez VPN“ appka zjistí jen u vlastní VPN
+        val lockdown = if (!system) {
+            "-"
+        } else {
+            when (org.linphone.twentyone.vpn.TsManager.lockdownDetected) {
+                true -> "zapnutá"
+                false -> "vypnutá"
+                null -> "?"
+            }
         }
         // Vlastní tunel a cizí VPN zvlášť: dřív se jako „tunel=běží“ počítala
         // jakákoli VPN v telefonu, i ta, která Phone21 vzala místo.
         val tm = org.linphone.twentyone.vpn.TsManager
-        return "tunel=%s jiná-vpn=%s blokace-mimo-vpn=%s".format(
+        return "režim=%s tunel=%s relé=%s jiná-vpn=%s blokace-mimo-vpn=%s".format(
+            TsModeController.label(TsModeController.modeInUse()).replace(' ', '-'),
             if (tm.isTunnelUp()) "běží" else "ne",
+            if (system) "-" else if (TsRelay.isUp()) "běží" else "ne",
             if (tm.otherVpnActive(coreContext.context)) "ano" else "ne",
             lockdown)
     }
 
-    private fun vpnUp(): Boolean {
-        val cm = coreContext.context.getSystemService(Context.CONNECTIVITY_SERVICE)
-            as ConnectivityManager
-        @Suppress("DEPRECATION")
-        return cm.allNetworks.any {
-            cm.getNetworkCapabilities(it)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+    /** Blokace mimo VPN, o které appka ví — jen u vlastní systémové VPN. */
+    private fun ownLockdown(): Boolean =
+        TsModeController.modeInUse() == TsModeController.Mode.SYSTEM &&
+            org.linphone.twentyone.vpn.TsManager.lockdownDetected == true
+
+    /** Výchozí síť appky drží jiná VPN a záloha přes wifi ji neobejde. */
+    private fun otherVpnNote(): String =
+        if (!org.linphone.twentyone.vpn.TsManager.isSystemVpnUp() &&
+            org.linphone.twentyone.vpn.TsManager.otherVpnActive(coreContext.context)
+        ) {
+            " V telefonu běží jiná VPN — možná nepouští do domácí sítě. " +
+                "Povol v ní místní síť (LAN), nebo ji na chvíli vypni."
+        } else {
+            ""
         }
-    }
 
     private fun codeFor(e: Exception): String = when {
         e is IllegalStateException -> "P21-E2"
         e is java.net.NoRouteToHostException && e.message == "bez wifi" -> "P21-E3"
         e is java.net.ConnectException || e is java.net.NoRouteToHostException -> "P21-E4"
         e is java.net.SocketTimeoutException ->
-            if (org.linphone.twentyone.vpn.TsManager.lockdownDetected == true) {
+            if (ownLockdown()) {
                 "P21-E16"
             } else {
                 "P21-E5"
@@ -368,7 +455,7 @@ object TwentyOneProvisioning {
                 "ho na stejnou wifi jako miniserver a zkus to znovu."
             e is java.net.ConnectException || e is java.net.NoRouteToHostException ->
                 "[P21-E4] Na $target se přes $lastRoute nejde dostat — je " +
-                "telefon na stejné wifi jako miniserver?"
+                "telefon na stejné wifi jako miniserver?" + otherVpnNote()
             e is java.net.SocketTimeoutException -> describeTimeout(target)
             e is java.net.UnknownHostException ->
                 "[P21-E6] Adresu $target se nepodařilo najít."
@@ -380,20 +467,19 @@ object TwentyOneProvisioning {
     /** Timeout má tři různé příčiny — kód i text se volí podle toho, co
      *  se dá ZMĚŘIT, ne odhadem. */
     private fun describeTimeout(target: String): String {
-        val lockdown = org.linphone.twentyone.vpn.TsManager.lockdownDetected
         return when {
-            lockdown == true ->
+            ownLockdown() ->
                 "[P21-E16] Stahování blokuje systémové „Blokovat " +
                 "připojení bez VPN“. Vypni ho: Nastavení → VPN " +
                 "→ Phone21, pak naskenuj nový QR."
-            vpnUp() ->
+            org.linphone.twentyone.vpn.TsManager.isSystemVpnUp() ->
                 "[P21-E5] $target neodpovídá přes $lastRoute a tunel právě " +
                 "běží. Zkontroluj systémové „Blokovat připojení bez " +
                 "VPN“ u Phone21; když je vypnuté, půjde o izolaci " +
                 "klientů na wifi."
             else ->
                 "[P21-E5] $target neodpovídá přes $lastRoute (vypršel čas). " +
-                "Sedí adresa s tvojí sítí? Nemá wifi izolaci klientů?"
+                "Sedí adresa s tvojí sítí? Nemá wifi izolaci klientů?" + otherVpnNote()
         }
     }
 }

@@ -1,6 +1,9 @@
 /*
  * fork: stupeň přístupu přes privátní síť je jedna volba sdílená
  * s miniserverem — telefon ji tam zapíše a při otevření obrazovky přečte.
+ *
+ * Miniserver je v privátní síti: spojení jen přes TsHttp (ve vnitřním
+ * režimu přes relé, nikdy přímo — token by jinak odešel výchozí sítí).
  */
 package org.linphone.twentyone.vpn
 
@@ -16,6 +19,9 @@ object TsServerAccess {
     private const val TAG = "[Tunnel Access Sync]"
     private const val PORT = 8091
     private const val TIMEOUT_MS = 5000
+
+    /** Nejdéle čekat na relé vnitřního tunelu (brána je jeho cílem vždy). */
+    private const val RELAY_WAIT_MS = 5_000L
 
     enum class Result { OK, NO_TOKEN, NO_GATEWAY, UNAUTHORIZED, FAILED }
 
@@ -71,7 +77,7 @@ object TsServerAccess {
             var conn: HttpURLConnection? = null
             try {
                 val host = if (gateway.contains(':')) "[$gateway]" else gateway
-                conn = URL("http://$host:$PORT/pristup").openConnection() as HttpURLConnection
+                conn = TsHttp.open(URL("http://$host:$PORT/pristup"), RELAY_WAIT_MS)
                 conn.connectTimeout = TIMEOUT_MS
                 conn.readTimeout = TIMEOUT_MS
                 conn.requestMethod = method
@@ -81,7 +87,7 @@ object TsServerAccess {
                     conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
                     conn.outputStream.use { it.write(body.toByteArray()) }
                 }
-                when (conn.responseCode) {
+                when (TsHttp.responseCode(conn, "stupeň přístupu")) {
                     200 -> {
                         val text = conn.inputStream.bufferedReader().use { it.readText() }
                         level = fromServer(JSONObject(text).optString("level"))
@@ -89,6 +95,9 @@ object TsServerAccess {
                     }
                     401 -> result = Result.UNAUTHORIZED
                 }
+            } catch (e: TsHttp.RelayException) {
+                // zapsáno do deníku (P21-E23/E24) v TsHttp
+                Log.w("$TAG $method refused by the relay [${e.status}]")
             } catch (e: Exception) {
                 Log.w("$TAG $method failed: ${e.message}")
             } finally {
