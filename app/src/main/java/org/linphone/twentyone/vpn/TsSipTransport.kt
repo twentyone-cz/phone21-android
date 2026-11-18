@@ -96,33 +96,38 @@ object TsSipTransport {
         apply(core, TsModeController.modeInUse(), "start jádra")
     }
 
-    /** Relé (re)startovalo: převzít port a šifrování, nové spojení ohlásit
-     *  registrací. */
+    /** Relé (re)startovalo: převzít port a šifrování a nové spojení ohlásit
+     *  registrací (vždy — výpadek a návrat relé se v pozorovatelích může
+     *  slít do jedné změny a připravenost by registraci nezopakovala). */
     @WorkerThread
-    fun onRelayChanged(core: Core, portOrMediaChanged: Boolean) {
+    fun onRelayChanged(core: Core) {
         if (TsModeController.modeInUse() != TsModeController.Mode.INTERNAL) return
         if (TsModeController.isSwitching()) return
-        apply(core, TsModeController.Mode.INTERNAL, "relé změnilo port nebo šifrování")
-        if (!portOrMediaChanged) {
-            // stejný port: stačí nová registrace — relé se z ní dozví
-            // šifrované spojení knihovny
-            core.refreshRegisters()
-        }
+        val reRegistering = apply(core, TsModeController.Mode.INTERNAL, "relé (znovu) běží")
+        // Změnu trasy přeregistruje připravenost (vypnout → zapnout); jinak
+        // stačí obnova — relé se z ní dozví šifrované spojení knihovny.
+        if (!reRegistering) core.refreshRegisters()
         coreContext.tunnelReadinessManager.reevaluate("relé běží")
     }
 
+    /** Vrací true, když kvůli změně trasy vypnulo registraci (zapne ji
+     *  znovu připravenost). */
     @WorkerThread
-    fun apply(core: Core, mode: TsModeController.Mode, reason: String) {
-        try {
+    fun apply(core: Core, mode: TsModeController.Mode, reason: String): Boolean {
+        return try {
             when (mode) {
                 TsModeController.Mode.INTERNAL -> applyInternal(core, reason)
                 TsModeController.Mode.SYSTEM -> applySystem(core, reason)
-                TsModeController.Mode.OFF -> rememberTargets(core)
+                TsModeController.Mode.OFF -> {
+                    rememberTargets(core)
+                    false
+                }
             }
         } catch (e: Exception) {
             Log.e("$TAG Failed to configure accounts for [$mode]: $e")
             TwentyOneDiag.log(
                 "P21-TUN", "nastavení účtu pro režim %s selhalo: %s".format(mode, e.javaClass.simpleName))
+            false
         }
     }
 
@@ -143,7 +148,7 @@ object TsSipTransport {
             !np.isUpnpEnabled && np.stunServer.isNullOrEmpty()
 
     @WorkerThread
-    private fun applyInternal(core: Core, reason: String) {
+    private fun applyInternal(core: Core, reason: String): Boolean {
         rememberTargets(core)
         val identity = TsRelay.identity()
         val port = TsRelay.routePort()
@@ -160,7 +165,7 @@ object TsSipTransport {
         val route = Factory.instance().createAddress("sip:$RELAY_HOST:$port;transport=tls;lr")
         if (route == null) {
             Log.e("$TAG Cannot build relay route")
-            return
+            return false
         }
         for (account in private) {
             val params = account.params
@@ -264,10 +269,11 @@ object TsSipTransport {
             applied = null
         }
         if (reRegister) coreContext.tunnelReadinessManager.reevaluate("trasa účtu změněna")
+        return reRegister
     }
 
     @WorkerThread
-    private fun applySystem(core: Core, reason: String) {
+    private fun applySystem(core: Core, reason: String): Boolean {
         rememberTargets(core)
         var changed = false
         var reRegister = false
@@ -321,6 +327,7 @@ object TsSipTransport {
         }
         applied = Applied(TsModeController.Mode.SYSTEM, 0, false)
         if (reRegister) coreContext.tunnelReadinessManager.reevaluate("trasa účtu změněna")
+        return reRegister
     }
 
     /** Šifrování hlasu vrátit, jen když ho zapnul vnitřní režim. */

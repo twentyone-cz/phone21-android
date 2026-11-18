@@ -428,7 +428,6 @@ object TsRelay {
             clientSrtp = o.optBoolean("clientSrtp", false),
             generation = st.generation
         )
-        val old = info
         token = o.optString("httpToken", "").ifEmpty { null }
         info = newInfo
         runningTargets = targets
@@ -447,13 +446,10 @@ object TsRelay {
                 newInfo.generation)
         )
         publish(true)
-        val portChanged = old?.sipPort != newInfo.sipPort || old?.clientSrtp != newInfo.clientSrtp
         // Nové relé spojení s volací knihovnou nezná, dozví se ho z REGISTER
         // (bez něj nedoručí příchozí hovor). Změnu portu nebo šifrování
-        // musí nejdřív převzít účet (TsSipTransport ho přeregistruje sám).
-        coreContext.postOnCoreThread { core ->
-            TsSipTransport.onRelayChanged(core, portChanged)
-        }
+        // musí nejdřív převzít účet (TsSipTransport).
+        coreContext.postOnCoreThread { core -> TsSipTransport.onRelayChanged(core) }
     }
 
     private fun publish(up: Boolean) {
