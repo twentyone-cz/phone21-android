@@ -1,6 +1,14 @@
 /*
  * fork: obrazovka stavu tunelu. Odsud se také vyvolá systémový dialog
  * povolení VPN (VpnService.prepare musí přijít z aktivity).
+ *
+ * Režim tunelu (TsModeController) určuje stupeň přístupu: „jen hovory“ jede
+ * tunelem uvnitř appky a souhlas s VPN nepotřebuje (Připojit, přihlášení
+ * přes web — bez dialogu). Přechod na stupeň, který potřebuje systémovou
+ * VPN (miniserver, síť, synchronizace kontaktů), se ptá: potvrzení, když
+ * běží jiná VPN (21p.45), a systémový souhlas; při odmítnutí volba zůstane
+ * na „jen hovory“. Stupeň převzatý z miniserveru se ptá stejně a odmítnutí
+ * se zapíše zpátky na miniserver, ať sdílená volba odpovídá skutečnosti.
  */
 package org.linphone.twentyone.vpn
 
@@ -38,6 +46,26 @@ class TwentyOneTunnelFragment : Fragment() {
         private const val TAG_HINT = "twentyone_tunnel_hint"
         private const val TAG_LOGOUT = "twentyone_tunnel_logout"
         private const val TAG_WEB_LOGIN = "twentyone_tunnel_web_login"
+        private const val TAG_SYSTEM_ACCESS = "twentyone_tunnel_system_access"
+
+        // rozepsaný souhlas s VPN přes otočení obrazovky
+        private const val STATE_PENDING = "twentyone_pending_consent"
+        private const val STATE_PENDING_ACCESS = "twentyone_pending_access"
+        private const val STATE_PENDING_FROM_SERVER = "twentyone_pending_from_server"
+    }
+
+    /** Na co se čeká v systémovém dialogu souhlasu s VPN. */
+    private enum class Pending {
+        /** Připojit */
+        CONNECT,
+        /** přihlášení přes Moji síť */
+        WEB_LOGIN,
+        /** „Zapnout přístup“: zvolený stupeň chce systémovou VPN */
+        SYSTEM_ACCESS,
+        /** změna stupně z „jen hovory“ na miniserver/síť */
+        ACCESS,
+        /** zapnutí synchronizace kontaktů přes tunel */
+        SYNC
     }
 
     private lateinit var stateView: TextView
@@ -63,26 +91,57 @@ class TwentyOneTunnelFragment : Fragment() {
     private var hintView: TextView? = null
     private var logoutButton: Button? = null
     private var webLoginButton: Button? = null
+    private var systemAccessButton: Button? = null
+    private var syncSwitch: SwitchCompat? = null
 
-    // souhlas s VPN si vyžádalo přihlášení přes Moji síť
-    private var webLoginPending = false
+    // souhlas s VPN, na který se čeká (systémový dialog vrací výsledek sem)
+    private var pending: Pending? = null
+    private var pendingAccess: TsPreferences.TunnelAccess? = null
+    private var pendingFromServer = false
+
+    /** Běží dotaz na vyšší stupeň (potvrzení nebo souhlas) — převzetí
+     *  stupně z miniserveru se mezitím neptá podruhé. */
+    private var askingAccess = false
 
     private val vpnPermission = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val forceLogin = webLoginPending
-        webLoginPending = false
-        if (result.resultCode == Activity.RESULT_OK) {
-            TsManager.startService()
-            if (forceLogin || needsNewCode() || TsManager.loggedIn.value != true) {
-                TsManager.login(TsManager.prefs.controlUrl, null)
+        val what = pending ?: Pending.CONNECT
+        val access = pendingAccess
+        val fromServer = pendingFromServer
+        pending = null
+        pendingAccess = null
+        pendingFromServer = false
+        askingAccess = false
+        val ok = result.resultCode == Activity.RESULT_OK
+        when (what) {
+            Pending.CONNECT, Pending.WEB_LOGIN -> if (ok) {
+                TsManager.startService()
+                if (what == Pending.WEB_LOGIN || needsNewCode() || TsManager.loggedIn.value != true) {
+                    TsManager.login(TsManager.prefs.controlUrl, null)
+                }
+            } else {
+                Log.w("$TAG VPN permission was refused")
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "souhlas s VPN odmítnut — tunel zůstává vypnutý")
+                // trvale zapnutá jiná VPN: systém souhlas zamítne sám — říct proč
+                if (isAdded) TsConsentActivity.explainRefusal(requireContext()) { }
             }
-        } else {
-            Log.w("$TAG VPN permission was refused")
-            org.linphone.twentyone.TwentyOneDiag.log(
-                "P21-TUN", "souhlas s VPN odmítnut — tunel zůstává vypnutý")
-            // trvale zapnutá jiná VPN: systém souhlas zamítne sám — říct proč
-            if (isAdded) TsConsentActivity.explainRefusal(requireContext()) { }
+            Pending.SYSTEM_ACCESS -> if (ok) {
+                TsManager.startService()
+            } else {
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "souhlas s VPN odmítnut — hovory jedou dál vnitřním tunelem")
+                if (isAdded && !TsConsentActivity.explainRefusal(requireContext()) { }) {
+                    toast(R.string.twentyone_system_access_refused)
+                }
+            }
+            Pending.ACCESS -> if (ok && access != null) {
+                commitAccess(access, fromServer)
+            } else {
+                refuseAccess(fromServer)
+            }
+            Pending.SYNC -> if (ok) commitSync() else refuseSync()
         }
     }
 
@@ -117,6 +176,28 @@ class TwentyOneTunnelFragment : Fragment() {
         carSmsButton.setText(CarSmsRole.titleRes(requireContext()))
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Systémový dialog souhlasu přežije otočení obrazovky, fragment ne:
+        // bez tohohle by výsledek nevěděl, ke které volbě patří.
+        savedInstanceState?.let { st ->
+            pending = st.getString(STATE_PENDING)?.let { n ->
+                runCatching { Pending.valueOf(n) }.getOrNull()
+            }
+            pendingAccess = st.getString(STATE_PENDING_ACCESS)?.let { n ->
+                runCatching { TsPreferences.TunnelAccess.valueOf(n) }.getOrNull()
+            }
+            pendingFromServer = st.getBoolean(STATE_PENDING_FROM_SERVER, false)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        pending?.let { outState.putString(STATE_PENDING, it.name) }
+        pendingAccess?.let { outState.putString(STATE_PENDING_ACCESS, it.name) }
+        outState.putBoolean(STATE_PENDING_FROM_SERVER, pendingFromServer)
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -142,25 +223,26 @@ class TwentyOneTunnelFragment : Fragment() {
         // dva stupně nad výchozím stavem; vyšší v sobě obsahuje nižší
         accessServerSwitch.setOnCheckedChangeListener { view2, checked ->
             if (!view2.isPressed) return@setOnCheckedChangeListener
-            applyAccess(
+            requestAccess(
                 if (checked) {
                     TsPreferences.TunnelAccess.SERVER
                 } else {
                     TsPreferences.TunnelAccess.APP_ONLY
-                }
+                },
+                fromServer = false
             )
         }
         accessInternetSwitch.setOnCheckedChangeListener { view2, checked ->
             if (!view2.isPressed) return@setOnCheckedChangeListener
-            applyAccess(
+            requestAccess(
                 if (checked) {
                     TsPreferences.TunnelAccess.INTERNET
                 } else {
                     TsPreferences.TunnelAccess.SERVER
-                }
+                },
+                fromServer = false
             )
         }
-        updateAccessViews()
 
         // fork: kam se ukládají nové kontakty
         contactsLabel = view.findViewById(R.id.contacts_target_label)
@@ -170,21 +252,25 @@ class TwentyOneTunnelFragment : Fragment() {
         }
         updateContactsTarget()
 
-        // fork: pustit do tunelu i synchronizaci kontaktů
-        val syncSwitch = view.findViewById<SwitchCompat>(R.id.contacts_sync_tunnel_switch)
-        val syncHint = view.findViewById<TextView>(R.id.contacts_sync_tunnel_hint)
-        // při otevřeném tunelu pro všechny aplikace je volba zbytečná
-        val syncVisible = TwentyOneContactsTarget.davAppInstalled(requireContext()) &&
-            TsManager.prefs.tunnelAccess == TsPreferences.TunnelAccess.APP_ONLY
-        syncSwitch.visibility = if (syncVisible) View.VISIBLE else View.GONE
-        syncHint.visibility = if (syncVisible) View.VISIBLE else View.GONE
-        syncSwitch.isChecked = TsManager.prefs.contactsSyncViaTunnel
-        syncSwitch.setOnCheckedChangeListener { _, checked ->
-            TsManager.prefs.contactsSyncViaTunnel = checked
-            if (TsManager.vpnActive.value == true) {
-                TsManager.restartService()
+        // fork: pustit do tunelu i synchronizaci kontaktů. Je to cizí appka,
+        // takže „jen hovory“ se synchronizací jede systémovou VPN — zapnutí
+        // se ptá na souhlas, vypnutí přepne zpátky na vnitřní tunel samo
+        // (režim srovná posluchač předvoleb v TsModeController).
+        val sync = view.findViewById<SwitchCompat>(R.id.contacts_sync_tunnel_switch)
+        syncSwitch = sync
+        // stav přepínače je vždy ten uložený: obnova po otočení by jinak
+        // spustila posluchače a s ním i dotaz na souhlas znovu
+        sync.isSaveEnabled = false
+        sync.isChecked = TsManager.prefs.contactsSyncViaTunnel
+        sync.setOnCheckedChangeListener { _, checked ->
+            if (checked == TsManager.prefs.contactsSyncViaTunnel) return@setOnCheckedChangeListener
+            if (checked && crossesToSystem(sync = true)) {
+                requestSync()
+            } else {
+                TsManager.prefs.contactsSyncViaTunnel = checked
             }
         }
+        updateAccessViews()
 
         // fork: běh na pozadí (výjimka z optimalizace baterie)
         batteryLabel = view.findViewById(R.id.battery_label)
@@ -284,13 +370,18 @@ class TwentyOneTunnelFragment : Fragment() {
                 // službu a nic by se nestalo (příznak přihlášení zůstává
                 // viset). Jediná cesta zpět je nový kód.
                 needsNewCode() -> startNewCode()
-                TsManager.vpnActive.value == true -> TsManager.stopService()
+                // cesta k miniserveru podle režimu (systémové rozhraní,
+                // nebo vnitřní tunel s relé)
+                TsManager.transportUp.value == true -> TsManager.stopService()
                 else -> connect()
             }
         }
 
         TsManager.state.observe(viewLifecycleOwner) { updateState() }
         TsManager.vpnActive.observe(viewLifecycleOwner) { updateState() }
+        TsManager.transportUp.observe(viewLifecycleOwner) { updateState() }
+        TsManager.mode.observe(viewLifecycleOwner) { updateState() }
+        TsModeController.systemBlock.observe(viewLifecycleOwner) { updateState() }
         TsManager.directConnection.observe(viewLifecycleOwner) { updateState() }
         TsManager.tailnetAddress.observe(viewLifecycleOwner) { updateState() }
         TsManager.networkPaused.observe(viewLifecycleOwner) { updateState() }
@@ -378,6 +469,24 @@ class TwentyOneTunnelFragment : Fragment() {
                 )
             }
 
+        // Zvolený stupeň chce systémovou VPN, hovory zatím jedou vnitřním
+        // tunelem: tady (a ve výstraze) se dá souhlas dát.
+        systemAccessButton = (column.findViewWithTag<View>(TAG_SYSTEM_ACCESS) as? Button)
+            ?: MaterialButton(requireContext()).apply {
+                tag = TAG_SYSTEM_ACCESS
+                setText(R.string.twentyone_system_access_blocked_action)
+                visibility = View.GONE
+                setOnClickListener { enableSystemAccess() }
+                column.addView(
+                    this,
+                    column.indexOfChild(toggleButton) + 1,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (8 * density).toInt() }
+                )
+            }
+
         // přihlášení v prohlížeči jako druhá cesta do sítě vedle QR kódu
         webLoginButton = (column.findViewWithTag<View>(TAG_WEB_LOGIN) as? Button)
             ?: MaterialButton(requireContext()).apply {
@@ -400,6 +509,8 @@ class TwentyOneTunnelFragment : Fragment() {
         hintView = null
         logoutButton = null
         webLoginButton = null
+        systemAccessButton = null
+        syncSwitch = null
         super.onDestroyView()
     }
 
@@ -554,29 +665,51 @@ class TwentyOneTunnelFragment : Fragment() {
      * (Android dovolí jen jednu). Běží-li nějaká (nebo Phone21 o místo
      * přišlo), nejdřív se zeptat — viz TsConsentActivity.takeoverConfirmTexts.
      * Detekce jiné VPN slouží jen k tomuhle dotazu, nikdy jako zábrana.
+     * [onCancel] = uživatel nepotvrdil (zrušit, zpět, klepnutí vedle).
      */
-    private fun confirmOtherVpn(action: () -> Unit) {
+    private fun confirmOtherVpn(onCancel: () -> Unit = {}, action: () -> Unit) {
         val ctx = requireContext()
         val texts = TsConsentActivity.takeoverConfirmTexts(ctx)
         if (texts == null) {
             action()
             return
         }
+        var proceed = false
         android.app.AlertDialog.Builder(ctx)
             .setTitle(texts.first)
             .setMessage(texts.second)
             .setPositiveButton(R.string.twentyone_slot_lost_action) { _, _ ->
-                if (!isAdded) return@setPositiveButton
-                org.linphone.twentyone.TwentyOneDiag.log(
-                    "P21-TUN", "uživatel potvrdil převzetí místa pro VPN")
-                action()
+                proceed = true
             }
             .setNegativeButton(R.string.twentyone_other_vpn_confirm_cancel, null)
+            .setOnDismissListener {
+                if (!isAdded) return@setOnDismissListener
+                if (proceed) {
+                    org.linphone.twentyone.TwentyOneDiag.log(
+                        "P21-TUN", "uživatel potvrdil převzetí místa pro VPN")
+                    action()
+                } else {
+                    onCancel()
+                }
+            }
             .show()
     }
 
+    /** Stupeň „jen hovory“ bez synchronizace = vnitřní tunel, bez VPN. */
+    private fun internalWanted(): Boolean =
+        TsModeController.desiredAccessMode(requireContext()) == TsModeController.Mode.INTERNAL
+
     /** Přihlášení přes Moji síť: odkaz se otevře v prohlížeči (browseToUrl). */
     private fun webLogin() {
+        if (internalWanted()) {
+            // vnitřní tunel: žádný souhlas s VPN, jiná VPN běží dál
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "telefon mimo síť — přihlášení přes Moji síť v prohlížeči (jen hovory, bez VPN)"
+            )
+            TsManager.startService(userInitiated = false)
+            TsManager.login(TsManager.prefs.controlUrl, null)
+            return
+        }
         confirmOtherVpn { doWebLogin() }
     }
 
@@ -586,7 +719,7 @@ class TwentyOneTunnelFragment : Fragment() {
         )
         val intent = VpnService.prepare(requireContext())
         if (intent != null) {
-            webLoginPending = true
+            pending = Pending.WEB_LOGIN
             vpnPermission.launch(intent)
             return
         }
@@ -599,6 +732,16 @@ class TwentyOneTunnelFragment : Fragment() {
             startNewCode()
             return
         }
+        if (internalWanted()) {
+            // vnitřní tunel: Připojit bez dialogu VPN a bez prepare()
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "připojení na pokyn uživatele — jen hovory, bez VPN")
+            TsManager.startService(userInitiated = false)
+            if (TsManager.loggedIn.value != true) {
+                TsManager.login(TsManager.prefs.controlUrl, null)
+            }
+            return
+        }
         // Ztracené místo pro VPN se tu NEruší: zruší ho až služba, když
         // rozhraní opravdu stojí.
         confirmOtherVpn { doConnect() }
@@ -607,6 +750,7 @@ class TwentyOneTunnelFragment : Fragment() {
     private fun doConnect() {
         val intent = VpnService.prepare(requireContext())
         if (intent != null) {
+            pending = Pending.CONNECT
             vpnPermission.launch(intent)
         } else {
             TsManager.startService()
@@ -616,6 +760,131 @@ class TwentyOneTunnelFragment : Fragment() {
         }
     }
 
+    /** „Zapnout přístup“: zvolený stupeň chce systémovou VPN, hovory zatím
+     *  jedou vnitřním tunelem. Stejně jako výstraha: potvrzení a souhlas. */
+    private fun enableSystemAccess() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "uživatel chce zapnout přístup přes systémovou VPN (Konexe)")
+        confirmOtherVpn {
+            val intent = VpnService.prepare(requireContext())
+            if (intent != null) {
+                pending = Pending.SYSTEM_ACCESS
+                vpnPermission.launch(intent)
+            } else {
+                TsManager.startService()
+            }
+        }
+    }
+
+    /**
+     * Přejde změna z vnitřního tunelu na systémovou VPN? Jen když uživatel
+     * tunel chce — vypnutý tunel se souhlasem zeptá až při Připojit.
+     */
+    private fun crossesToSystem(
+        access: TsPreferences.TunnelAccess? = null,
+        sync: Boolean? = null
+    ): Boolean {
+        if (!TsManager.wantsRunning()) return false
+        val ctx = requireContext()
+        val p = TsManager.prefs
+        val a = access ?: p.tunnelAccess
+        val s = (sync ?: p.contactsSyncViaTunnel) && TwentyOneContactsTarget.davAppInstalled(ctx)
+        val next = if (a == TsPreferences.TunnelAccess.APP_ONLY && !s) {
+            TsModeController.Mode.INTERNAL
+        } else {
+            TsModeController.Mode.SYSTEM
+        }
+        return next == TsModeController.Mode.SYSTEM &&
+            TsModeController.desiredAccessMode(ctx) == TsModeController.Mode.INTERNAL
+    }
+
+    /**
+     * Změna stupně přístupu (přepínač, nebo převzetí z miniserveru). Z „jen
+     * hovory“ na miniserver/síť jen se souhlasem s VPN (a potvrzením, když
+     * běží jiná VPN); zpátky na „jen hovory“ bez ptaní.
+     */
+    private fun requestAccess(access: TsPreferences.TunnelAccess, fromServer: Boolean) {
+        if (!crossesToSystem(access = access)) {
+            applyAccess(access, push = !fromServer)
+            if (fromServer) toast(R.string.twentyone_access_sync_pulled, Toast.LENGTH_SHORT)
+            return
+        }
+        askingAccess = true
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN",
+            "stupeň %s (%s) chce systémovou VPN — ptám se na souhlas".format(
+                access, if (fromServer) "z miniserveru" else "volba uživatele"))
+        confirmOtherVpn(onCancel = { refuseAccess(fromServer) }) {
+            val intent = VpnService.prepare(requireContext())
+            if (intent != null) {
+                pending = Pending.ACCESS
+                pendingAccess = access
+                pendingFromServer = fromServer
+                vpnPermission.launch(intent)
+            } else {
+                commitAccess(access, fromServer)
+            }
+        }
+    }
+
+    /** Souhlas je: stupeň platí a systémové místo se smí vzít. */
+    private fun commitAccess(access: TsPreferences.TunnelAccess, fromServer: Boolean) {
+        askingAccess = false
+        // NAPŘED: srovnání režimu (posluchač předvoleb) jinak místo nevezme
+        TsModeController.approveSystem()
+        applyAccess(access, push = !fromServer)
+        if (fromServer && isAdded) toast(R.string.twentyone_access_sync_pulled, Toast.LENGTH_SHORT)
+    }
+
+    /** Bez souhlasu: zůstává „jen hovory“; převzatý stupeň se na
+     *  miniserveru vrátí, ať sdílená volba odpovídá skutečnosti. */
+    private fun refuseAccess(fromServer: Boolean) {
+        askingAccess = false
+        val kept = TsManager.prefs.tunnelAccess
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN",
+            "souhlas se systémovou VPN nedán — stupeň zůstává %s%s".format(
+                kept, if (fromServer) ", zapisuji ho zpátky na miniserver" else ""))
+        if (fromServer) pushAccess(kept)
+        if (!isAdded) return
+        updateAccessViews()
+        toast(R.string.twentyone_access_refused)
+    }
+
+    private fun requestSync() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "synchronizace kontaktů přes tunel chce systémovou VPN — ptám se na souhlas")
+        confirmOtherVpn(onCancel = { refuseSync() }) {
+            val intent = VpnService.prepare(requireContext())
+            if (intent != null) {
+                pending = Pending.SYNC
+                vpnPermission.launch(intent)
+            } else {
+                commitSync()
+            }
+        }
+    }
+
+    private fun commitSync() {
+        // NAPŘED: srovnání režimu (posluchač předvoleb) jinak místo nevezme
+        TsModeController.approveSystem()
+        TsManager.prefs.contactsSyncViaTunnel = true
+        syncSwitch?.isChecked = true
+    }
+
+    private fun refuseSync() {
+        org.linphone.twentyone.TwentyOneDiag.log(
+            "P21-TUN", "souhlas se systémovou VPN nedán — synchronizace kontaktů zůstává mimo tunel")
+        if (!isAdded) return
+        syncSwitch?.isChecked = false
+        toast(R.string.twentyone_access_refused)
+    }
+
+    private fun toast(res: Int, length: Int = Toast.LENGTH_LONG) {
+        if (!isAdded) return
+        Toast.makeText(requireContext(), res, length).show()
+    }
+
     private fun updateState() {
         val state = TsManager.state.value ?: TsManager.State.NO_STATE
         // Odříznutí NENÍ odhlášení: nesmí tvrdit, že telefon do sítě
@@ -623,14 +892,22 @@ class TwentyOneTunnelFragment : Fragment() {
         // síti (viz isPaused) — mimo RUNNING je příznak nevěrohodný.
         val paused = isPaused(state)
         val needsCode = needsNewCode()
-        // Jádro může běžet i bez rozhraní (místo pro VPN drží jiná
-        // aplikace): pak „Připojeno“ ani trasa neplatí — hovory nechodí.
-        val noSlot = TsManager.slotLost.value == true && TsManager.vpnActive.value != true
+        val mode = TsManager.mode.value ?: TsModeController.Mode.OFF
+        val transport = TsManager.transportUp.value == true
+        // Systémový režim: jádro může běžet i bez rozhraní (místo pro VPN
+        // drží jiná aplikace) — pak „Připojeno“ ani trasa neplatí, hovory
+        // nechodí. Vnitřní tunel místo pro VPN nepotřebuje.
+        val noSlot = mode == TsModeController.Mode.SYSTEM &&
+            TsManager.slotLost.value == true && TsManager.vpnActive.value != true
 
         stateView.text = getString(
             when {
                 paused -> R.string.twentyone_tunnel_state_paused
                 noSlot && !needsCode -> R.string.twentyone_tunnel_state_stopped
+                // uzel je v síti, ale cesta k miniserveru (rozhraní / relé)
+                // ještě nestojí — hovory zatím nejdou
+                state == TsManager.State.RUNNING && !transport && TsManager.wantsRunning() ->
+                    R.string.twentyone_tunnel_state_connecting
                 state == TsManager.State.RUNNING -> R.string.twentyone_tunnel_state_connected
                 state == TsManager.State.STARTING -> R.string.twentyone_tunnel_state_connecting
                 needsCode -> R.string.twentyone_tunnel_state_needs_login
@@ -662,6 +939,7 @@ class TwentyOneTunnelFragment : Fragment() {
         // kreditu a zpátky by ho pustil až nový kód).
         logoutButton?.visibility = if (needsCode) View.VISIBLE else View.GONE
         webLoginButton?.visibility = if (needsCode) View.VISIBLE else View.GONE
+        systemAccessButton?.visibility = if (systemBlocked() && !needsCode) View.VISIBLE else View.GONE
 
         val address = TsManager.tailnetAddress.value
         addressView.visibility = if (address.isNullOrEmpty() || noSlot) View.GONE else View.VISIBLE
@@ -672,16 +950,26 @@ class TwentyOneTunnelFragment : Fragment() {
         toggleButton.setText(
             when {
                 needsCode -> R.string.twentyone_tunnel_needs_login_action
-                TsManager.vpnActive.value == true -> R.string.twentyone_tunnel_disconnect
+                transport -> R.string.twentyone_tunnel_disconnect
                 else -> R.string.twentyone_tunnel_connect
             }
         )
         updateAccessViews()
     }
 
+    /** Zvolený stupeň chce systémovou VPN, ale hovory jedou vnitřním
+     *  tunelem (chybí souhlas, místo drží jiná VPN, nebo o něj Phone21
+     *  přišlo). Jen když uživatel tunel chce. */
+    private fun systemBlocked(): Boolean =
+        TsManager.wantsRunning() &&
+            (TsModeController.systemBlock.value ?: TsModeController.SystemBlock.NONE) !=
+            TsModeController.SystemBlock.NONE
+
     /**
-     * Věta pod stavem. Pořadí: odříznutí → telefon mimo síť → ztracené
-     * místo pro VPN → co appka ví o bráně (to zajímá jen toho, kdo chce provoz ven přes miniserver).
+     * Věta pod stavem. Pořadí: odříznutí → telefon mimo síť → zvolený
+     * stupeň čeká na systémovou VPN (hovory jedou vnitřním tunelem) →
+     * ztracené místo pro VPN (jen bez vnitřního tunelu) → co appka ví
+     * o bráně (to zajímá jen toho, kdo chce provoz ven přes miniserver).
      */
     private fun hintFor(
         state: TsManager.State,
@@ -700,7 +988,19 @@ class TwentyOneTunnelFragment : Fragment() {
             return getString(R.string.twentyone_tunnel_needs_login_hint) + "\n" +
                 getString(R.string.twentyone_tunnel_needs_login_no_code)
         }
-        if (TsManager.slotLost.value == true) {
+        if (systemBlocked()) {
+            return getString(
+                when (TsModeController.systemBlock.value) {
+                    TsModeController.SystemBlock.OTHER_VPN ->
+                        R.string.twentyone_system_access_blocked_other_vpn
+                    TsModeController.SystemBlock.SLOT_LOST ->
+                        R.string.twentyone_system_access_blocked_slot_lost
+                    else -> R.string.twentyone_system_access_blocked_no_consent
+                }
+            )
+        }
+        // „Hovory nechodí“ jen bez vnitřního tunelu (ten místo nepotřebuje)
+        if (TsManager.slotLost.value == true && TsManager.mode.value != TsModeController.Mode.INTERNAL) {
             return getString(
                 if (TsManager.otherVpnActive(requireContext())) {
                     R.string.twentyone_slot_lost_hint_other_vpn
@@ -709,8 +1009,10 @@ class TwentyOneTunnelFragment : Fragment() {
                 }
             )
         }
+        // provoz ven přes bránu jde jen systémovou VPN
         if (state != TsManager.State.RUNNING ||
-            TsManager.prefs.tunnelAccess != TsPreferences.TunnelAccess.INTERNET
+            TsManager.prefs.tunnelAccess != TsPreferences.TunnelAccess.INTERNET ||
+            TsManager.mode.value != TsModeController.Mode.SYSTEM
         ) {
             return null
         }
@@ -767,32 +1069,43 @@ class TwentyOneTunnelFragment : Fragment() {
         // jednovláknový worker jako PATCH výše, takže se provede až po něm.
         TsManager.refreshStatus()
         updateAccessViews()
+        // Přechod mezi vnitřním tunelem a systémovou VPN srovná posluchač
+        // předvoleb (TsModeController); přestavba systémového rozhraní
+        // (miniserver ↔ síť) jen tehdy, když systémová VPN zůstává.
         if (TsManager.vpnActive.value == true) {
             TsManager.restartService()
         }
-        if (push) {
-            TsServerAccess.push(TsManager.prefs, access) { result ->
-                val msg = when (result) {
-                    TsServerAccess.Result.OK -> null
-                    TsServerAccess.Result.NO_TOKEN, TsServerAccess.Result.NO_GATEWAY ->
-                        R.string.twentyone_access_sync_no_token
-                    TsServerAccess.Result.UNAUTHORIZED -> R.string.twentyone_access_sync_unauthorized
-                    TsServerAccess.Result.FAILED -> R.string.twentyone_access_sync_failed
-                }
-                if (msg != null && isAdded) {
-                    Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
-                }
+        if (push) pushAccess(access)
+    }
+
+    /** Zapsat stupeň na miniserver (sdílená volba). */
+    private fun pushAccess(access: TsPreferences.TunnelAccess) {
+        TsServerAccess.push(TsManager.prefs, access) { result ->
+            val msg = when (result) {
+                TsServerAccess.Result.OK -> null
+                TsServerAccess.Result.NO_TOKEN, TsServerAccess.Result.NO_GATEWAY ->
+                    R.string.twentyone_access_sync_no_token
+                TsServerAccess.Result.UNAUTHORIZED -> R.string.twentyone_access_sync_unauthorized
+                TsServerAccess.Result.FAILED -> R.string.twentyone_access_sync_failed
+            }
+            if (msg != null && isAdded) {
+                Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    /** Volba změněná v ovládání miniserveru se při návratu na obrazovku převezme. */
+    /**
+     * Volba změněná v ovládání miniserveru se při návratu na obrazovku
+     * převezme. Stupeň, který potřebuje systémovou VPN, se místo nevezme
+     * potichu: zeptá se (requestAccess) a odmítnutí zapíše zpátky.
+     */
     private fun pullAccess() {
+        if (askingAccess || pending != null) return
         TsServerAccess.pull(TsManager.prefs) { result, level ->
             if (result != TsServerAccess.Result.OK || level == null || !isAdded) return@pull
+            if (askingAccess || pending != null) return@pull
             if (level != TsManager.prefs.tunnelAccess) {
-                applyAccess(level, push = false)
-                Toast.makeText(requireContext(), R.string.twentyone_access_sync_pulled, Toast.LENGTH_SHORT).show()
+                requestAccess(level, fromServer = true)
             }
         }
     }
@@ -803,6 +1116,18 @@ class TwentyOneTunnelFragment : Fragment() {
         accessServerSwitch.isChecked = wanted != TsPreferences.TunnelAccess.APP_ONLY
         accessInternetSwitch.isChecked = wanted == TsPreferences.TunnelAccess.INTERNET
         accessInternetSwitch.isEnabled = wanted != TsPreferences.TunnelAccess.APP_ONLY
+        // synchronizace kontaktů jen u „jen hovory“ (vyšší stupně pouštějí
+        // do sítě všechny appky) a jen s nainstalovanou synchronizační appkou
+        val syncVisible = wanted == TsPreferences.TunnelAccess.APP_ONLY &&
+            TwentyOneContactsTarget.davAppInstalled(requireContext())
+        syncSwitch?.let { sw ->
+            sw.visibility = if (syncVisible) View.VISIBLE else View.GONE
+            if (sw.isChecked != TsManager.prefs.contactsSyncViaTunnel) {
+                sw.isChecked = TsManager.prefs.contactsSyncViaTunnel
+            }
+        }
+        view?.findViewById<TextView>(R.id.contacts_sync_tunnel_hint)?.visibility =
+            if (syncVisible) View.VISIBLE else View.GONE
         scopeLabel.text = getString(
             when {
                 wanted == TsPreferences.TunnelAccess.INTERNET &&
@@ -812,6 +1137,10 @@ class TwentyOneTunnelFragment : Fragment() {
                     R.string.twentyone_access_internet
                 wanted == TsPreferences.TunnelAccess.SERVER ->
                     R.string.twentyone_access_server
+                // „jen hovory“ tunelem uvnitř appky — systémová VPN se nebere
+                TsManager.mode.value == TsModeController.Mode.INTERNAL &&
+                    !systemBlocked() ->
+                    R.string.twentyone_tunnel_scope_app_internal
                 else -> R.string.twentyone_tunnel_scope_app
             }
         )

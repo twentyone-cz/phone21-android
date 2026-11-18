@@ -3,9 +3,14 @@
  * musí přijít z aktivity, takže tahle se otevře, zeptá se, přihlásí telefon
  * do privátní sítě přiloženým klíčem a zase zmizí.
  *
- * Druhá cesta (EXTRA_RECLAIM, tlačítko „Zapnout Phone21“ ve výstraze):
- * vzít si zpátky místo pro VPN, o které Phone21 přišlo. Běží-li VPN jiné
+ * Druhá cesta (EXTRA_RECLAIM, tlačítko „Zapnout Phone21“ / „Zapnout
+ * přístup“ ve výstraze): vzít si zpátky místo pro VPN, o které Phone21
+ * přišlo, nebo ho vzít pro zvolený vyšší stupeň. Běží-li VPN jiné
  * aplikace, nejdřív se zeptá — VpnService.prepare() ji vypne.
+ *
+ * Stupeň „jen hovory“ (vnitřní tunel) místo pro VPN nepotřebuje: obě cesty
+ * pak jedou bez dialogu a bez VpnService.prepare() — jiná VPN zůstane
+ * zapnutá a tunel pojede přes ni.
  */
 package org.linphone.twentyone.vpn
 
@@ -64,14 +69,25 @@ class TsConsentActivity : AppCompatActivity() {
          */
         fun explainRefusal(context: Context, onDone: () -> Unit): Boolean {
             if (!TsManager.otherVpnActive(context)) return false
+            // Uživatel tunel chce a hovory jedou vnitřním tunelem: věta
+            // „hovory nechodí“ by lhala — chybí jen přístup pro ostatní appky.
+            val callsKeepGoing = TsManager.wantsRunning() &&
+                TsModeController.modeInUse() == TsModeController.Mode.INTERNAL
             org.linphone.twentyone.TwentyOneDiag.log(
                 "P21-E21",
                 "běží jiná VPN a souhlas neprošel — zrušen, nebo je ta VPN " +
-                    "v systému trvale zapnutá a Phone21 ji nepřebije"
+                    "v systému trvale zapnutá a Phone21 ji nepřebije" +
+                    if (callsKeepGoing) " (hovory jedou dál vnitřním tunelem)" else ""
             )
             AlertDialog.Builder(context)
                 .setTitle(R.string.twentyone_other_vpn_blocked_title)
-                .setMessage(R.string.twentyone_other_vpn_blocked_message)
+                .setMessage(
+                    if (callsKeepGoing) {
+                        R.string.twentyone_other_vpn_blocked_message_calls_ok
+                    } else {
+                        R.string.twentyone_other_vpn_blocked_message
+                    }
+                )
                 .setPositiveButton(R.string.twentyone_other_vpn_blocked_settings) { _, _ ->
                     try {
                         context.startActivity(
@@ -123,8 +139,20 @@ class TsConsentActivity : AppCompatActivity() {
             // proces může být čerstvý (klepnutí na výstrahu po jeho zabití)
             // a TsManager.startService potřebuje nastartovaný TsManager
             TsManager.ensureStarted(applicationContext)
+            if (internalWanted()) {
+                // Stará výstraha (ztracené místo z doby před vnitřním
+                // tunelem) při stupni „jen hovory“: místo pro VPN není
+                // potřeba — jen zapnout tunel, výstrahy zruší srovnání režimu.
+                org.linphone.twentyone.TwentyOneDiag.log(
+                    "P21-TUN", "výstraha k místu pro VPN při stupni jen hovory — zapínám vnitřní tunel bez souhlasu")
+                started = true
+                TsNotifications.cancelSlotLost(applicationContext)
+                TsManager.startService(userInitiated = false)
+                finish()
+                return
+            }
             org.linphone.twentyone.TwentyOneDiag.log(
-                "P21-TUN", "uživatel chce Phone21 zpátky (ztracené místo pro VPN)")
+                "P21-TUN", "uživatel chce systémovou VPN zpátky (ztracené místo nebo vyšší stupeň přístupu)")
             reclaimWhenStateKnown()
             return
         }
@@ -135,8 +163,18 @@ class TsConsentActivity : AppCompatActivity() {
             return
         }
         TsManager.ensureStarted(applicationContext)
+        if (internalWanted()) {
+            // vnitřní tunel: žádný dialog VPN, rovnou přihlásit klíčem
+            connect(withConsent = false)
+            finish()
+            return
+        }
         confirmThenPrepare()
     }
+
+    /** Stupeň „jen hovory“ bez synchronizace kontaktů = vnitřní tunel. */
+    private fun internalWanted(): Boolean =
+        TsModeController.desiredAccessMode(applicationContext) == TsModeController.Mode.INTERNAL
 
     /**
      * Čerstvý proces zná stav jádra až z první notifikace (do té doby
@@ -231,11 +269,19 @@ class TsConsentActivity : AppCompatActivity() {
         TsManager.startService()
     }
 
-    private fun connect() {
+    /** [withConsent] = prošel souhlas s VPN (systémové místo se smí vzít);
+     *  vnitřní tunel ho nepotřebuje. */
+    private fun connect(withConsent: Boolean = true) {
         started = true
         org.linphone.twentyone.TwentyOneDiag.log(
-            "P21-TUN", "souhlas s VPN udělen — přihlašuji klíčem z QR")
-        TsManager.startService()
+            "P21-TUN",
+            if (withConsent) {
+                "souhlas s VPN udělen — přihlašuji klíčem z QR"
+            } else {
+                "jen hovory: přihlašuji klíčem z QR bez souhlasu s VPN (vnitřní tunel)"
+            }
+        )
+        TsManager.startService(userInitiated = withConsent)
         TsManager.login(controlUrl, authKey)
         // účet i síť jsou nastavené — teď má smysl říct si o běh na pozadí
         org.linphone.twentyone.TwentyOneBattery.offerOnce(this)
