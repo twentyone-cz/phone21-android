@@ -316,7 +316,8 @@ class TunnelReadinessManager {
         }
         val now = android.os.SystemClock.elapsedRealtime()
         val ctx = coreContext.context
-        if (TsManager.otherVpnActive(ctx)) {
+        val otherVpn = TsManager.otherVpnState(ctx)
+        if (otherVpn == true) {
             // Před Androidem 11 se vlastní a cizí VPN rozlišuje jen podle
             // našeho rozhraní; dobíhající rozhraní z přestavby tunelu by
             // mohlo chvíli vypadat cize — tam teprve druhé pozorování v témže
@@ -333,10 +334,21 @@ class TunnelReadinessManager {
             }
             return
         }
+        // Bez aktivní sítě nejde říct, jestli místo nedrží jiná VPN (třeba
+        // se právě přepojuje): místo nebrat, příští vyhodnocení to zkusí znovu.
+        if (otherVpn == null) return
         otherVpnSeenAt = 0L
         if (now - lastAutoStart < 30_000) return
-        if (android.net.VpnService.prepare(coreContext.context) != null) return
         lastAutoStart = now
+        if (android.net.VpnService.prepare(coreContext.context) != null) {
+            // Souhlas chybí (bez souhlasu prepare() místo nebere): hovory
+            // vnitřním tunelem s výzvou „Zapnout přístup“, ne systémový
+            // režim bez rozhraní.
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "rozhraní tunelu neběží a souhlas s VPN chybí — hovory pojedou vnitřním tunelem")
+            TsModeController.onConsentMissing("souhlas s VPN chybí")
+            return
+        }
         org.linphone.twentyone.TwentyOneDiag.log(
             "P21-TUN",
             "rozhraní tunelu neběží a souhlas je udělen — startuji službu"
@@ -355,6 +367,23 @@ class TunnelReadinessManager {
         if (now - lastAutoStart < 30_000) return
         lastAutoStart = now
         TsModeController.reconcile("vnitřní tunel neběží")
+    }
+
+    private var lastSystemReconcile = 0L
+    private var systemReconcileGap = RECONCILE_MS
+
+    /**
+     * Srovnat režim směrem k systémové VPN: hned, pak s rostoucím odstupem
+     * (30 s … 10 min), dokud vnitřní režim trvá — třeba když systém start
+     * služby ze zadu nepustí (P21-E17), ať deník nezaplní každých 30 s.
+     */
+    private fun maybeReconcileSystem() {
+        if (!TsManager.wantsRunning()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastSystemReconcile != 0L && now - lastSystemReconcile < systemReconcileGap) return
+        if (lastSystemReconcile != 0L) systemReconcileGap = (systemReconcileGap * 2).coerceAtMost(600_000L)
+        lastSystemReconcile = now
+        TsModeController.reconcile("jádro běží a síť je ověřená — stupeň chce systémovou VPN")
     }
 
     /** Přepínání režimu: registrace vypnout a nezapínat, dokud přepnutí
@@ -392,6 +421,19 @@ class TunnelReadinessManager {
                 TsModeController.Mode.INTERNAL -> maybeStartInternal()
                 TsModeController.Mode.OFF -> {}
             }
+        }
+        // Vnitřní režim, ale stupeň chce systémovou VPN a nic ji neblokuje:
+        // srovnání bez pokynu uživatele místo nebere, dokud jádro neběží
+        // a síť není ověřená (podmínky 21p.45). Teď už ano — srovnat.
+        val awaitsSystem = mode == TsModeController.Mode.INTERNAL &&
+            TsModeController.desired() == TsModeController.Mode.SYSTEM &&
+            TsModeController.systemBlockNow() == TsModeController.SystemBlock.NONE
+        if (!awaitsSystem) {
+            // přepnuto, výzva, jiný stupeň: příště zase hned
+            lastSystemReconcile = 0L
+            systemReconcileGap = RECONCILE_MS
+        } else if (verified && state == TsManager.State.RUNNING && !TsModeController.isSwitching()) {
+            maybeReconcileSystem()
         }
         // rozhraní stojí: případné první pozorování „jiné VPN“ patřilo
         // dobíhajícímu vlastnímu rozhraní, příští výpadek počítá znovu

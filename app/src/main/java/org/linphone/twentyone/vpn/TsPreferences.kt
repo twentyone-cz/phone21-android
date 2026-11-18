@@ -27,6 +27,7 @@ class TsPreferences(context: Context) {
         private const val KEY_RELAY_PRIVATE_SIP_PORT = "relay_private_sip_port"
         private const val KEY_RELAY_CLIENT_SRTP = "relay_client_srtp"
         private const val KEY_SYSTEM_BLOCK_NOTIFIED = "system_block_notified"
+        private const val KEY_OTHER_VPN_HOLD = "other_vpn_hold"
 
         /** Klíče, jejichž změna mění požadovaný režim tunelu (TsModeController). */
         val MODE_KEYS = setOf(KEY_TUNNEL_ACCESS, KEY_CONTACTS_SYNC)
@@ -234,5 +235,18 @@ class TsPreferences(context: Context) {
         get() = prefs.getString(KEY_SYSTEM_BLOCK_NOTIFIED, "").orEmpty()
         set(value) {
             prefs.edit().putString(KEY_SYSTEM_BLOCK_NOTIFIED, value).apply()
+        }
+
+    /**
+     * Zvolený stupeň chce systémovou VPN, ale appka viděla, že místo drží
+     * jiná VPN (TsModeController). Platí, dokud uživatel nedá pokyn
+     * (souhlas, „Zapnout přístup“) nebo nezmění stupeň — i když jiná VPN
+     * mezitím na chvíli zmizí (přepojení) a i po zabití procesu: jinak by
+     * si ho appka sama vzala a tu VPN vypnula. Zapisuje se synchronně.
+     */
+    var otherVpnHold: Boolean
+        get() = prefs.getBoolean(KEY_OTHER_VPN_HOLD, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_OTHER_VPN_HOLD, value).commit()
         }
 }

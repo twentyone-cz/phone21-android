@@ -379,6 +379,9 @@ object TsManager {
     /** Uzel je v síti přihlášený (rozhraní ještě nemusí stát). */
     fun isLoggedIn(): Boolean = currentState == State.RUNNING
 
+    /** Zrcadlo [endpointVerified] čitelné z libovolného vlákna. */
+    fun isEndpointVerified(): Boolean = verifiedNow
+
     /** Chce uživatel tunel (WantRunning)? Synchronní, viz [wantRunningNow]. */
     fun wantsRunning(): Boolean = wantRunningNow
 
@@ -396,14 +399,16 @@ object TsManager {
      * stojícím rozhraní, třeba při přechodu wifi → mobilní data).
      *
      * Výjimka z „nikdy jako podmínka“: automatický start
-     * (TunnelReadinessManager.maybeStartSystem) si podle ní místo NEVEZME —
+     * (TunnelReadinessManager.maybeStartSystem) a srovnání režimu
+     * (TsModeController: jiná VPN drží místo lepivě, bez pokynu se místo
+     * bere jen při [otherVpnState] == false) si podle ní místo NEVEZMOU —
      * to je bezpečný směr, pokyn uživatele nikdy neblokuje.
      */
     fun otherVpnActive(context: Context): Boolean = otherVpnState(context) == true
 
     /** Jako [otherVpnActive], ale null = nejde říct (žádná aktivní síť:
      *  offline, úspora dat, jiná VPN se právě znovu připojuje). */
-    private fun otherVpnState(context: Context): Boolean? {
+    fun otherVpnState(context: Context): Boolean? {
         return try {
             val cm = context.getSystemService(ConnectivityManager::class.java)
                 ?: return null
@@ -1843,12 +1848,16 @@ object TsManager {
                         val vpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
                         val before = appNetIsVpn
                         appNetIsVpn = vpn
-                        // jiná VPN, kvůli které stupeň jede bez systémové
-                        // VPN, zmizela: srovnat (vezme místo jen se souhlasem)
+                        // Jiná VPN, kvůli které stupeň jede bez systémové
+                        // VPN, zmizela z výchozí sítě. Žádné srovnání:
+                        // často se jen přepojuje (výměna serveru, wifi ↔
+                        // data) a prepare() by jí místo vzalo. Místo drží
+                        // dál, zpátky jen na pokyn uživatele (jako 21p.45).
                         if (before == true && !vpn &&
                             TsModeController.systemBlockNow() == TsModeController.SystemBlock.OTHER_VPN
                         ) {
-                            TsModeController.reconcile("jiná VPN zmizela")
+                            org.linphone.twentyone.TwentyOneDiag.log(
+                                "P21-TUN", "VPN jiné aplikace zmizela z výchozí sítě — Phone21 čeká na pokyn uživatele (Zapnout přístup)")
                         }
                         if (before != vpn && internalNetSource && before != null) {
                             org.linphone.twentyone.TwentyOneDiag.log(
