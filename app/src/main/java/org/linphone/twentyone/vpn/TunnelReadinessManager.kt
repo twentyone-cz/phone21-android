@@ -240,14 +240,53 @@ class TunnelReadinessManager {
     }
 
     private var lastAutoStart = 0L
+    private var otherVpnSeenAt = 0L
 
     // Jádro tunelu běží i bez rozhraní (po vlastních socketech) — po
     // restartu telefonu nebo násilném ukončení službu rozhraní nikdo
     // nespustí a registrace by mlela io error. Když je souhlas s VPN
     // už udělený, služba se spustí sama; bez souhlasu se nic neděje
     // (dialog patří obrazovce Privátní síť / QR cestě).
+    //
+    // POZOR: VpnService.prepare() NENÍ neškodný dotaz. Aplikaci, která
+    // souhlas už má, rovnou přidělí místo pro VPN — a VPN jiné aplikace
+    // tím potichu vypne (Android dovolí jen jednu). Proto se sem smí jen
+    // tehdy, když uživatel tunel opravdu chce (WantRunning) a místo
+    // nepřišlo ztracené: po odebrání (onRevoke) nebo neúspěšném establish
+    // se Phone21 vrací VÝHRADNĚ na pokyn uživatele (Připojit, Moje síť,
+    // QR, tlačítko v notifikaci).
+    //
+    // Ani onRevoke ale nemusí přijít: když jiná VPN naběhla, zatímco Phone21
+    // nemělo živou službu (restart telefonu, zabitý proces), systém nemá
+    // komu ho poslat. Proto se automatický start před prepare() ještě
+    // podívá, jestli aktivní síť nedrží VPN jiné aplikace — a když ano,
+    // místo nevezme, jen ho ohlásí jako ztracené (bezpečný směr: pokyn
+    // uživatele tahle kontrola nikdy neblokuje).
     private fun maybeStartService() {
+        if (!TsManager.wantsRunning() || TsManager.isSlotLost()) {
+            otherVpnSeenAt = 0L
+            return
+        }
         val now = android.os.SystemClock.elapsedRealtime()
+        val ctx = coreContext.context
+        if (TsManager.otherVpnActive(ctx)) {
+            // Před Androidem 11 se vlastní a cizí VPN rozlišuje jen podle
+            // našeho rozhraní; dobíhající rozhraní z přestavby tunelu by
+            // mohlo chvíli vypadat cize — tam teprve druhé pozorování v témže
+            // výpadku rozhraní (5–90 s po prvním; starší se nepočítá, jinak
+            // by zbytek z dávné přestavby udělal z další přestavby poplach).
+            val age = now - otherVpnSeenAt
+            val sure = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R ||
+                (otherVpnSeenAt != 0L && age in 5_000L..90_000L)
+            if (sure) {
+                otherVpnSeenAt = 0L
+                TsManager.markSlotLost(ctx, "při automatickém startu drží místo jiná VPN")
+            } else if (otherVpnSeenAt == 0L || age > 90_000L) {
+                otherVpnSeenAt = now
+            }
+            return
+        }
+        otherVpnSeenAt = 0L
         if (now - lastAutoStart < 30_000) return
         if (android.net.VpnService.prepare(coreContext.context) != null) return
         lastAutoStart = now
@@ -274,6 +313,9 @@ class TunnelReadinessManager {
         if (verified && state == TsManager.State.RUNNING && !vpnUp) {
             maybeStartService()
         }
+        // rozhraní stojí: případné první pozorování „jiné VPN“ patřilo
+        // dobíhajícímu vlastnímu rozhraní, příští výpadek počítá znovu
+        if (vpnUp) otherVpnSeenAt = 0L
         // Bez postaveného rozhraní nemá registrace kudy jít — dřív se
         // zapínala i tak a padala na io error.
         // Pozastavená síť (prázdná mapa protějšků) je pro registraci totéž
@@ -283,6 +325,11 @@ class TunnelReadinessManager {
         val facts = "stav=%s přihlášení=%s ověření=%s rozhraní=%s pozastaveno=%s".format(
             state, loggedIn, verified, vpnUp, paused)
         if (reconcile) {
+            // znění výstrahy o ztraceném místě pro VPN: jiná VPN se mohla
+            // ukázat až po odebrání (jen tiché přepsání, žádné nové pípnutí)
+            if (TsManager.isSlotLost()) {
+                TsManager.refreshSlotLostAlert(coreContext.context)
+            }
             ready = available
             coreContext.postOnCoreThread { reconcileAccounts(available, facts) }
             return

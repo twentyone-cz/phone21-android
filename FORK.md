@@ -61,6 +61,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/java/org/linphone/ui/main/settings/fragment/SettingsFragment.kt`, `res/layout/settings_fragment.xml` | řádky Konexe a Diagnostika | vpn/diagnostika |
 | `app/src/main/res/xml/data_extraction_rules.xml` | záloha aplikace vypnuta | bezpečnost |
 | `app/src/main/AndroidManifest.xml` | cleartext HTTP, `allowBackup=false` | provisioning/bezpečnost |
+| `app/src/main/AndroidManifest.xml` | TsConsentActivity bez přestavby při otočení (`configChanges`), přijímač odmetení upozornění „Hovory nechodí“ | vpn |
 
 Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
 bez konfliktů.

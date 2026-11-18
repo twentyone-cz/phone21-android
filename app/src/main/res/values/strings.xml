@@ -198,6 +198,23 @@
     <string name="twentyone_tunnel_login_url_message">Síť chce dokončit přihlášení na téhle adrese, ale v telefonu není čím ji otevřít. Zkopíruj si ji a otevři na jiném zařízení:\n\n%s</string>
     <string name="twentyone_tunnel_login_url_copy">Zkopírovat adresu</string>
     <string name="twentyone_tunnel_login_url_close">Zavřít</string>
+    <string name="twentyone_tunnel_alert_channel">Výpadek připojení k privátní síti</string>
+    <string name="twentyone_slot_lost_other_vpn_title">Hovory nechodí — běží jiná VPN</string>
+    <string name="twentyone_slot_lost_other_vpn_message">Android dovolí jen jednu VPN a teď ji drží jiná aplikace. Dokud běží, Phone21 hovory nepřijme ani neuskuteční. Zapnout Phone21 tu druhou VPN vypne (pokud není v nastavení trvale zapnutá).</string>
+    <string name="twentyone_slot_lost_title">Hovory nechodí — Phone21 je odpojené</string>
+    <string name="twentyone_slot_lost_message">Připojení k privátní síti bylo vypnuto. Klepni na Zapnout Phone21.</string>
+    <string name="twentyone_slot_lost_action">Zapnout Phone21</string>
+    <string name="twentyone_slot_lost_hint_other_vpn">V telefonu běží VPN jiné aplikace. Android dovolí jen jednu, takže hovory teď nechodí. Připojit ji vypne (pokud není v nastavení trvale zapnutá).</string>
+    <string name="twentyone_slot_lost_hint">Připojení k privátní síti vypnul systém nebo jiná aplikace. Hovory nechodí, dokud nepřipojíš.</string>
+    <string name="twentyone_other_vpn_confirm_title">Vypnout jinou VPN?</string>
+    <string name="twentyone_other_vpn_confirm_message">V telefonu běží VPN jiné aplikace. Android dovolí jen jednu — zapnutím Phone21 se ta druhá vypne a ostatní aplikace pak pojedou bez ní.</string>
+    <string name="twentyone_other_vpn_confirm_cancel">Zrušit</string>
+    <string name="twentyone_slot_lost_confirm_title">Zapnout Phone21?</string>
+    <string name="twentyone_slot_lost_confirm_message">Připojení k privátní síti vypnul systém nebo jiná aplikace. Pokud v telefonu běží VPN jiné aplikace, zapnutím Phone21 se vypne — Android dovolí jen jednu.</string>
+    <string name="twentyone_other_vpn_blocked_title">Phone21 se nezapnulo</string>
+    <string name="twentyone_other_vpn_blocked_message">V telefonu běží VPN jiné aplikace a souhlas s připojením Phone21 neprošel. Buď byla žádost zrušena, nebo je ta VPN v nastavení trvale zapnutá a systém ji vypnout nedovolí. Dokud běží, Phone21 hovory nepřijme ani neuskuteční. Vypni ji v nastavení VPN a pak Phone21 připoj.</string>
+    <string name="twentyone_other_vpn_blocked_settings">Nastavení VPN</string>
+    <string name="twentyone_qr_join_other_vpn">[P21-E18] Telefon se do privátní sítě nepřipojil, protože v telefonu běží VPN jiné aplikace a Android dovolí jen jednu. Vypni ji, nebo při dalším pokusu potvrď její vypnutí, a naskenuj QR znovu.</string>
     <string name="twentyone_screen_landing" translatable="false">obrazovka P21-U1</string>
     <string name="twentyone_screen_tunnel" translatable="false">obrazovka P21-S1</string>
     <string name="twentyone_screen_diag" translatable="false">obrazovka P21-S2</string>

@@ -15,6 +15,8 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
+import android.os.Process
 import androidx.lifecycle.MutableLiveData
 import java.io.ByteArrayInputStream
 import java.util.concurrent.Executors
@@ -59,6 +61,10 @@ object TsManager {
      *  hodiny hystereze se posunou na jeho začátek (NEnulují se). Bez toho
      *  by se po dlouhé pauze rozhodovalo ze zastaralého razítka. */
     private const val ROUTE_SAMPLE_GAP_MS = 60_000L
+
+    /** Za jak dlouho po ztrátě místa pro VPN srovnat znění výstrahy: jiná
+     *  VPN si místo vezme dřív, než postaví rozhraní. */
+    private const val SLOT_LOST_RECHECK_MS = 4_000L
 
     enum class State(val value: Int) {
         NO_STATE(0),
@@ -144,6 +150,29 @@ object TsManager {
     @Volatile
     private var directNow = false
 
+    /** Synchronní zrcadlo WantRunning z předvoleb jádra. PATCH v
+     *  setWantRunning běží asynchronně na workeru a notifikace Prefs chodí
+     *  ještě později — kdo se hned po onRevoke ptá „chce uživatel tunel?“,
+     *  musí dostat odpověď bez čekání na jádro. */
+    @Volatile
+    private var wantRunningNow = false
+
+    /** Pořadí posledního nepotvrzeného setWantRunning (0 = žádný nečeká).
+     *  Dokud PATCH neproběhl, notifikace Prefs nesou starou hodnotu a zrcadlo
+     *  nesmí přepsat. */
+    private val wantRunningSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile
+    private var wantRunningPendingSeq = 0
+
+    /** Zrcadlo [slotLost] pro čtenáře mimo hlavní vlákno (viz TsPreferences.slotLost). */
+    @Volatile
+    private var slotLostNow = false
+
+    /** markSlotLost / clearSlotLost se volají z hlavního vlákna, z binder
+     *  vlákna (onRevoke) i z vlákna knihovny tunelu — nesmí se proplést. */
+    private val slotLock = Any()
+
     /** Co podle posledního vědomí appky leží v předvolbách jádra. Plní se
      *  z notifikace Prefs a po každém úspěšném PATCH — srovnání se pak dá
      *  spustit i ze statusu, kdy žádná notifikace Prefs nechodí. */
@@ -169,6 +198,10 @@ object TsManager {
 
     /** Síť běží, ale nemá jediný protějšek = odříznutí (chybí kredit). */
     val networkPaused = MutableLiveData(false)
+
+    /** Phone21 přišlo o místo pro VPN (Android dovolí jen jednu) a zpátky
+     *  ho vezme jen pokyn uživatele. Přežívá zabití procesu. */
+    val slotLost = MutableLiveData(false)
 
     /** Co appka ví o bráně v síti (tři stavy pro obrazovku i deník). */
     enum class GatewayState {
@@ -226,6 +259,13 @@ object TsManager {
         if (app != null) return
         appContext = context.applicationContext
         preferences = TsPreferences(appContext)
+        // ztracené místo pro VPN musí přežít zabití procesu: bez tohohle
+        // by si ho nový proces vzal zpátky sám (a vypnul cizí VPN)
+        slotLostNow = preferences?.slotLost == true
+        slotLost.postValue(slotLostNow)
+        // výstrahu mohl smazat restart telefonu, aktualizace appky nebo
+        // násilné zastavení (viz remindSlotLost)
+        if (slotLostNow) remindSlotLost(appContext)
 
         val ctx = TsAppContext(appContext)
         tsAppContext = ctx
@@ -254,6 +294,181 @@ object TsManager {
 
     /** Uzel je v síti přihlášený (rozhraní ještě nemusí stát). */
     fun isLoggedIn(): Boolean = currentState == State.RUNNING
+
+    /** Chce uživatel tunel (WantRunning)? Synchronní, viz [wantRunningNow]. */
+    fun wantsRunning(): Boolean = wantRunningNow
+
+    /** Phone21 přišlo o místo pro VPN; čitelné z libovolného vlákna. */
+    fun isSlotLost(): Boolean = slotLostNow
+
+    /**
+     * Drží teď VPN jiná aplikace? Jen pro znění textů a pro potvrzovací
+     * dialog — NIKDY jako podmínka, jestli se smí něco spustit.
+     * Bere se jen aktivní síť TÉHLE aplikace (getAllNetworks by viděl i VPN
+     * jiných profilů). ownerUid je od Androidu 11 (R); cizí aplikace v něm
+     * vidí INVALID_UID, naše vlastní VPN naše uid. Starší Android: jiná VPN
+     * může být aktivní sítí jen tehdy, když naše rozhraní nestojí
+     * (vpnActiveNow, ne isTunnelUp — stav jádra opouští RUNNING i při
+     * stojícím rozhraní, třeba při přechodu wifi → mobilní data).
+     *
+     * Výjimka z „nikdy jako podmínka“: automatický start
+     * (TunnelReadinessManager.maybeStartService) si podle ní místo NEVEZME —
+     * to je bezpečný směr, pokyn uživatele nikdy neblokuje.
+     */
+    fun otherVpnActive(context: Context): Boolean = otherVpnState(context) == true
+
+    /** Jako [otherVpnActive], ale null = nejde říct (žádná aktivní síť:
+     *  offline, úspora dat, jiná VPN se právě znovu připojuje). */
+    private fun otherVpnState(context: Context): Boolean? {
+        return try {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+                ?: return null
+            val network = cm.activeNetwork ?: return null
+            val caps = cm.getNetworkCapabilities(network) ?: return null
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                caps.ownerUid != Process.myUid()
+            } else {
+                !vpnActiveNow
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Phone21 přišlo o místo pro VPN (onRevoke, establish vrátil null).
+     * Uloží se natrvalo, zapíše do deníku a při PŘECHODU do stavu se jednou
+     * ohlásí notifikací. Od téhle chvíle si appka místo sama nebere.
+     */
+    fun markSlotLost(context: Context, reason: String) {
+        synchronized(slotLock) {
+            val ctx = context.applicationContext
+            val wasLost = slotLostNow
+            slotLostNow = true
+            try {
+                (preferences ?: TsPreferences(ctx)).setSlotLost(reason)
+            } catch (e: Exception) {
+                Log.e("$TAG Failed to persist lost VPN slot: $e")
+            }
+            slotLost.postValue(true)
+            // Bez „jiná-vpn“: v onRevoke ji druhá aplikace ještě nepostavila
+            // (a aktivní sítí bývá pořád naše), takže by tu skoro vždy stálo
+            // „ne“. Kdy se jiná VPN opravdu ukáže, zapíše refreshSlotLostAlert.
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-E20",
+                "Phone21 přišlo o místo pro VPN: %s — zpátky jen na pokyn uživatele"
+                    .format(reason)
+            )
+            if (!wasLost) {
+                slotLostOtherVpn = null
+                vpnGoneReposted = false
+                TsNotifications.notifySlotLost(ctx, silent = false)
+                // za pár sekund už jiná VPN stojí: znění výstrahy a deník
+                // srovnat se skutečností (tiše, bez dalšího pípnutí)
+                android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed({ refreshSlotLostAlert(ctx) }, SLOT_LOST_RECHECK_MS)
+            }
+        }
+    }
+
+    /** Pořadové číslo startu telefonu (nouzově čas startu v minutách). */
+    fun bootId(context: Context): Long {
+        val count = try {
+            android.provider.Settings.Global.getInt(
+                context.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)
+        } catch (_: Exception) {
+            -1
+        }
+        if (count >= 0) return count.toLong()
+        return -((System.currentTimeMillis() -
+            android.os.SystemClock.elapsedRealtime()) / 60_000L) - 1
+    }
+
+    /**
+     * Výstraha zmizela, ale uživatel ji neodsunul: Android notifikace appky
+     * maže při restartu telefonu, aktualizaci appky i násilném zastavení.
+     * Bez zopakování by telefon tiše nebral hovory a nikde by to nebylo
+     * vidět. Odsunutí uživatelem (deleteIntent → TsSlotLostDismissReceiver)
+     * platí do restartu telefonu.
+     */
+    private fun remindSlotLost(ctx: Context) {
+        try {
+            val p = preferences ?: TsPreferences(ctx)
+            if (p.slotLostDismissedBoot == bootId(ctx)) return
+            if (TsNotifications.isSlotLostShown(ctx)) return
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "Phone21 pořád nemá místo pro VPN a výstraha zmizela — znovu")
+            TsNotifications.notifySlotLost(ctx, silent = true)
+        } catch (e: Exception) {
+            Log.e("$TAG Failed to repeat lost VPN slot alert: $e")
+        }
+    }
+
+    /** Co výstraha naposled věděla o jiné VPN (null = zatím nic). */
+    @Volatile
+    private var slotLostOtherVpn: Boolean? = null
+
+    /** Odsunutá výstraha se po zmizení jiné VPN vrátila (jednou za ztrátu). */
+    @Volatile
+    private var vpnGoneReposted = false
+
+    /**
+     * Pravidelná kontrola (a jednou chvíli po ztrátě místa). Znovu NEPOSÍLÁ,
+     * jen tiše přepíše znění. Jediná výjimka: jiná VPN právě zmizela a
+     * výstrahu uživatel odsunul — teď by návrat nic nestál, tak se jednou
+     * za ztrátu místa (tiše) vrátí.
+     */
+    fun refreshSlotLostAlert(context: Context) {
+        if (!slotLostNow) return
+        val ctx = context.applicationContext
+        // bez aktivní sítě nejde říct, jestli jiná VPN zmizela — nic neměnit
+        val other = otherVpnState(ctx) ?: return
+        val before = slotLostOtherVpn
+        slotLostOtherVpn = other
+        if (other && before != true) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "místo pro VPN drží VPN jiné aplikace")
+        }
+        if (before == true && !other) {
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "VPN jiné aplikace zmizela — Phone21 čeká na pokyn uživatele")
+            if (!vpnGoneReposted && !TsNotifications.isSlotLostShown(ctx)) {
+                vpnGoneReposted = true
+                TsNotifications.notifySlotLost(ctx, silent = true)
+                return
+            }
+        }
+        TsNotifications.refreshSlotLostWording(ctx)
+    }
+
+    /** Volá JEN služba tunelu, když rozhraní opravdu stojí (establish OK).
+     *  [stillValid] se ověří pod zámkem: odvolání (onRevoke na binder
+     *  vlákně), které přišlo mezitím, má přednost. */
+    fun clearSlotLost(context: Context, stillValid: () -> Boolean) {
+        synchronized(slotLock) {
+            if (!slotLostNow || !stillValid()) return
+            val ctx = context.applicationContext
+            slotLostNow = false
+            slotLostOtherVpn = null
+            try {
+                (preferences ?: TsPreferences(ctx)).clearSlotLost()
+            } catch (e: Exception) {
+                Log.e("$TAG Failed to clear lost VPN slot: $e")
+            }
+            slotLost.postValue(false)
+            TsNotifications.cancelSlotLost(ctx)
+            org.linphone.twentyone.TwentyOneDiag.log(
+                "P21-TUN", "místo pro VPN zase drží Phone21 — rozhraní stojí")
+        }
+    }
+
+    /** WantRunning z předvoleb jádra (notifikace Prefs, GET prefs). */
+    private fun noteWantRunning(prefsObject: JSONObject) {
+        if (wantRunningPendingSeq != 0) return
+        if (!prefsObject.has("WantRunning")) return
+        wantRunningNow = prefsObject.optBoolean("WantRunning", wantRunningNow)
+    }
 
     /**
      * Skutečný stav jádra tunelu (z jeho notifikací). Na rozdíl od [state]
@@ -306,6 +521,7 @@ object TsManager {
             }
             updateEndpointFromPrefs(fullPrefs)
             fullPrefs.put("WantRunning", true)
+            wantRunningNow = true
             // Do startu nesmí jít staré ID výstupního uzlu: po přihlášení
             // k jiné síti by ukazovalo na neexistující uzel a jádro by
             // vynutilo 0.0.0.0/0 do černé díry. Uzel se nasadí až srovnáním
@@ -389,11 +605,18 @@ object TsManager {
     }
 
     fun setWantRunning(wantRunning: Boolean) {
+        // SYNCHRONNĚ a jako první: PATCH níž běží asynchronně a hned po
+        // onRevoke se podle tohohle rozhoduje, jestli si tunel smí vzít
+        // místo pro VPN zpátky (TunnelReadinessManager.maybeStartService).
+        wantRunningNow = wantRunning
+        val seq = wantRunningSeq.incrementAndGet()
+        wantRunningPendingSeq = seq
         worker.execute {
             val masked = JSONObject()
                 .put("WantRunning", wantRunning)
                 .put("WantRunningSet", true)
             callLocalApi("PATCH", "prefs", masked.toString().toByteArray())
+            if (wantRunningPendingSeq == seq) wantRunningPendingSeq = 0
         }
     }
 
@@ -507,6 +730,11 @@ object TsManager {
     }
 
     private fun onNotify(notify: JSONObject) {
+        // WantRunning PŘED stavem: posluchači stavu (připravenost) ho čtou
+        // hned po doručení a úvodní notifikace nese obojí naráz.
+        if (notify.has("Prefs")) {
+            notify.optJSONObject("Prefs")?.let { noteWantRunning(it) }
+        }
         if (notify.has("State")) {
             val newState = State.fromInt(notify.getInt("State"))
             Log.i("$TAG Backend state is now [$newState]")
@@ -1287,7 +1515,9 @@ object TsManager {
         worker.execute {
             callLocalApi("GET", "prefs", null)?.let {
                 try {
-                    updateEndpointFromPrefs(JSONObject(String(it, Charsets.UTF_8)))
+                    val current = JSONObject(String(it, Charsets.UTF_8))
+                    noteWantRunning(current)
+                    updateEndpointFromPrefs(current)
                 } catch (e: Exception) {
                     Log.e("$TAG Failed to parse tunnel prefs: $e")
                 }
