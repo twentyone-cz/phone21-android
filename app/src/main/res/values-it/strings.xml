@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE resources [
-<!ENTITY appName "Linphone">
+<!ENTITY appName "Phone21">
 ]>
 <resources>
     <string name="sip_address">Indirizzo Di registrazione SIP</string>
@@ -23,7 +23,7 @@
     <string name="call_transfer_in_progress_toast">Trasferimento della chiamata in corso</string>
     <string name="assistant_third_party_sip_account_warning_explanation">Alcune funzioni richiedono un account &appName;, come i messaggi di gruppo o le videoconferenze…\n\nQueste funzioni non sono disponibili se accedi con un account SIP di terze parti.\n\nPer abilitarle in un progetto commerciale, contattaci.</string>
     <string name="assistant_account_register_unavailable_no_push_warning">Le notifiche push non sembrano disponibili sul tuo dispositivo, ma sono indispensabili per creare un account nell\'app mobile.\n\nTi invitiamo a creare un account sulla nostra piattaforma web:</string>
-    <string name="assistant_permissions_record_audio_title"><b>Registrazione audio:</b> per farti sentire dall\'interlocutore e registrare messaggi vocali.</string>
+    <string name="assistant_permissions_record_audio_title"><b>Mikrofon:</b> aby tě bylo při hovoru slyšet.</string>
     <string name="assistant_forgotten_password_subtitle">Scegli come recuperare il tuo account.</string>
     <string name="content_description_go_back_icon">Torna indietro</string>
     <string name="assistant_recover_phone_number_account_unavailable_no_push_warning">Le notifiche push non sembrano disponibili sul tuo dispositivo, ma sono indispensabili per recuperare un account associato a un numero di telefono nell\'app mobile.</string>
@@ -31,7 +31,7 @@
     <string name="assistant_login_third_party_sip_account">Usa un account SIP di terze parti</string>
     <string name="help_about_contribute_translations_title">Contribuisci alla traduzione di &appName;</string>
     <string name="assistant_dialog_phone_number_validation_not_available_register_button_label">Registrati con un\'email</string>
-    <string name="assistant_permissions_post_notifications_title"><b>Invio notifiche:</b> per avvisarti quando arriva un messaggio o una chiamata.</string>
+    <string name="assistant_permissions_post_notifications_title"><b>Oznámení:</b> aby ti přišlo upozornění na hovor a zprávu.</string>
     <string name="assistant_permissions_access_local_network_title"><b>Accesso alla rete locale (facoltativo):</b> necessario da Android 17 per potersi collegare a un server sulla rete locale.</string>
     <string name="help_error_checking_version_toast_message">Si è verificato un errore durante la ricerca di aggiornamenti</string>
     <string name="help_quit_title">Chiudi l\'app</string>
@@ -41,7 +41,6 @@
     <string name="help_troubleshooting_share_logs">Condividi i log</string>
     <string name="help_troubleshooting_app_version_title">Versione dell\'app</string>
     <string name="help_troubleshooting_sdk_version_title">Versione dell\'SDK</string>
-    <string name="help_troubleshooting_firebase_project_title">ID progetto Firebase</string>
     <string name="help_troubleshooting_share_logs_dialog_title">Condividi il collegamento ai log di debug con…</string>
     <string name="help_troubleshooting_show_config_file">Mostra la configurazione</string>
     <string name="settings_title">Impostazioni</string>
@@ -443,7 +442,7 @@
     <string name="menu_copy_chat_message">Copia</string>
     <string name="menu_share_selected_item">Condividi</string>
     <string name="content_description_chat_remove_attachment">Rimuovi questo file dagli allegati</string>
-    <string name="welcome_page_2_title">Sicura</string>
+    <string name="welcome_page_2_title">Bezpečné</string>
     <string name="notification_in_call_foreground_service_error_title">Il tuo interlocutore non ti sente.</string>
     <string name="notification_in_call_foreground_service_error_message">Tocca questa notifica per risolvere il problema</string>
     <string name="export_file_to_documents_error_toast">Errore durante l\'esportazione del file nei documenti</string>
@@ -463,9 +462,9 @@
     <string name="assistant_create_account_using_email_on_our_web_platform">Crea un account con la tua email su:</string>
     <string name="assistant_sip_account_lime_algorithm_hint">I valori ammessi sono: c25519, c448, c25519k512, c25519mlk512 e c448mlk1024</string>
     <string name="assistant_third_party_sip_account_create_linphone_account">Preferisco creare un account &appName;</string>
-    <string name="assistant_permissions_title">Concedi le autorizzazioni</string>
+    <string name="assistant_permissions_title">Povolení (obrazovka P21-U0)</string>
     <string name="assistant_permissions_grant_all_of_them">OK</string>
-    <string name="assistant_permissions_skip_permissions">Più tardi</string>
+    <string name="assistant_permissions_skip_permissions">Až později</string>
     <string name="assistant_recover_email_account_label">Un\'email</string>
     <string name="assistant_recover_phone_number_account_label">Un numero di telefono</string>
     <string name="drawer_menu_add_account">Aggiungi un account</string>
@@ -863,10 +862,10 @@
     <string name="welcome_page_title">Benvenuto</string>
     <string name="welcome_page_subtitle">in &appName;</string>
     <string name="notification_keep_app_alive_description">Questa notifica tiene viva l\'app quando è in secondo piano</string>
-    <string name="welcome_page_1_message">Un\'app di comunicazione <b>sicura</b>, <b>open source</b> e <b>francese</b>.</string>
-    <string name="welcome_page_2_message">Le tue comunicazioni sono al sicuro grazie alla <b>cifratura end-to-end</b>.</string>
-    <string name="welcome_page_3_title">Open source</string>
-    <string name="welcome_page_3_message">Un\'applicazione <b>gratuita</b> e open source dal <b>2001</b>.</string>
+    <string name="welcome_page_1_message">Tvoje telefonní číslo s tebou kamkoli — přes vlastní miniserver.</string>
+    <string name="welcome_page_2_message">Spojení telefonu s miniserverem je <b>šifrované</b> a nevede přes cizí servery.</string>
+    <string name="welcome_page_3_title">Bez účtů</string>
+    <string name="welcome_page_3_message">Žádná registrace, žádný e-mail. Nastavení <b>jedním QR kódem</b>.</string>
     <string name="new_account_configured_toast">Nuovo account configurato</string>
     <string name="export_file_to_media_store_error_toast">Errore durante l\'esportazione del file nella galleria</string>
     <string name="assistant_dialog_general_terms_label">condizioni generali</string>
@@ -885,10 +884,10 @@
     <string name="assistant_account_register_unexpected_error">Si è verificato un errore imprevisto. Riprova più tardi.</string>
     <string name="assistant_account_login_forbidden_error">Nome utente o password errati</string>
     <string name="assistant_account_login_error">Accesso non riuscito: codice di errore %s</string>
-    <string name="assistant_permissions_read_contacts_title"><b>Lettura contatti:</b> per mostrare la rubrica e vedere chi usa &appName;.</string>
-    <string name="assistant_permissions_subtitle">Per sfruttare &appName; al meglio servono le autorizzazioni seguenti:</string>
+    <string name="assistant_permissions_read_contacts_title"><b>Kontakty:</b> aby se u hovorů a zpráv zobrazovala jména místo čísel.</string>
+    <string name="assistant_permissions_subtitle">Aby &appName; fungoval, potřebuje tahle oprávnění. Android se pak zeptá ještě na <b>zařízení v okolí</b> — to je Bluetooth, aby šel hovor přehodit do sluchátek nebo autorádia.</string>
     <string name="assistant_dialog_phone_number_validation_not_available_message">La verifica del numero di telefono non è disponibile: usa la creazione dell\'account tramite email.</string>
-    <string name="assistant_permissions_access_camera_title"><b>Accesso alla fotocamera:</b> per riprendere il video durante videochiamate e conferenze.</string>
+    <string name="assistant_permissions_access_camera_title"><b>Fotoaparát:</b> na načtení QR kódu, kterým se aplikace nastaví. Video se nikam neposílá.</string>
     <string name="assistant_forgotten_password_title">Recupero dell\'account</string>
     <string name="settings_security_enable_vfs_dialog_confirmation_message">Dopo l\'attivazione dovrai riavviare l\'app.\nDa quel momento tutti i dati saranno cifrati e accessibili solo tramite l\'applicazione.\n\nAttenzione: l\'operazione non è reversibile.</string>
     <string name="settings_security_prevent_screenshots_title">Impedisci la registrazione dello schermo</string>
