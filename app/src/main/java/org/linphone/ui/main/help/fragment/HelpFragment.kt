@@ -87,8 +87,8 @@ class HelpFragment : GenericMainFragment() {
         }
 
         binding.setLicensesClickListener {
-            val url = getString(R.string.website_open_source_licences_usage_url)
-            openUrlInBrowser(url)
+            // fork: licence aplikace a knihoven přímo z APK
+            org.linphone.twentyone.TwentyOneLicenses.show(requireContext())
         }
 
         binding.setTranslateClickListener {
