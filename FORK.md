@@ -26,7 +26,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `keystore.properties` | SMAZÁN z repa, v `.gitignore` (spolu s `local.properties`); vyrábí ho `scripts/release.sh` | build |
 | `README.md`, `.github/ISSUE_TEMPLATE/*`, `metadata/en-US/*` | vlastní texty | brand |
 | `CHANGELOG.md` | SMAZÁN | brand |
-| `app/src/main/res/values*/strings.xml` | entita `&appName;` (13 souborů); texty úvodu a oprávnění (15 souborů) | brand |
+| `app/src/main/res/values*/strings.xml` | entita `&appName;` (14 souborů); texty úvodu a oprávnění (16 souborů) | brand |
 | `app/src/main/res/values/colors.xml`, `themes.xml` | paleta | brand |
 | `app/src/main/res/values-v31`, `values-v33`, `values-night-v31`, `values-night-v33` (`themes.xml`) | splash bez obrázku značky; `drawable/linphone_splashscreen_branding.png` SMAZÁN | brand |
 | `app/src/main/res/mipmap*`, splash drawables | ikony (PNG upstreamu smazány, `mipmap-anydpi` na `drawable/twentyone_launcher_foreground.xml`) | brand |
@@ -50,7 +50,7 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/AndroidManifest.xml` | bez služby FirebaseMessaging a bez meta-data Android Auto | bez Google |
 | `app/proguard-rules.pro` | `-dontwarn` pro com.google.firebase a com.google.android.gms | bez Google |
 | `app/src/main/java/org/linphone/ui/main/help/viewmodel/HelpViewModel.kt`, `res/layout/help_debug_fragment.xml` | bez řádku Firebase project ID; ikona verze `info` | bez Google |
-| `app/src/main/res/values*/strings.xml` | odstraněn `help_troubleshooting_firebase_project_title` (12 souborů) | bez Google |
+| `app/src/main/res/values*/strings.xml` | odstraněn `help_troubleshooting_firebase_project_title` (13 souborů) | bez Google |
 | `app/src/main/res/drawable/firebase.xml`, `google_play.xml`, `res/xml/automotive_app_desc.xml` | SMAZÁNY | bez Google |
 | `app/src/main/java/org/linphone/core/CoreContext.kt` | podmínka Crashlytics s `BuildConfig.CRASHLYTICS_ENABLED` | bez Google |
 | `app/src/main/java/org/linphone/core/tools/PushNotificationUtils.java` | NOVÝ: náhrada třídy SDK (rozhraní SDK 5.5.13) | bez Google |

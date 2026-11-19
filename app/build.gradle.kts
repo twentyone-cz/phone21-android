@@ -27,7 +27,7 @@ val useDifferentPackageNameForDebugBuild = false
 // upstreamu 6.2.5, po rebasi by šel jen downgrade. Skok na ×1000
 // (2026-08-18) monotonii obnovil; versionCode NIKDY nesnižovat.
 val upstreamCode = 602010
-val forkIteration = 46
+val forkIteration = 47
 val appVersionName = "6.2.10-21p.$forkIteration"
 
 val sdkPath = providers.gradleProperty("LinphoneSdkBuildDir").get()
