@@ -166,6 +166,8 @@
     <string name="twentyone_tunnel_notification_message">Připojeno k privátní síti</string>
     <string name="twentyone_tunnel_notification_message_internal">Hovory přes privátní síť, bez VPN</string>
     <string name="twentyone_tunnel_title">Konexe</string>
+    <string name="twentyone_licenses_title">Licence</string>
+    <string name="twentyone_licenses_close">Zavřít</string>
     <string name="twentyone_section_network">Privátní síť</string>
     <string name="twentyone_tunnel_state_connected">Připojeno</string>
     <string name="twentyone_tunnel_state_connecting">Připojuje se…</string>
