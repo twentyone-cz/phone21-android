@@ -400,7 +400,12 @@ class CallActivity : GenericActivity() {
         // během hovoru senzor běží dál (zhasnutí displeje senzorem aktivitu na některých telefonech pozastaví)
         coreContext.postOnCoreThread { core ->
             if (core.callsNb == 0) {
-                coreContext.enableProximitySensor(false)
+                // enableProximitySensor je @UiThread (od 6.2.9 v něm i (od)registrace posluchače
+                // senzoru) — souběh s vypnutím z CoreContext při konci hovoru by jinak zámek
+                // uvolnil dvakrát
+                coreContext.postOnMainThread {
+                    coreContext.enableProximitySensor(false)
+                }
             }
         }
 
