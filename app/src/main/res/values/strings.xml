@@ -196,7 +196,7 @@
     <string name="twentyone_tunnel_disconnect">Odpojit</string>
     <string name="twentyone_tunnel_address">Adresa v síti: %s</string>
     <string name="twentyone_tunnel_lockdown_title">Telefon může přijít o internet</string>
-    <string name="twentyone_tunnel_lockdown_message">V systému je pro Phone21 zapnuté „Blokovat připojení bez VPN“. Naše síť vede jen telefonování, takže tahle volba odpojí zbytek telefonu od internetu. Klepni sem a v nastavení VPN ji u Phone21 vypni.</string>
+    <string name="twentyone_tunnel_lockdown_message">V systému je pro Phone21 zapnuté „Blokovat připojení bez VPN“. Privátní síť nevede všechen provoz telefonu (kromě stupně „vše přes miniserver“), takže tahle volba může zbytek telefonu odpojit od internetu. Klepni sem a v nastavení VPN ji u Phone21 vypni.</string>
     <string name="twentyone_tunnel_login_url_title">Dokončit přihlášení do sítě</string>
     <string name="twentyone_tunnel_login_url_message">Síť chce dokončit přihlášení na téhle adrese, ale v telefonu není čím ji otevřít. Zkopíruj si ji a otevři na jiném zařízení:\n\n%s</string>
     <string name="twentyone_tunnel_login_url_copy">Zkopírovat adresu</string>
@@ -255,7 +255,7 @@
     <!-- fork: co všechno smí do tunelu -->
     <string name="twentyone_access_title">Přístup přes privátní síť</string>
     <string name="twentyone_access_app_only">Jen hovory</string>
-    <string name="twentyone_access_app_only_hint">Do privátní sítě smí jen Phone21 — hovory a kontakty. Místo pro VPN zůstává volné, jiná VPN může běžet vedle.</string>
+    <string name="twentyone_access_app_only_hint">Do privátní sítě smí jen Phone21 — hovory a kontakty. Místo pro VPN zůstává volné, jiná VPN může běžet vedle. Výjimka: synchronizace kontaktů přes privátní síť místo pro VPN zabere.</string>
     <string name="twentyone_access_server">Přístup na miniserver</string>
     <string name="twentyone_access_server_hint">Do privátní sítě smí i ostatní aplikace v telefonu — prohlížeč, peněženka, synchronizace — a dosáhnou na všechny služby miniserveru. Tunelem jde jen provoz na miniserver, zbytek internetu ne. Stejnou volbu ukazuje i ovládání miniserveru.</string>
     <string name="twentyone_access_internet">Vše přes miniserver</string>
@@ -282,7 +282,7 @@
     <string name="twentyone_contacts_hint_multiple">Adresářů je víc — vyber, do kterého se mají nové kontakty ukládat.</string>
     <string name="twentyone_contacts_hint_lost">Dřív zvolený adresář v telefonu není. Kontakty se ukládají do telefonu, dokud nevybereš jiný.</string>
     <string name="twentyone_contacts_sync_tunnel">Synchronizovat kontakty i přes privátní síť</string>
-    <string name="twentyone_contacts_sync_tunnel_hint">Bez tohohle se kontakty synchronizují jen doma po wifi. Účet v synchronizační aplikaci musí mít adresu miniserveru z privátní sítě.</string>
+    <string name="twentyone_contacts_sync_tunnel_hint">Bez tohohle se kontakty synchronizují jen doma po wifi. Účet v synchronizační aplikaci musí mít adresu miniserveru z privátní sítě. Zapnutá volba zabere místo pro VPN, takže vedle nemůže běžet VPN jiné aplikace.</string>
     <!-- fork: běh na pozadí (výjimka z optimalizace baterie) -->
     <string name="twentyone_battery_label">Běh na pozadí: %s</string>
     <string name="twentyone_battery_unrestricted">neomezeno</string>

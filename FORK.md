@@ -21,19 +21,22 @@ pak tag `<upstream>-21p.<n>` a push.
 | Soubor | Změna | Komit |
 |---|---|---|
 | `gradle/libs.versions.toml` | pin linphone-sdk (5.5.13 místo 5.5.+) | build |
-| `app/build.gradle.kts` | ktlintFormat vypnut; versionCode/Name schéma forku; jméno APK; applicationId | build+brand |
+| `app/build.gradle.kts` | ktlintFormat vypnut; versionCode/Name schéma forku; jméno APK; applicationId; jen `arm64-v8a` | build+brand |
 | `app/google-services.json` | SMAZÁN (vypíná FCM+Crashlytics) | build |
-| `keystore.properties` | dummy v repu, reálný jen na build stroji | build |
-| `app/src/main/res/values*/strings.xml` | entita &appName; (19 souborů) | brand |
+| `keystore.properties` | SMAZÁN z repa, v `.gitignore` (spolu s `local.properties`); vyrábí ho `scripts/release.sh` | build |
+| `README.md`, `.github/ISSUE_TEMPLATE/*`, `metadata/en-US/*` | vlastní texty | brand |
+| `CHANGELOG.md` | SMAZÁN | brand |
+| `app/src/main/res/values*/strings.xml` | entita `&appName;` (13 souborů); texty úvodu a oprávnění (15 souborů) | brand |
 | `app/src/main/res/values/colors.xml`, `themes.xml` | paleta | brand |
-| `app/src/main/res/mipmap*`, splash drawables | ikony | brand |
+| `app/src/main/res/values-v31`, `values-v33`, `values-night-v31`, `values-night-v33` (`themes.xml`) | splash bez obrázku značky; `drawable/linphone_splashscreen_branding.png` SMAZÁN | brand |
+| `app/src/main/res/mipmap*`, splash drawables | ikony (PNG upstreamu smazány, `mipmap-anydpi` na `drawable/twentyone_launcher_foreground.xml`) | brand |
 | `app/src/main/res/navigation/assistant_nav_graph.xml` | startDestination | onboarding |
 | `app/src/main/assets/linphonerc_factory` | [ui]/[app] klíče | onboarding |
 | `app/src/main/assets/linphonerc_default` | vyprázdněné servery upstreamu (logy, soubory, kontrola aktualizací) | onboarding |
 | `app/src/main/AndroidManifest.xml` | SMS role, ConnectionService, VpnService | telecom/sms/vpn |
 | `app/src/main/res/navigation/main_nav_graph.xml` | cíl obrazovky tunelu | vpn |
-| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace SystemProvidersSyncManager a TunnelReadinessManager; úklid v `onConfiguringStatus`; migrace nedoplňuje server pro nahrání logů a při startu se mažou servery upstreamu (`TwentyOneUpstreamServers`); `TwentyOneProvisioning.dropPrivateConfigUri` před `core.start()` ve `startCore` | sync/vpn/provisioning/soukromí |
-| `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (postup je v interních poznámkách) | vpn |
+| `app/src/main/java/org/linphone/core/CoreContext.kt` | registrace TunnelReadinessManager a posluchačů `CarCallLog` (historie hovorů do systému) a `CarSmsMirror` (zprávy do systému); úklid v `onConfiguringStatus`; migrace nedoplňuje server pro nahrání logů a při startu se mažou servery upstreamu (`TwentyOneUpstreamServers`); `TwentyOneProvisioning.dropPrivateConfigUri` před `core.start()` ve `startCore` | sync/vpn/provisioning/soukromí |
+| `app/build.gradle.kts` | závislost `app/libs/libtailscale.aar` (sestavení v `tunnel/README.md`) | vpn |
 | `app/src/main/res/values/themes.xml` | průhledné téma pro souhlas s VPN | vpn |
 | `app/src/main/java/org/linphone/LinphoneApplication.kt` | jazyk aplikace = čeština; zápis pádů do deníku | brand/diagnostika |
 | `app/src/main/java/org/linphone/telecom/TelecomManager.kt` | tel: URI identita hovoru (TwentyOneCar) | auto |
@@ -67,20 +70,26 @@ pak tag `<upstream>-21p.<n>` a push.
 | `app/src/main/AndroidManifest.xml` | služba `TsTunnelService` (vnitřní tunel; popředí `specialUse` s podtypem, `exported=false`, `stopWithTask=false`) | vpn |
 | `app/src/main/AndroidManifest.xml` | aktivita `TwentyOneConfigLinkActivity` (potvrzení odkazu s konfigurací, `exported=false`, průhledná) | provisioning |
 | `app/src/main/java/org/linphone/ui/call/viewmodel/CurrentCallViewModel.kt`, `res/layout/call_media_encryption_info.xml` | štítek „Šifrováno do miniserveru“ u hovoru přes privátní síť i při šifrování hlasu k relé; rozhodnutí a čekání na šifrování v `TwentyOneCallPrivacy` (`showsPrivateNetworkLabel`, `waitsForEncryption`), obecný štítek šifrování se při něm skrývá | hovory |
-| `app/src/main/res/values/strings.xml` | vlastní texty `twentyone_*` (obrazovky, upozornění a hlášky forku) | vpn/sms/diagnostika/hovory |
+| `app/src/main/java/org/linphone/ui/main/help/fragment/HelpFragment.kt` | řádek licence v Nápovědě otevře dialog s licencemi z APK (`TwentyOneLicenses`), ne web | licence |
+| `app/src/main/res/values/strings.xml` | vlastní texty `twentyone_*` (obrazovky, upozornění a hlášky forku) | vpn/sms/diagnostika/hovory/licence |
 
-Vše ostatní jsou NOVÉ soubory pod `org/linphone/twentyone/` — při rebasi
-bez konfliktů.
+Vše ostatní jsou NOVÉ soubory — při rebasi bez konfliktů:
+`app/src/main/java/org/linphone/twentyone/` (mj. `TwentyOneLicenses.kt`),
+`res/layout/twentyone_*.xml`, `res/drawable/twentyone_launcher_foreground.xml`,
+`app/src/main/assets/licenses.txt` (generovaný, viz Licence), `scripts/`
+(`rebase-upstream.sh`, `release.sh`, `gen-licenses.py`), `tunnel/`,
+`zapstore.yaml`.
 
 ## Verze
 
-- Tag forku: `<upstream>-21p.<n>` (např. `6.2.4-21p.1`) — git describe
-  mechanismus upstreamu pak generuje versionName sám.
+- `app/build.gradle.kts`: `upstreamCode` (602004) a `forkIteration` →
+  versionName `<upstream>-21p.<n>` (např. `6.2.4-21p.1`) a jméno APK
+  `phone21-<buildType>-<versionName>.apk`. Tag `<upstream>-21p.<n>`
+  vzniká až po sestavení; versionName z tagu neplyne.
 - `versionCode` = upstream číslo × 1000 + iterace (602004 → 602004001;
-  iterace max 999). POZOR, schéma ×10 přeteklo u 21p.19 (6020059 leželo
-  v pásmu upstreamu 6.2.5 — po rebasi by šel jen downgrade); od 21p.20
-  (602004020, 2026-08-18) platí ×1000. Pravidlo: nový versionCode musí být
-  VŽDY větší než poslední vydaný — versionCode nejde nikdy snížit.
+  iterace max 999). Schéma ×1000 platí od 21p.20 (602004020, 2026-08-18),
+  do 21p.19 bylo ×10. Pravidlo: nový versionCode musí být VŽDY větší než
+  poslední vydaný — versionCode nejde nikdy snížit.
 
 ## Licence
 
@@ -88,95 +97,103 @@ GPLv3 (upstream). „Linphone" je ochranná známka Belledonne Communications �
 fork nese vlastní jméno a grafiku. Zdroj linphone-sdk binárek:
 https://gitlab.linphone.org/BC/public/linphone-sdk
 
-Pozn.: `gradle/gradle-daemon-jvm.properties` je smazané — vynucovalo
-stažení JetBrains JDK; fork buildí systémovým JDK 21.
+Licence aplikace a všech knihoven v APK (volací knihovna, knihovna
+privátní sítě a její Go moduly, knihovny Androidu) jsou v
+`app/src/main/assets/licenses.txt`; aplikace je ukazuje v Nápovědě.
+Soubor generuje `scripts/gen-licenses.py` z výstupu `go version -m` nad
+`libgojni.so` z `app/libs/libtailscale.aar` a ze seznamu závislostí
+`releaseRuntimeClasspath` (použití v hlavičce skriptu).
+
+Pozn.: `gradle/gradle-daemon-jvm.properties` je smazané; fork buildí
+systémovým JDK 21.
 
 ## Provisioning z miniserveru: sekce `[twentyone]` (21p.34)
 
-Jedno QR z ovládání brány nastaví SIP účet i privátní síť. XML generuje brána
-(repo `/home/dev/projects/Phone21`, `webui/app.py`: `prov_xml()` a
-`network_section()`), appka ho čte v `vpn/TsProvisioning.kt`. Závazný kontrakt
-je v repu brány: `docs/ts-protokol.md`, kapitola 6.
+Jedno QR z ovládání miniserveru nastaví SIP účet i privátní síť. XML
+generuje miniserver ([twentyone-cz/phone21](https://github.com/twentyone-cz/phone21),
+`webui/app.py`: `prov_xml()` a `network_section()`), appka ho čte
+v `vpn/TsProvisioning.kt`.
 
-Sekce se do XML vypíše, když je známé **cokoli** z trojice — adresa brány se
-posílá i tehdy, když se klíč telefonu nepodařilo získat (telefon už v síti být
-může a potřebuje jen vědět, kudy ven).
+Sekce se do XML vypíše, když je známé **cokoli** z trojice.
 
 | klíč | co nese | kdo ho píše | `overwrite="true"` |
 |---|---|---|---|
-| `ts_control_url` | adresa koordinátoru sítě | brána z odpovědi koordinátoru | ANO |
-| `ts_authkey` | jednorázový klíč telefonu (platí 1 h) | koordinátor, brána přeposílá | NE |
-| `ts_exit_node` | adresa brány v síti (tailnet IPv4) | brána ze souboru `ts/ip` | ANO |
+| `ts_control_url` | adresa koordinátoru sítě | miniserver z odpovědi koordinátoru | ANO |
+| `ts_authkey` | jednorázový klíč telefonu (platí 1 h) | koordinátor, miniserver přeposílá | NE |
+| `ts_exit_node` | adresa miniserveru v síti (IPv4 `100.x`) | miniserver ze souboru `ts/ip` | ANO |
 
-**`ts_control_url`** — adresa koordinátoru, ke kterému se má telefon přihlásit.
-Bere se z pole `login_server` odpovědi na `POST /partner/preauthkeys`
-(`webui/app.py`, `request_network_key()`); bez uloženého tokenu účtu se klíč
-ani adresa koordinátoru nevydají a QR nese jen SIP účet a `ts_exit_node`.
-Appka ji čte `TsProvisioning.takeNetworkKey()` a **nemaže** (maže se jen
-klíč), takže položka v `linphonerc` zůstává ležet —
-proto `overwrite="true"`: bez atributu by xml2lpc existující položku nechal být
-a telefon by po přestěhování koordinátoru zůstal u staré adresy. Hodnota je
-přitom jen kontrolní: `TsManager.login()` ji porovná s
-`BuildConfig.NETWORK_COORDINATOR` a při neshodě ji ignoruje (QR nesmí telefon
-přehlásit k cizímu koordinátorovi).
+- **`ts_control_url`** — appka ji čte `TsProvisioning.takeNetworkKey()`
+  a nemaže. `TsManager.login()` ji porovná s
+  `BuildConfig.NETWORK_COORDINATOR`; při neshodě ji ignoruje.
+- **`ts_authkey`** — appka ho hned po přečtení maže zápisem prázdné
+  hodnoty (`takeNetworkKey()`: `setString(SECTION, "ts_authkey", "")` +
+  `sync()`), proto je jako jediný bez `overwrite`.
+- **`ts_exit_node`** — stejná hodnota jako SIP doména v QR. Appka ji čte
+  `takeExitNodeAddress()`, ukládá do prefs `gateway_address` a maže ji
+  při `ConfiguringState.Successful` (`TunnelReadinessManager.onConfiguring`).
+  Slouží jen k poznání miniserveru mezi protějšky; do předvoleb jádra
+  tunelu jde vždy `StableID` vybraného protějšku, nikdy adresa.
 
-**`ts_authkey`** — jednorázový klíč telefonu do privátní sítě. Vydává ho
-koordinátor (`POST /partner/preauthkeys`), brána ho jen přiloží k QR; platí
-hodinu a spotřebuje se prvním přihlášením. **Jediná položka bez
-`overwrite="true"`**, a to schválně: appka ji hned po přečtení maže zápisem
-prázdné hodnoty (`takeNetworkKey()`: `setString(SECTION, "ts_authkey", "")` +
-`sync()` — prázdná hodnota položku v liblinphone opravdu odstraní), aby klíč
-nikde neležel. Položka tím pádem v konfiguraci neexistuje a příští QR ji zapíše
-i bez atributu: přepis zajišťuje mazání v appce, ne `overwrite`.
-
-**`ts_exit_node`** — adresa brány v privátní síti (tailnet IPv4, `100.x`).
-Je to tatáž hodnota, kterou QR nese jako SIP doménu: `ProvHandler` si ji vezme
-z `ts_ip()` (soubor `ts/ip`, jediný zapisovatel je sidecar brány) a předá ji do
-`prov_xml(ip, ts_url, ts_key, ip)`. Appka ji čte `takeExitNodeAddress()` a
-ukládá do prefs `gateway_address`; slouží **jen k tomu, aby se brána poznala
-mezi protějšky** — do předvoleb jádra tunelu jde vždy `StableID` vybraného
-protějšku, nikdy adresa. `overwrite="true"` má, přestože ji appka po přečtení
-taky maže: mazání proběhne jen při `ConfiguringState.Successful`
-(`TunnelReadinessManager.onConfiguring`), takže po neúspěšné konfiguraci může
-v `linphonerc` zůstat stará adresa — a ta se po přeregistrování brány mění.
-
-**Pravidlo `overwrite`:** atribut patří výhradně na `<entry>` (na `<section>`
-ho liblinphone 5.5.13 nezná) a porovnává se přesným `strcmp` s `true` — ani
-`True`, ani `1` neprojde. Bez něj xml2lpc existující položku nechá být
-(„Don't touch"). Od 21p.34 ho proto nesou i všechny `<entry>` v `proxy_0`
-a `auth_info_0`, jinak druhé QR nepřepíše ani doménu, ani heslo. Cena: ruční
-úprava SIP účtu v telefonu nové QR nepřežije. Souvisí s tím pojistka
-v `TwentyOneProvisioning`: před aplikací konfigurace se odeberou přihlašovací
-údaje výchozího účtu (kvůli `ha1` z minulé domény) a při NEúspěšné konfiguraci
-se z klonu vrátí zpátky (`TunnelReadinessManager.onConfiguring`).
+**Pravidlo `overwrite`:** atribut patří výhradně na `<entry>` (ne na
+`<section>`) a platí jen přesná hodnota `true`. Od 21p.34 ho nesou i
+všechny `<entry>` v `proxy_0` a `auth_info_0` — nové QR přepíše ruční
+úpravy SIP účtu. `TwentyOneProvisioning` před aplikací konfigurace odebere
+přihlašovací údaje výchozího účtu a při NEúspěšné konfiguraci je z klonu
+vrátí (`TunnelReadinessManager.onConfiguring`).
 
 **Klient sítě:** `app/libs/libtailscale.aar` je postavené z `tailscale.com`
 v1.104.7 (v `jni/arm64-v8a/libgojni.so` je cesta `tailscale.com@v1.104.7`,
-dlouhá verze `1.104.7-tfb3b9b296-ga3655be16`; do 21p.45 `-g226f029a3`).
-Od vnitřního tunelu nese vlastní záplaty (vnitřní režim bez systémové VPN
+dlouhá verze `1.104.7-tfb3b9b296-ga3655be16`; do 21p.45 včetně
+`-g226f029a3`). Nese vlastní záplaty (vnitřní režim bez systémové VPN
 a relé na 127.0.0.1) — jsou v `tunnel/patches/` nad commitem `226f029a3`,
 sestavení v `tunnel/README.md`; appka volá `requestInternal`, `stopInternal`,
-`internalStatus`, `startRelay`, `stopRelay`, `relayStats`,
-`generateRelayIdentity` (`vpn/TsRelay.kt`). HTTP na adresy privátní sítě
-jde jen přes `vpn/TsHttp.kt` (ve vnitřním režimu webové relé
-`http://127.0.0.1:<port>/<cíl>:<port><cesta>` s hlavičkou
-`X-Phone21-Relay`, bez proxy a bez přesměrování). Koordinátor headscale 0.29.7
-vyžaduje klienta ≥ 1.80, jeho peer relay klienta ≥ 1.86 — splněno.
+`internalStatus`, `startRelay`, `relayStats`, `generateRelayIdentity`
+(`vpn/TsRelay.kt`). HTTP na adresy privátní sítě jde jen přes
+`vpn/TsHttp.kt` (ve vnitřním režimu přes webové relé
+`https://127.0.0.1:<port>/<cíl>:<port><cesta>` s připnutým certifikátem
+relé a hlavičkou `X-Phone21-Relay`; vždy bez proxy a bez přesměrování).
+Koordinátor headscale 0.29.7 vyžaduje klienta ≥ 1.80, jeho peer relay
+klienta ≥ 1.86 — splněno.
 
 ### QR na dálku: klíč do sítě v odkazu (21p.37)
 
 Ovládání otevřené přes privátní síť dává do QR odkaz na konfiguraci
 v privátní síti a za něj `#k=<klíč>`, jednorázový klíč telefonu do sítě
-(stejný druh klíče jako `ts_authkey`, `request_network_key()`).
+(stejný druh klíče jako `ts_authkey`).
 
     linphone-config:http://<adresa v síti>:8091/p/<token>#k=<klíč>
 
 Appka (`TwentyOneProvisioning`): klíč oddělí (`splitJoinKey`, tvar
-`[A-Za-z0-9_-]{20,200}`), a když tunel neběží, přihlásí telefon
-(`TsConsentActivity`) a konfiguraci stáhne až tunelem. Přihlášený telefon
-klíč nepoužije. Klíč se nezapisuje do logu (`redact`). Chyby: P21-E18
-(do sítě se nepřipojil), P21-E19 (miniserver přes síť neodpovídá).
-Konfigurace stažená z takového odkazu `ts_authkey` nenese.
+`[A-Za-z0-9_-]{20,200}`), a když tunel neběží, přihlásí telefon a
+konfiguraci stáhne až tunelem. Přihlášený telefon klíč nepoužije. Klíč se
+nezapisuje do logu (`redact`). Chyby: P21-E18 (do sítě se nepřipojil),
+P21-E19 (miniserver přes síť neodpovídá). Konfigurace stažená z takového
+odkazu `ts_authkey` nenese.
+
+## Stupeň přístupu a režim tunelu (21p.46)
+
+Stupeň přístupu (prefs `tunnel_access`: APP_ONLY = „Jen hovory“, SERVER =
+„Přístup na miniserver“, INTERNET = „Vše přes miniserver“) se volí jen
+v appce, skupinou tří voleb na obrazovce Konexe. Appka ho zapisuje na
+miniserver (`vpn/TsServerAccess.kt`, port 8091, token `access_token`
+z QR) a při náběhu cesty nebo otevření obrazovky ověří, že ho miniserver
+má; rozdíl přepíše stupněm z telefonu. Nezapsaná volba čeká
+v `access_push_pending`. Ovládání miniserveru (od 0.9.47) stupeň jen
+ukazuje.
+
+Režim tunelu (`vpn/TsModeController.kt`):
+
+| stupeň | režim |
+|---|---|
+| APP_ONLY | INTERNAL — vnitřní tunel v appce (`TsTunnelService`), bez systémové VPN |
+| APP_ONLY + `contacts_sync_via_tunnel` (se synchronizační aplikací) | SYSTEM |
+| SERVER, INTERNET | SYSTEM — systémová VPN (`TsVpnService`) |
+
+Když SYSTEM nejde (chybí souhlas, místo drží jiná VPN, místo ztraceno),
+jedou hovory dál v režimu INTERNAL a appka nabídne „Zapnout přístup“
+(`TsConsentActivity`). Přepnutí režimu během hovoru se odloží na jeho
+konec; výjimkou je odebrání systémové VPN, při kterém se hovor do
+privátní sítě ukončí.
 
 ## Kontakty: cíl zápisu (21p.31)
 
@@ -190,31 +207,37 @@ databáze), `target_mode` (AUTO/LOCAL/BOOK), `target_type`, `target_name`,
 sjednocené s účty existujících RAW kontaktů; hlavní účet synchronizační
 aplikace se vynechává (kontakty leží v jejích pod-adresářích).
 
-Prefs `twentyone_tunnel_settings`: `tunnel_access` (APP_ONLY/SERVER/INTERNET,
-21p.33; přebírá starý `tunnel_scope`), `contacts_sync_via_tunnel` — v režimu
-APP_ONLY se do tunelu přidá i synchronizační aplikace (21p.32); přepínač je
-vidět jen tehdy, když je aplikace nainstalovaná. Od 21p.34 navíc
-`gateway_address` (adresa brány z posledního QR, klíč `ts_exit_node`; jen
-k poznání brány mezi protějšky, zapisuje se `commit()`, protože musí ležet dřív,
-než se uzel začne nasazovat) a `gateway_stable_id` (`StableID` naposledy
-vybrané brány — je to ZÁZNAM do deníku P21-TUN, ne záloha, ze které by se dalo
-nasazovat; při změně `gateway_address` se maže, ať se nikdy nepřenese do jiné
-sítě). Klíč `tunnel_scope` zůstává jen kvůli migraci, mrtvý enum `TunnelScope`
-je od 21p.34 pryč.
+## Předvolby tunelu
 
-Režim tunelu (`vpn/TsModeController.kt`): prefs `twentyone_tunnel_settings`
-navíc `mode_in_use` (OFF/INTERNAL/SYSTEM — pro co jsou nastavené služby
-a účet; bez záznamu SYSTEM), `want_running` (zrcadlo WantRunning jádra
-tunelu), `relay_sip_port`, `relay_http_port`, `relay_private_sip_port`,
-`relay_client_srtp` (porty a šifrování hlasu posledního relé; token se
-neukládá), `system_block_notified` (poslední důvod výzvy „zapnout
-přístup“). Šifrované prefs `twentyone_relay`: `p21relay-identity`
-(certifikáty a klíče relé a volací knihovny). V `linphonerc` sekce
-`[twentyone]` klíč `internal_media` (šifrování hlasu zapnul vnitřní režim)
-a ve vnitřním režimu `[rtp] bind_address=127.0.0.1`, transporty UDP 0,
-TCP 0, TLS -2, šifrování hlasu SRTP povinné (`[sip] srtp_crypto_suites`
-jen `AES_CM_128_HMAC_SHA1_80`), trasa účtu na `127.0.0.1` a vlastní
-politika NAT účtu — systémový režim je vrací.
+Prefs `twentyone_tunnel_settings`:
+
+- `tunnel_access` (APP_ONLY/SERVER/INTERNET, 21p.33; přebírá starý
+  `tunnel_scope`, který zůstává jen kvůli migraci),
+- `contacts_sync_via_tunnel` — synchronizační aplikace v tunelu (21p.32);
+  přepínač je vidět jen s nainstalovanou aplikací,
+- `gateway_address` (adresa miniserveru z posledního QR, klíč
+  `ts_exit_node`; zapisuje se `commit()`) a `gateway_stable_id`
+  (`StableID` naposledy vybraného miniserveru, jen záznam do deníku
+  P21-TUN; při změně `gateway_address` se maže) — 21p.34,
+- `access_token`, `access_push_pending` — zápis stupně na miniserver,
+- `slot_lost`, `slot_lost_reason`, `slot_lost_at`,
+  `slot_lost_dismissed_boot` — Phone21 přišlo o místo pro VPN (21p.45),
+- `other_vpn_hold` — místo pro VPN drží jiná aplikace, appka si ho bez
+  pokynu nevezme,
+- `mode_in_use` (OFF/INTERNAL/SYSTEM — pro co jsou nastavené služby
+  a účet; bez záznamu SYSTEM), `want_running` (zrcadlo WantRunning jádra
+  tunelu), `relay_sip_port`, `relay_http_port`, `relay_private_sip_port`,
+  `relay_client_srtp` (porty a šifrování hlasu posledního relé; token se
+  neukládá), `system_block_notified` (poslední důvod výzvy „zapnout
+  přístup“).
+
+Šifrované prefs `twentyone_relay`: `p21relay-identity` (certifikáty
+a klíče relé a volací knihovny). V `linphonerc` sekce `[twentyone]` klíč
+`internal_media` (šifrování hlasu zapnul vnitřní režim) a ve vnitřním
+režimu `[rtp] bind_address=127.0.0.1`, transporty UDP 0, TCP 0, TLS -2,
+šifrování hlasu SRTP povinné (`[sip] srtp_crypto_suites` jen
+`AES_CM_128_HMAC_SHA1_80`), adresa serveru i trasa účtu na `127.0.0.1`
+(TLS) a vlastní politika NAT účtu — systémový režim je vrací.
 
 Prefs `twentyone_battery`: `asked` — dialog o běhu na pozadí se nabízí
 jednou po nastavení účtu, stav je pak vidět na Konexi.

@@ -13,6 +13,10 @@ description: |
     k internetu.
   - **Číslo se nedá sledovat podle pohybu telefonu.** Operátor vidí tvou SIM
     pořád doma, ať jsi kdekoli. A přesto jsi na svém čísle dostupný.
+  - **Funguje vedle jiné VPN.** Ve výchozím stupni „Jen hovory“ běží
+    privátní síť uvnitř aplikace a místo pro VPN v Androidu nechává volné.
+    VPN jiné aplikace tak může běžet současně, nic se nenastavuje. Hovor je
+    i tak šifrovaný až do miniserveru.
   - Otevřený kód (GPL-3.0), bez služeb Google, bez reklam a sledovačů.
     Kredity do privátní sítě platíš bitcoinem přes Lightning.
   - Nastavení jedním QR kódem z ovládání miniserveru. Ztracený telefon
@@ -29,14 +33,19 @@ description: |
   **English**
 
   Phone21 puts your own phone number on your Android phone, wherever you are.
-  The SIM stays home in your miniserver; calls and SMS travel end-to-end
-  encrypted over a private network.
+  The SIM stays home in your miniserver; calls and SMS travel encrypted over
+  a private network all the way to your miniserver.
 
   - **Home prices everywhere.** You call and text from your own SIM at home,
     so you pay domestic rates. No overpriced roaming — any internet
     connection will do.
   - **Your number can't be tracked by where you go.** The mobile network sees
     your SIM at home, wherever you are — and you're still reachable on it.
+  - **Works alongside another VPN.** In the default access level, "Jen
+    hovory" (calls only), the private network runs inside the app and leaves
+    Android's VPN slot free, so another app's VPN can run at the same time —
+    nothing to configure. Calls stay encrypted all the way to your
+    miniserver.
   - Open source (GPL-3.0), no Google services, no ads, no trackers. Private
     network credits are paid with bitcoin over Lightning.
   - One QR code from the miniserver sets everything up; a lost phone is
