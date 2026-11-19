@@ -26,9 +26,9 @@ val useDifferentPackageNameForDebugBuild = false
 // Původní schéma ×10 přeteklo: 21p.19 = 6020059 leží v pásmu
 // upstreamu 6.2.5, po rebasi by šel jen downgrade. Skok na ×1000
 // (2026-08-18) monotonii obnovil; versionCode NIKDY nesnižovat.
-val upstreamCode = 602004
-val forkIteration = 45
-val appVersionName = "6.2.4-21p.$forkIteration"
+val upstreamCode = 602010
+val forkIteration = 46
+val appVersionName = "6.2.10-21p.$forkIteration"
 
 val sdkPath = providers.gradleProperty("LinphoneSdkBuildDir").get()
 val googleServices = File(projectDir.absolutePath + "/google-services.json")
