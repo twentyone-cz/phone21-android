@@ -126,11 +126,10 @@ class TsPreferences(context: Context) {
 
     /**
      * Stupeň změněný v telefonu, který se ještě nepodařilo zapsat na
-     * miniserver (jméno [TunnelAccess], "" = nic nečeká). Dokud čeká,
-     * telefon stupeň z miniserveru nepřebírá (starší volba ze serveru by
-     * přepsala novější z telefonu) a zápis se zkouší znovu, jakmile cesta
-     * k miniserveru stojí (TsServerAccess). Synchronně: musí přežít zabití
-     * procesu hned po změně.
+     * miniserver (jméno [TunnelAccess], "" = nic nečeká). Zápis se zkouší
+     * znovu, jakmile cesta k miniserveru stojí (TsServerAccess). Zdrojem
+     * pravdy je telefon: stupeň z miniserveru nepřebírá, rozdíl přepíše
+     * svým. Synchronně: musí přežít zabití procesu hned po změně.
      */
     var accessPushPending: String
         get() = prefs.getString(KEY_ACCESS_PUSH_PENDING, "").orEmpty()
